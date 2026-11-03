@@ -158,7 +158,7 @@ impl Dashboard {
         match self.config.mode { Mode::Demo => "本地演示", Mode::Yuque => "语雀上传" }
     }
 
-    fn row(&self, asset: &Asset, cx: &mut Context<Self>) -> impl IntoElement {
+    fn row(&self, asset: &Asset, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let item_id = asset.id;
         let url = asset.url.clone();
         let label = asset.name.clone();
@@ -204,7 +204,7 @@ impl Dashboard {
 }
 
 impl Render for Dashboard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let shown = self.assets.iter().filter(|item| self.matches(item)).count();
         let pending = self.queue.len() + usize::from(self.working);
         let stats = h_flex()
@@ -310,7 +310,7 @@ impl Render for Dashboard {
     }
 }
 
-fn stat_card(title: &str, value: String, cx: &mut Context<Dashboard>) -> impl IntoElement {
+fn stat_card(title: &str, value: String, cx: &mut Context<Dashboard>) -> impl IntoElement + use<> {
     v_flex()
         .flex_1()
         .gap_2()
