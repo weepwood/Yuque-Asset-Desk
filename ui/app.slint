@@ -1,0 +1,250 @@
+import { Button, LineEdit, ScrollView, VerticalBox, AboutSlint } from "std-widgets.slint";
+
+export struct AssetRow {
+    name: string,
+    detail: string,
+    url: string,
+    kind: string,
+    provider: string,
+}
+
+export component MainWindow inherits Window {
+    title: "Yuque Asset Desk";
+    preferred-width: 1020px;
+    preferred-height: 700px;
+    min-width: 820px;
+    min-height: 570px;
+    background: #0d1320;
+    default-font-size: 14px;
+
+    in-out property <string> mode-label: "本地演示";
+    in-out property <string> status-text: "准备就绪";
+    in-out property <string> account-text: "未连接";
+    in-out property <string> search-text: "";
+    in-out property <[AssetRow]> assets: [];
+    in-out property <int> total-count: 0;
+
+    callback pick-files();
+    callback copy-url(int);
+    callback copy-markdown(int);
+    callback hide-main();
+    callback show-help();
+    callback show-about();
+    callback search-changed(string);
+
+    HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            background: #111c2a;
+            width: 224px;
+            VerticalLayout {
+                padding: 22px;
+                spacing: 16px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 10px;
+                        background: #3785e8;
+                        Text {
+                            text: "Y";
+                            color: white;
+                            font-size: 23px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 1px;
+                        Text { text: "YUQUE"; color: #f1f5ff; font-weight: 700; font-size: 16px; }
+                        Text { text: "ASSET DESK"; color: #7d91a8; font-size: 10px; }
+                    }
+                }
+                Rectangle { height: 12px; background: transparent; }
+                Rectangle {
+                    height: 42px;
+                    background: #223950;
+                    border-radius: 8px;
+                    HorizontalLayout {
+                        padding-left: 15px;
+                        spacing: 10px;
+                        Text { text: "▣"; color: #86baff; font-size: 18px; }
+                        Text { text: "上传工作台"; color: #f5f8ff; font-weight: 600; vertical-alignment: center; }
+                    }
+                }
+                Rectangle {
+                    height: 40px;
+                    background: transparent;
+                    HorizontalLayout {
+                        padding-left: 15px;
+                        spacing: 10px;
+                        Text { text: "◷"; color: #8599ad; font-size: 18px; }
+                        Text { text: "资源历史"; color: #aabacc; vertical-alignment: center; }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+                Rectangle {
+                    height: 94px;
+                    background: #182b3c;
+                    border-radius: 10px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 6px;
+                        Text { text: "当前上传目标"; color: #8097aa; font-size: 11px; }
+                        Text { text: root.mode-label; color: #e7f1ff; font-weight: 700; }
+                        Text { text: root.account-text; color: #90a4b6; font-size: 11px; overflow: elide; }
+                    }
+                }
+                Button { text: "关于应用 / Slint"; clicked => { root.show-about(); } }
+                Button { text: "使用说明"; clicked => { root.show-help(); } }
+            }
+        }
+        Rectangle {
+            background: #0d1320;
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding: 27px;
+                spacing: 16px;
+                HorizontalLayout {
+                    vertical-stretch: 0;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: "上传工作台"; color: #f5f8ff; font-size: 26px; font-weight: 700; }
+                        Text { text: "轻量上传 · 自动生成 Markdown 链接 · 本地历史管理"; color: #8d9cad; font-size: 12px; }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Button { text: "隐藏到托盘"; clicked => { root.hide-main(); } }
+                }
+                Rectangle {
+                    height: 162px;
+                    border-radius: 13px;
+                    background: #14253a;
+                    border-width: 1px;
+                    border-color: #24466b;
+                    VerticalLayout {
+                        padding: 21px;
+                        spacing: 13px;
+                        Text { text: "将图片与附件上传至语雀"; color: #f1f6ff; font-size: 20px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: "支持 PNG / JPG / WEBP / PDF / ZIP 等文件；文件内容以流式方式发送"; color: #98aeca; font-size: 12px; horizontal-alignment: center; }
+                        HorizontalLayout {
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            Button { text: "＋ 选择文件上传"; primary: true; clicked => { root.pick-files(); } }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        height: 53px;
+                        horizontal-stretch: 1;
+                        border-radius: 10px;
+                        background: #162333;
+                        VerticalLayout {
+                            padding: 9px;
+                            spacing: 3px;
+                            Text { text: "已记录资源"; color: #91a3b9; font-size: 11px; }
+                            Text { text: "" + root.total-count; color: #f4f8ff; font-size: 18px; font-weight: 700; }
+                        }
+                    }
+                    Rectangle {
+                        height: 53px;
+                        horizontal-stretch: 2;
+                        border-radius: 10px;
+                        background: #162333;
+                        VerticalLayout {
+                            padding: 9px;
+                            spacing: 4px;
+                            Text { text: "运行状态"; color: #91a3b9; font-size: 11px; }
+                            Text { text: root.status-text; color: #a9d4ff; font-size: 12px; overflow: elide; }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: "最近上传"; color: #eaf1fc; font-size: 18px; font-weight: 700; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    LineEdit {
+                        width: 215px;
+                        placeholder-text: "搜索文件名称...";
+                        text <=> root.search-text;
+                        edited(text) => { root.search-changed(text); }
+                    }
+                }
+                Rectangle {
+                    background: #141f2c;
+                    border-radius: 11px;
+                    vertical-stretch: 1;
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            for item[i] in root.assets: Rectangle {
+                                height: 68px;
+                                background: #1a2a3b;
+                                border-radius: 7px;
+                                HorizontalLayout {
+                                    padding: 11px;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 37px;
+                                        height: 37px;
+                                        border-radius: 8px;
+                                        background: item.kind == "image" ? #274b67 : #46516c;
+                                        Text {
+                                            text: item.kind == "image" ? "▧" : "▤";
+                                            color: #cce6ff;
+                                            font-size: 21px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 4px;
+                                        horizontal-stretch: 1;
+                                        Text { text: item.name; color: #f2f5fc; font-size: 13px; font-weight: 600; overflow: elide; }
+                                        Text { text: item.detail; color: #9fb0c3; font-size: 11px; overflow: elide; }
+                                    }
+                                    Button { text: "复制 URL"; clicked => { root.copy-url(i); } }
+                                    Button { text: "Markdown"; clicked => { root.copy-markdown(i); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                Text { text: "隐私提醒：语雀模式使用非公开网页接口。重要文件请保留原件，并验证外链权限。"; color: #6f8499; font-size: 11px; }
+            }
+        }
+    }
+}
+
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/tray.png");
+    tooltip: "Yuque Asset Desk";
+    callback open-main();
+    callback quit-app();
+    Menu {
+        MenuItem { title: "打开上传工作台"; activated => { open-main(); } }
+        MenuSeparator { }
+        MenuItem { title: "退出 Yuque Asset Desk"; activated => { quit-app(); } }
+    }
+}
+
+// Accessible from the main window for Slint royalty-free attribution.
+export component AboutWindow inherits Window {
+    title: "关于 Yuque Asset Desk";
+    preferred-width: 390px;
+    preferred-height: 270px;
+    background: #172639;
+    callback close-about();
+    VerticalLayout {
+        padding: 24px;
+        spacing: 14px;
+        Text { text: "Yuque Asset Desk"; color: #f4f8ff; font-weight: 700; font-size: 21px; horizontal-alignment: center; }
+        Text { text: "Rust + Slint + SQLite  ·  v0.2.0"; color: #a7c1d6; horizontal-alignment: center; }
+        AboutSlint { }
+        Button { text: "关闭"; clicked => { close-about(); } }
+    }
+}

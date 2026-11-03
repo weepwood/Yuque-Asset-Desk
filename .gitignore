@@ -1,5 +1,6 @@
-/target
-/dist
+/target/
+/dist/
+/.env
 *.db
 *.db-shm
 *.db-wal
