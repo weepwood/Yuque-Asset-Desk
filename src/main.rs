@@ -49,6 +49,7 @@ struct UploadDesk {
     total_count: i64,
     status: String,
     upload_task: Option<Task<()>>,
+    batch_markdown: String,
 }
 
 impl UploadDesk {
@@ -85,6 +86,7 @@ impl UploadDesk {
             total_count,
             status,
             upload_task: None,
+            batch_markdown: String::new(),
         }
     }
 
@@ -97,53 +99,107 @@ impl UploadDesk {
 
     fn select_files(&mut self, cx: &mut Context<Self>) {
         if self.busy {
-            self.status = "正在上传，请等待当前队列完成".to_string();
+            self.status = "当前批次仍在处理，请等待完成".to_string();
             cx.notify();
             return;
         }
         let Some(files) = rfd::FileDialog::new()
             .set_title("选择图片或附件")
             .pick_files() else { return; };
-        if files.is_empty() { return; }
+        self.queue_files(files, cx);
+    }
+
+    /// Used by both the native OS file dialog and Finder / Explorer file drops.
+    /// Directories and non-existent paths are never enqueued.
+    fn queue_files(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.busy {
+            self.status = "当前批次仍在处理，请等待完成".to_string();
+            cx.notify();
+            return;
+        }
+        let total_offered = files.len();
+        const MAX_BATCH: usize = 256;
+        let files: Vec<PathBuf> = files.into_iter().filter(|p| p.is_file()).take(MAX_BATCH).collect();
+        if files.is_empty() {
+            self.status = "未发现可上传的普通文件（文件夹暂不支持）".to_string();
+            cx.notify();
+            return;
+        }
+        let omitted = total_offered.saturating_sub(files.len());
         let config = self.config.clone();
         let storage = self.storage.clone();
         self.busy = true;
         self.queue_count = files.len();
-        self.status = format!("已加入 {} 个文件", files.len());
+        self.batch_markdown.clear();
+        self.status = if omitted > 0 {
+            format!("已加入 {} 个文件，跳过 {} 个文件夹/超限项目", files.len(), omitted)
+        } else {
+            format!("已加入 {} 个文件，依次处理", files.len())
+        };
         cx.notify();
 
-        // The view owns the task. File hashing, uploads and SQLite writes
-        // run off the UI thread. Work is sequential to bound peak memory.
         self.upload_task = Some(cx.spawn(async move |this, cx| {
             let total = files.len();
+            let mut completed_links = Vec::with_capacity(total);
+            let mut successes = 0usize;
+            let mut failures = 0usize;
+
             for (index, path) in files.into_iter().enumerate() {
                 let config = config.clone();
                 let storage = storage.clone();
                 let result = cx.background_spawn(async move {
                     uploader::upload(&path, &config, &storage)
-                        .map(|out| (out.duplicate, out.item.provider))
                         .map_err(|error| error.to_string())
                 }).await;
-                _ = this.update(cx, |view, cx| {
+
+                let message = match result {
+                    Ok(out) => {
+                        completed_links.push(format::markdown(
+                            &out.item.name, &out.item.url, out.item.category == "image"
+                        ));
+                        successes += 1;
+                        if out.duplicate { "文件已存在，复用历史链接".to_string() }
+                        else if out.item.provider == "demo" { "已记录演示文件（非公网链接）".to_string() }
+                        else { "语雀已返回上传地址，记录已保存".to_string() }
+                    }
+                    Err(error) => {
+                        failures += 1;
+                        format!("上传失败：{error}")
+                    }
+                };
+
+                _ = this.update(cx, move |view, cx| {
                     view.queue_count = total - index - 1;
-                    view.status = format!("[{}/{}] {}", index + 1, total, match result {
-                        Ok((true, _)) => "发现相同文件，复用历史链接".to_string(),
-                        Ok((false, provider)) if provider == "demo" =>
-                            "已保存本地记录（非公网链接）".to_string(),
-                        Ok(_) => "上传成功，已保存资源链接".to_string(),
-                        Err(error) => format!("上传失败：{error}"),
-                    });
+                    view.status = format!("[{}/{}] {}", index + 1, total, message);
                     view.reload();
                     if let Ok(count) = view.storage.count() {
                         view.total_count = count;
                     }
-                    if view.queue_count == 0 {
-                        view.busy = false;
-                    }
                     cx.notify();
                 });
             }
+
+            let batch_markdown = completed_links.join("\n");
+            _ = this.update(cx, move |view, cx| {
+                view.batch_markdown = batch_markdown;
+                view.busy = false;
+                view.queue_count = 0;
+                view.status = format!("本批完成：成功 {} 项，失败 {} 项。可复制本批 Markdown 链接", successes, failures);
+                cx.notify();
+            });
         }));
+    }
+
+    fn copy_batch(&mut self, cx: &mut Context<Self>) {
+        if self.batch_markdown.is_empty() {
+            return;
+        }
+        match arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(self.batch_markdown.clone())) {
+            Ok(()) => self.status = "本批 Markdown 链接已复制到剪贴板".to_string(),
+            Err(error) => self.status = format!("复制失败：{error}"),
+        }
+        cx.notify();
     }
 
     fn copy_asset(&mut self, asset: &Asset, as_markdown: bool, cx: &mut Context<Self>) {
@@ -242,9 +298,13 @@ impl Render for UploadDesk {
         let is_demo = self.config.mode == Mode::Demo;
 
         div()
+            .id("native-file-drop-window")
             .flex()
             .size_full()
             .bg(rgb(0x0b1422))
+            .on_drop::<ExternalPaths>(cx.listener(|view, dropped: &ExternalPaths, _, cx| {
+                view.queue_files(dropped.paths().to_vec(), cx);
+            }))
             .text_color(rgb(0xf2f6ff))
             .child(
                 div()
@@ -317,7 +377,7 @@ impl Render for UploadDesk {
                             .rounded_xl()
                             .bg(rgb(0x1c3860))
                             .child(div().text_2xl().font_bold().child("轻松上传，专注创作"))
-                            .child(div().text_sm().text_color(rgb(0xc7d9f4)).child("将图片和附件上传后，一键复制可用于文章的 Markdown 引用"))
+                            .child(div().text_sm().text_color(rgb(0xc7d9f4)).child("从 Finder / Explorer 拖入文件，或选择图片和附件上传"))
                             .child(
                                 Button::new("choose-main")
                                     .primary()
@@ -360,6 +420,12 @@ impl Render for UploadDesk {
                             .gap_3()
                             .child(if self.image_only { "图片资源" } else { "最近上传" })
                             .child(Input::new(&self.search_input))
+                            .child(
+                                Button::new("copy-batch-markdown")
+                                    .disabled(self.batch_markdown.is_empty())
+                                    .label("复制本批链接")
+                                    .on_click(cx.listener(|view, _, _, cx| view.copy_batch(cx))),
+                            )
                             .child(
                                 Button::new("toggle-image-filter")
                                     .label(if self.image_only { "显示全部" } else { "仅看图片" })
