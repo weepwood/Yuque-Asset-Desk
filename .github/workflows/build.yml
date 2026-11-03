@@ -1,4 +1,4 @@
-name: Cross-platform Rust desktop builds
+name: GPUI Kit desktop builds
 
 on:
   workflow_dispatch:
@@ -6,11 +6,8 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'ui/**'
-      - 'assets/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'build.rs'
       - '.github/workflows/build.yml'
   pull_request:
 
@@ -29,22 +26,24 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust target
+      - name: Rust toolchain
         run: rustup target add ${{ matrix.target }}
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-      - name: Unit tests
+      - name: Windows native prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile and run unit tests
         run: cargo test --target ${{ matrix.target }}
       - name: Release build
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Bundle macOS app (unsigned)
+      - name: Package macOS app (unsigned)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           APP="dist/Yuque Asset Desk.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          mkdir -p "$APP/Contents/MacOS"
           cp "target/${{ matrix.target }}/release/yuque-asset-desk" "$APP/Contents/MacOS/yuque-asset-desk"
-          cp assets/tray.png "$APP/Contents/Resources/tray.png"
           cat > "$APP/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -53,13 +52,13 @@ jobs:
             <key>CFBundleExecutable</key><string>yuque-asset-desk</string>
             <key>CFBundleName</key><string>Yuque Asset Desk</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>0.2.1</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>CFBundleShortVersionString</key><string>0.3.0</string>
+            <key>LSMinimumSystemVersion</key><string>15.0</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
           cd dist && zip -qr "yuque-asset-desk-${{ matrix.target }}.zip" "Yuque Asset Desk.app"
-      - name: Bundle Windows executable
+      - name: Package Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -68,5 +67,5 @@ jobs:
           Compress-Archive -Path dist/yuque-asset-desk.exe -DestinationPath "dist/yuque-asset-desk-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: yuque-asset-desk-${{ matrix.target }}
+          name: gpui-kit-${{ matrix.target }}
           path: dist/yuque-asset-desk-${{ matrix.target }}.zip
