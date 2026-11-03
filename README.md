@@ -1,4 +1,4 @@
-# Yuque Asset Desk — Rust + Slint + SQLite（0.2.0 源码原型）
+# Yuque Asset Desk — Rust + Slint + SQLite（0.2.1 源码原型）
 
 这是从此前的 Node.js 本地网页原型迁移到 **Rust + Slint 1.18 + SQLite** 的第一阶段源码。
 面向 **Windows x64 / macOS Apple Silicon / macOS Intel**。没有 Electron、Chromium、Node.js 常驻服务或 WebView。
@@ -136,3 +136,15 @@ cargo build --release
 3. 原生文件拖拽、剪贴板图片上传、菜单栏上传快捷入口。
 4. 引用关系索引：追踪 Obsidian / Typora 的本地 Markdown 文章与资源，支持失效检测和图床迁移。
 5. 可插拔存储后端（R2/OSS/S3），语雀作为可选适配器而不是唯一后端。
+
+## v0.2.1 原生界面与动效
+
+本次界面调整以原生 GUI 的事件驱动为原则，不使用持续刷新的定时器。
+- 重新布局深色导航栏、资源统计卡片、上传区域和历史列表；
+- 上传按钮、导航与文件列表增加约 130–170ms 的 hover/press 背景过渡；
+- 首次打开窗口上传卡片以 320ms 单次淡入；
+- SQLite 资源计数、队列长度、上传中状态与界面绑定；
+- 可从侧栏或列表筛选图片，保留原有资源搜索及 Markdown 复制；
+- 修复旧版 CI 的 `AppTray::on_clicked` 编译错误：只使用托盘菜单的“打开”操作，兼容当前锁定的 Slint 版本。
+
+详细设计与验收建议参见 [docs/UI_MOTION.md](docs/UI_MOTION.md)。UI 改动不代表语雀接口已完成真实账号联调。

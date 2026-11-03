@@ -8,6 +8,7 @@ mod uploader;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -95,7 +96,10 @@ fn main() -> Result<()> {
             let display = file_path.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| "文件".into());
             let weak_before = worker_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak_before.upgrade() { set_status(&ui, format!("正在处理：{display}")); }
+                if let Some(ui) = weak_before.upgrade() {
+                    ui.set_upload_active(true);
+                    set_status(&ui, format!("正在处理：{display}"));
+                }
             });
             let result = uploader::upload(&file_path, &worker_config, &worker_storage);
             let waiting = worker_pending.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
@@ -103,6 +107,8 @@ fn main() -> Result<()> {
             let storage_for_refresh = worker_storage.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak_after.upgrade() {
+                    ui.set_queue_count(waiting.min(i32::MAX as usize) as i32);
+                    ui.set_upload_active(waiting > 0);
                     match result {
                         Ok(out) => {
                             let label = if out.duplicate { "去重成功，复用历史链接" }
@@ -133,7 +139,10 @@ fn main() -> Result<()> {
                     pick_pending.fetch_sub(1, Ordering::SeqCst);
                 }
             }
-            if let Some(ui) = pick_weak.upgrade() { set_status(&ui, format!("已加入 {count} 个文件，依次上传")); }
+            if let Some(ui) = pick_weak.upgrade() {
+                ui.set_queue_count(pick_pending.load(Ordering::SeqCst).min(i32::MAX as usize) as i32);
+                set_status(&ui, format!("已加入 {count} 个文件，依次上传"));
+            }
         }
     });
 
@@ -193,14 +202,15 @@ fn main() -> Result<()> {
     tray.on_open_main(move || {
         if let Some(ui) = tray_open_weak.upgrade() { let _ = ui.show(); }
     });
-    let tray_click_weak = main.as_weak();
-    tray.on_clicked(move || {
-        if let Some(ui) = tray_click_weak.upgrade() { let _ = ui.show(); }
-    });
     tray.on_quit_app(|| { let _ = slint::quit_event_loop(); });
 
     main.show()?;
     tray.show()?;
+    // One-shot entrance transition. Avoid any perpetual animation in idle state.
+    let ready_weak = main.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(60), move || {
+        if let Some(ui) = ready_weak.upgrade() { ui.set_ui_ready(true); }
+    });
     slint::run_event_loop()?;
     Ok(())
 }
