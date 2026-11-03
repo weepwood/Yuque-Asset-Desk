@@ -14,6 +14,8 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
 };
 use gpui_kit::*;
+use gpui_kit::base::{Disableable, Selectable, StyledExt};
+use gpui_kit::prelude::FluentBuilder;
 use std::path::PathBuf;
 use storage::{Asset, Storage};
 
