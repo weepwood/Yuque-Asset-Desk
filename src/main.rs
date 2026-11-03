@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use directories::ProjectDirs;
 use gpui_kit::component::{
-    ActiveTheme as _, h_flex, v_flex,
+    ActiveTheme as _, Sizable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement as _,
