@@ -56,14 +56,16 @@ impl Storage {
         Ok(conn)
     }
 
-    pub fn recent(&self, limit: usize, query: &str) -> Result<Vec<Asset>> {
+    pub fn recent_filtered(&self, limit: usize, query: &str, image_only: bool) -> Result<Vec<Asset>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
             "SELECT id,name,bytes,category,provider,url,sha256,owner_id,filekey,created_at
-             FROM assets WHERE (?1 = '' OR instr(lower(name), lower(?1)) > 0)
+             FROM assets
+             WHERE (?1 = '' OR instr(lower(name), lower(?1)) > 0)
+               AND (?3 = 0 OR category = 'image')
              ORDER BY id DESC LIMIT ?2"
         )?;
-        let rows = stmt.query_map(params![query, limit as i64], map_row)?;
+        let rows = stmt.query_map(params![query, limit as i64, i64::from(image_only)], map_row)?;
         let mut items = Vec::new();
         for row in rows { items.push(row?); }
         Ok(items)

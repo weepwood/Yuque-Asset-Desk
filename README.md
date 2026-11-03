@@ -2,7 +2,7 @@
 
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
-> **迁移状态：v0.3.0 GPUI Kit 初版。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
+> **迁移状态：v0.3.1 GPUI Kit 初版。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
 
 ## 技术架构
 
@@ -68,3 +68,11 @@ Windows PowerShell 使用 `$env:KEY="value"` 设置环境变量。不要把 Cook
 GitHub Actions 覆盖 Windows x64、macOS Apple Silicon 和 macOS Intel。构建产物是未签名 ZIP，不等同于完成终端设备验收。参见 [构建工作流](.github/workflows/build.yml)。
 
 更多文档：https://gpui-kit.com
+
+## v0.3.1 稳定性与性能修复
+
+- 修复 GPUI Kit 0.9.0 列表滚动 API：显式引入 `ScrollableElement`，改用 `overflow_y_scrollbar()`。
+- 搜索/图片过滤改为先在 SQLite 过滤再应用 150 条上限，避免遗漏较旧的匹配资源。
+- 渲染时不再每次调用 SQLite `COUNT(*)`，上传完成及过滤操作时更新缓存总数。
+- 上传反馈显示当前完成项数 / 队列项数；语雀凭据缺失时在文件读取前报错。
+- 将运行窗口视为原生 GPUI 客户端；此阶段**仍无托盘支持**。

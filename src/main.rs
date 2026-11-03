@@ -11,6 +11,7 @@ use directories::ProjectDirs;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
+    scroll::ScrollableElement,
 };
 use gpui_kit::*;
 use std::path::PathBuf;
@@ -43,6 +44,7 @@ struct UploadDesk {
     image_only: bool,
     busy: bool,
     queue_count: usize,
+    total_count: i64,
     status: String,
     upload_task: Option<Task<()>>,
 }
@@ -56,11 +58,13 @@ impl UploadDesk {
             |this, input, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search = input.read(cx).value().to_string();
+                    this.reload();
                     cx.notify();
                 }
             },
         );
-        let assets = storage.recent(300, "").unwrap_or_default();
+        let assets = storage.recent_filtered(150, "", false).unwrap_or_default();
+        let total_count = storage.count().unwrap_or(0);
         let status = match (&config.mode, &config.creds) {
             (Mode::Demo, _) => "本地演示模式：不会上传至网络".to_string(),
             (Mode::Yuque, None) => "语雀未配置：请设置用户 ID、Cookie 和 CSRF Token".to_string(),
@@ -76,15 +80,19 @@ impl UploadDesk {
             image_only: false,
             busy: false,
             queue_count: 0,
+            total_count,
             status,
             upload_task: None,
         }
     }
 
     fn reload(&mut self) {
-        match self.storage.recent(300, "") {
+        match self.storage.recent_filtered(150, &self.search, self.image_only) {
             Ok(items) => self.assets = items,
             Err(error) => self.status = format!("读取上传历史失败：{error}"),
+        }
+        if let Ok(count) = self.storage.count() {
+            self.total_count = count;
         }
     }
 
@@ -119,13 +127,13 @@ impl UploadDesk {
                 }).await;
                 _ = this.update(cx, |view, cx| {
                     view.queue_count = total - index - 1;
-                    view.status = match result {
+                    view.status = format!("[{}/{}] {}", index + 1, total, match result {
                         Ok((true, _)) => "发现相同文件，复用历史链接".to_string(),
                         Ok((false, provider)) if provider == "demo" =>
                             "已保存本地记录（非公网链接）".to_string(),
                         Ok(_) => "上传成功，已保存资源链接".to_string(),
                         Err(error) => format!("上传失败：{error}"),
-                    };
+                    });
                     view.reload();
                     if view.queue_count == 0 {
                         view.busy = false;
@@ -172,14 +180,8 @@ impl UploadDesk {
 
 impl Render for UploadDesk {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let visible: Vec<Asset> = self
-            .assets
-            .iter()
-            .filter(|asset| !self.image_only || asset.category == "image")
-            .filter(|asset| self.search.is_empty() || asset.name.to_lowercase().contains(&self.search.to_lowercase()))
-            .take(150)
-            .cloned()
-            .collect();
+        // Filtering happens in SQLite before LIMIT, so older matching files are searchable.
+        let visible: Vec<Asset> = self.assets.clone();
         let rows: Vec<AnyElement> = visible
             .into_iter()
             .enumerate()
@@ -224,7 +226,8 @@ impl Render for UploadDesk {
             })
             .collect();
 
-        let total = self.storage.count().unwrap_or(self.assets.len() as i64);
+        // Never access SQLite from the hot render path.
+        let total = self.total_count;
         let is_demo = self.config.mode == Mode::Demo;
 
         div()
@@ -255,6 +258,7 @@ impl Render for UploadDesk {
                             .label("上传工作台")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.image_only = false;
+                                view.reload();
                                 cx.notify();
                             })),
                     )
@@ -263,6 +267,7 @@ impl Render for UploadDesk {
                             .label("图片资源")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.image_only = true;
+                                view.reload();
                                 cx.notify();
                             })),
                     )
@@ -303,7 +308,7 @@ impl Render for UploadDesk {
                             .child(
                                 Button::new("choose-main")
                                     .primary()
-                                    .label("＋ 选择文件上传")
+                                    .label(if self.busy { "正在上传…" } else { "＋ 选择文件上传" })
                                     .on_click(cx.listener(|view, _, _, cx| view.select_files(cx))),
                             )
                             .child(if is_demo {
@@ -346,18 +351,27 @@ impl Render for UploadDesk {
                                     .label(if self.image_only { "显示全部" } else { "仅看图片" })
                                     .on_click(cx.listener(|view, _, _, cx| {
                                         view.image_only = !view.image_only;
+                                        view.reload();
                                         cx.notify();
                                     })),
                             ),
                     )
                     .child(
                         div()
+                            .id("asset-history")
                             .flex_1()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .overflow_y_scroll()
-                            .children(rows),
+                            .overflow_y_scrollbar()
+                            .children(rows)
+                            .when(self.assets.is_empty(), |container| {
+                                container.child(if self.search.is_empty() && !self.image_only {
+                                    "暂无上传记录，选择图片或附件开始"
+                                } else {
+                                    "没有找到符合条件的资源"
+                                })
+                            }),
                     )
                     .child(
                         div()

@@ -15,6 +15,10 @@ pub struct UploadResult {
 }
 
 pub fn upload(path: &Path, cfg: &Config, storage: &Storage) -> Result<UploadResult> {
+    // Fail before hashing large files when the account is not configured.
+    if cfg.mode == Mode::Yuque && cfg.creds.is_none() {
+        bail!("未配置语雀会话，请设置 YUQUE_USER_ID、YUQUE_CTOKEN 和 YUQUE_COOKIE");
+    }
     let metadata = std::fs::metadata(path).context("无法读取文件元数据")?;
     if !metadata.is_file() { bail!("只能上传普通文件"); }
     if metadata.len() == 0 { bail!("不支持空文件"); }
