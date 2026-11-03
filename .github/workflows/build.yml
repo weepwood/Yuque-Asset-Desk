@@ -1,4 +1,4 @@
-name: Cross-platform Rust desktop builds
+name: GPUI Kit native desktop builds
 
 on:
   workflow_dispatch:
@@ -6,11 +6,9 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'ui/**'
       - 'assets/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'build.rs'
       - '.github/workflows/build.yml'
   pull_request:
 
@@ -33,6 +31,9 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+      - name: Check CMake availability
+        if: runner.os == 'Windows'
+        run: cmake --version
       - name: Unit tests
         run: cargo test --target ${{ matrix.target }}
       - name: Release build
@@ -53,8 +54,8 @@ jobs:
             <key>CFBundleExecutable</key><string>yuque-asset-desk</string>
             <key>CFBundleName</key><string>Yuque Asset Desk</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>0.2.1</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>CFBundleShortVersionString</key><string>0.3.0</string>
+            <key>LSMinimumSystemVersion</key><string>15.0</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
