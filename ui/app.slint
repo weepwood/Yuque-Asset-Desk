@@ -72,7 +72,7 @@ component NavItem inherits Rectangle {
             height: 19px;
             border-radius: 2px;
             background: #65a5ff;
-            vertical-alignment: center;
+            
         }
     }
     hit := TouchArea { mouse-cursor: pointer; }
@@ -102,7 +102,7 @@ component AssetEntry inherits Rectangle {
             height: 43px;
             border-radius: 11px;
             background: root.asset.kind == "image" ? #214c68 : #35445a;
-            vertical-alignment: center;
+            
             Text {
                 width: parent.width;
                 height: parent.height;
@@ -114,7 +114,7 @@ component AssetEntry inherits Rectangle {
             }
         }
         VerticalLayout {
-            vertical-alignment: center;
+            
             horizontal-stretch: 1;
             spacing: 6px;
             Text { text: root.asset.name; color: #edf4ff; font-size: 13px; font-weight: 600; overflow: elide; }
@@ -236,7 +236,7 @@ export component MainWindow inherits Window {
                         Text { text: "当前存储目标"; font-size: 11px; color: #7f9dbc; }
                         HorizontalLayout {
                             spacing: 8px;
-                            Rectangle { width: 7px; height: 7px; border-radius: 4px; background: #66caa9; vertical-alignment: center; }
+                            Rectangle { width: 7px; height: 7px; border-radius: 4px; background: #66caa9;  }
                             Text { text: root.mode-label; color: #e5f2ff; font-weight: 700; overflow: elide; }
                         }
                         Text { text: root.account-text; font-size: 11px; color: #91a9c0; overflow: elide; }
@@ -269,7 +269,7 @@ export component MainWindow inherits Window {
                         border-radius: 17px;
                         border-width: 1px;
                         border-color: #2c5064;
-                        vertical-alignment: center;
+                        
                         HorizontalLayout {
                             padding-left: 12px;
                             spacing: 7px;
@@ -279,7 +279,7 @@ export component MainWindow inherits Window {
                                 border-radius: 4px;
                                 background: root.upload-active ? #f6c37b : #6ad3a9;
                                 animate background { duration: 160ms; easing: ease-out-quad; }
-                                vertical-alignment: center;
+                                
                             }
                             Text {
                                 text: root.upload-active ? "正在上传资源" : "桌面服务已就绪";
@@ -341,7 +341,7 @@ export component MainWindow inherits Window {
                             background: #214673;
                             border-width: 1px;
                             border-color: #4c75a5;
-                            vertical-alignment: center;
+                            
                             Rectangle {
                                 x: 16px; y: 16px;
                                 width: 110px; height: 110px;
