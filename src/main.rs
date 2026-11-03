@@ -375,7 +375,6 @@ impl Render for UploadDesk {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .overflow_y_scrollbar()
                             .children(rows)
                             .when(self.assets.is_empty(), |container| {
                                 container.child(if self.search.is_empty() && !self.image_only {
@@ -383,7 +382,8 @@ impl Render for UploadDesk {
                                 } else {
                                     "没有找到符合条件的资源"
                                 })
-                            }),
+                            })
+                            .overflow_y_scrollbar(),
                     )
                     .child(
                         div()
