@@ -5,212 +5,343 @@ mod format;
 mod storage;
 mod uploader;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-use anyhow::{Context, Result};
+
+use anyhow::{Context as _, Result};
 use directories::ProjectDirs;
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use gpui_kit::component::{
+    ActiveTheme as _, h_flex, v_flex,
+    button::{Button, ButtonVariants as _},
+    input::{Input, InputEvent, InputState},
+    scroll::ScrollableElement as _,
+};
+use gpui_kit::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use config::{Config, Mode};
 use storage::{Asset, Storage};
 
-slint::include_modules!();
+const MAX_QUEUE: usize = 128;
+const RECENT_LIMIT: usize = 300;
 
-fn db_path() -> Result<PathBuf> {
+fn data_path() -> Result<PathBuf> {
+    // Retain the same application identity and database location as the Slint build.
     let dirs = ProjectDirs::from("com", "Weepwood", "YuqueAssetDesk")
-        .context("无法找到当前系统的用户数据目录")?;
+        .context("找不到当前系统的应用数据目录")?;
     Ok(dirs.data_local_dir().join("assets.db"))
 }
 
-fn update_assets(ui: &MainWindow, storage: &Storage) -> Result<()> {
-    let search = ui.get_search_text();
-    let records = storage.recent(300, search.as_str())?;
-    let rows = records.iter().map(to_row).collect::<Vec<_>>();
-    ui.set_assets(ModelRc::new(VecModel::from(rows)));
-    ui.set_total_count(storage.count()?.min(i32::MAX as i64) as i32);
-    Ok(())
-}
-
-fn to_row(item: &Asset) -> AssetRow {
-    AssetRow {
-        name: item.name.clone().into(),
-        detail: format!("{} · {} · {}", size_label(item.bytes as u64), item.provider, item.created_at).into(),
-        url: item.url.clone().into(),
-        kind: item.category.clone().into(),
-        provider: item.provider.clone().into(),
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
     }
 }
 
-fn size_label(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 { format!("{:.1} MB", bytes as f64 / (1024 * 1024) as f64) }
-    else if bytes >= 1024 { format!("{:.1} KB", bytes as f64 / 1024.0) }
-    else { format!("{bytes} B") }
+struct Dashboard {
+    config: Config,
+    storage: Storage,
+    assets: Vec<Asset>,
+    total: i64,
+    status: String,
+    images_only: bool,
+    search_query: String,
+    search: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
+    queue: VecDeque<PathBuf>,
+    working: bool,
+    current_task: Option<Task<()>>,
 }
 
-fn set_status(ui: &MainWindow, message: impl AsRef<str>) {
-    ui.set_status_text(message.as_ref().into());
+impl Dashboard {
+    fn new(window: &mut Window, cx: &mut Context<Self>, config: Config, storage: Storage) -> Self {
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索上传历史..."));
+        let sub = cx.subscribe_in(&search, window, |this, input, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.search_query = input.read(cx).value().to_string();
+                cx.notify();
+            }
+        });
+        let (assets, total) = Self::load_records(&storage);
+        let status = match (&config.mode, &config.creds) {
+            (Mode::Demo, _) => "演示模式：只记录本机文件链接，不向网络上传".to_owned(),
+            (Mode::Yuque, Some(_)) => "语雀会话已加载，非公开上传接口仍需账号实测".to_owned(),
+            (Mode::Yuque, None) => "语雀模式未配置 Cookie / CSRF / 用户 ID".to_owned(),
+        };
+        Self {
+            config, storage, assets, total, status, images_only: false,
+            search_query: String::new(), search,
+            _subscriptions: vec![sub], queue: VecDeque::new(),
+            working: false, current_task: None,
+        }
+    }
+
+    fn load_records(storage: &Storage) -> (Vec<Asset>, i64) {
+        (storage.recent(RECENT_LIMIT, "").unwrap_or_default(), storage.count().unwrap_or(0))
+    }
+
+    fn reload(&mut self) {
+        let (assets, total) = Self::load_records(&self.storage);
+        self.assets = assets;
+        self.total = total;
+    }
+
+    fn pick_files(&mut self, cx: &mut Context<Self>) {
+        // Native modal picker: upload work never runs on the UI event thread.
+        let Some(files) = rfd::FileDialog::new()
+            .set_title("选择要上传的图片和附件")
+            .pick_files()
+        else { return; };
+        let available = MAX_QUEUE.saturating_sub(self.queue.len() + usize::from(self.working));
+        let selected = files.len().min(available);
+        self.queue.extend(files.into_iter().take(available));
+        self.status = if selected == 0 {
+            "队列已满，请在当前任务完成后重新选择".into()
+        } else {
+            format!("已添加 {selected} 个文件，上传队列依次处理")
+        };
+        self.run_next(cx);
+        cx.notify();
+    }
+
+    fn run_next(&mut self, cx: &mut Context<Self>) {
+        if self.working { return; }
+        let Some(path) = self.queue.pop_front() else { return; };
+        self.working = true;
+        self.status = format!("正在处理：{}", path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default());
+        let config = self.config.clone();
+        let storage = self.storage.clone();
+        self.current_task = Some(cx.spawn(async move |this, cx| {
+            // Synchronous SHA-256 and HTTP file streaming execute only on background workers.
+            let result = cx.background_spawn(async move {
+                uploader::upload(&path, &config, &storage)
+            }).await;
+            let _ = this.update(cx, |dashboard, cx| {
+                dashboard.working = false;
+                dashboard.status = match result {
+                    Ok(output) if output.duplicate => "已复用相同文件的历史链接".into(),
+                    Ok(output) if output.item.provider == "demo" => {
+                        "本地演示已记录，file:// 链接无法用于公开文章".into()
+                    },
+                    Ok(_) => "语雀返回了资源 URL，历史已保存".into(),
+                    Err(error) => format!("上传失败：{error}"),
+                };
+                dashboard.reload();
+                dashboard.run_next(cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn copy(&mut self, url: String, name: String, kind: String, markdown: bool, cx: &mut Context<Self>) {
+        let value = if markdown {
+            format::markdown(&name, &url, kind == "image")
+        } else { url };
+        self.status = match arboard::Clipboard::new().and_then(|mut c| c.set_text(value)) {
+            Ok(()) => if markdown { "已复制 Markdown 引用".into() } else { "已复制文件链接".into() },
+            Err(error) => format!("无法访问剪贴板：{error}"),
+        };
+        cx.notify();
+    }
+
+    fn matches(&self, item: &Asset) -> bool {
+        (!self.images_only || item.category == "image")
+            && (self.search_query.is_empty()
+                || item.name.to_lowercase().contains(&self.search_query.to_lowercase()))
+    }
+
+    fn mode_title(&self) -> &'static str {
+        match self.config.mode { Mode::Demo => "本地演示", Mode::Yuque => "语雀上传" }
+    }
+
+    fn row(&self, asset: &Asset, cx: &mut Context<Self>) -> impl IntoElement {
+        let item_id = asset.id;
+        let url = asset.url.clone();
+        let label = asset.name.clone();
+        let kind = asset.category.clone();
+        let url_md = url.clone();
+        let label_md = label.clone();
+        let kind_md = kind.clone();
+        h_flex()
+            .items_center()
+            .gap_3()
+            .p_3()
+            .rounded_lg()
+            .bg(cx.theme().secondary)
+            .child(
+                div()
+                    .w(px(38.))
+                    .h(px(38.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_lg()
+                    .bg(cx.theme().muted)
+                    .child(if kind == "image" { "▧" } else { "▤" })
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_ellipsis().child(label.clone()))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child(format!("{}  ·  {}  ·  {}", human_size(asset.bytes as u64), asset.provider, asset.created_at)))
+            )
+            .child(Button::new(format!("url-{item_id}")).label("复制 URL")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy(url.clone(), label.clone(), kind.clone(), false, cx);
+                })))
+            .child(Button::new(format!("markdown-{item_id}")).label("Markdown")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy(url_md.clone(), label_md.clone(), kind_md.clone(), true, cx);
+                })))
+    }
 }
 
-fn select_clipboard(row: AssetRow, markdown: bool) -> Result<()> {
-    let text = if markdown {
-        format::markdown(row.name.as_str(), row.url.as_str(), row.kind.as_str() == "image")
-    } else { row.url.to_string() };
-    arboard::Clipboard::new().context("无法访问系统剪贴板")?
-        .set_text(text).context("剪贴板写入失败")?;
-    Ok(())
+impl Render for Dashboard {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let shown = self.assets.iter().filter(|item| self.matches(item)).count();
+        let pending = self.queue.len() + usize::from(self.working);
+        let stats = h_flex()
+            .gap_3()
+            .child(stat_card("资源记录", self.total.to_string(), cx))
+            .child(stat_card("任务队列", pending.to_string(), cx))
+            .child(stat_card("存储目标", self.mode_title().to_owned(), cx));
+        let list = v_flex()
+            .id("asset-history")
+            .flex_1()
+            .min_h_0()
+            .gap_2()
+            .overflow_y_scrollbar()
+            .children(self.assets.iter().filter(|item| self.matches(item))
+                .map(|item| self.row(item, cx)));
+        h_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(
+                v_flex()
+                    .w(px(228.))
+                    .flex_shrink_0()
+                    .p_5()
+                    .gap_4()
+                    .bg(cx.theme().secondary)
+                    .child(div().text_xl().font_weight(FontWeight::BOLD).child("YUQUE  /  DESK"))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("GPUI KIT · NATIVE DESKTOP"))
+                    .child(Button::new("tab-all")
+                        .when(!self.images_only, |button| button.primary())
+                        .label("上传工作台")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.images_only = false;
+                            cx.notify();
+                        })))
+                    .child(Button::new("tab-images")
+                        .when(self.images_only, |button| button.primary())
+                        .label("图片资源")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.images_only = true;
+                            cx.notify();
+                        })))
+                    .child(div().flex_1())
+                    .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                        .child("无需 Chromium / WebView"))
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .p_6()
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                v_flex().gap_1()
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                                        .child("PERSONAL WORKSPACE / FILE UPLOAD"))
+                                    .child(div().text_2xl().font_weight(FontWeight::BOLD)
+                                        .child("资源上传与管理"))
+                            )
+                            .child(Button::new("refresh").label("刷新历史")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reload();
+                                    this.status = "历史记录已刷新".into();
+                                    cx.notify();
+                                })))
+                    )
+                    .child(
+                        v_flex().p_5().gap_3().rounded_xl().bg(cx.theme().secondary)
+                            .child(div().text_xl().font_weight(FontWeight::BOLD).child("让图片和文档链接触手可及"))
+                            .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                                .child("上传图片、PDF 或附件，复制原始地址或 Markdown 引用"))
+                            .child(Button::new("upload").primary().label("＋ 选择文件上传")
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))))
+                    )
+                    .child(stats)
+                    .child(
+                        h_flex().items_center().justify_between()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("最近资源  ·  {shown}")))
+                            .child(div().w(px(246.)).child(Input::new(&self.search).small()))
+                    )
+                    .child(
+                        v_flex().flex_1().min_h_0().p_2().rounded_xl().bg(cx.theme().background)
+                            .when(shown == 0, |container| container.child(
+                                div().p_6().text_color(cx.theme().muted_foreground)
+                                    .child("没有匹配的上传记录。使用上方按钮添加文件。")
+                            ))
+                            .child(list)
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if self.working { "● 上传中" } else { "● 就绪" })
+                            .child(self.status.clone())
+                    )
+            )
+    }
+}
+
+fn stat_card(title: &str, value: String, cx: &mut Context<Dashboard>) -> impl IntoElement {
+    v_flex()
+        .flex_1()
+        .gap_2()
+        .p_4()
+        .rounded_lg()
+        .bg(cx.theme().secondary)
+        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(title.to_owned()))
+        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(value))
 }
 
 fn main() -> Result<()> {
     let config = Config::from_env();
-    let storage = Storage::new(db_path()?)?;
-    let main = MainWindow::new()?;
-    let tray = AppTray::new()?;
-    let about = AboutWindow::new()?;
-    main.set_mode_label(match config.mode {
-        Mode::Demo => "本地演示 / 不上传网络".into(),
-        Mode::Yuque => "语雀 Web Session".into(),
+    let storage = Storage::new(data_path()?)?;
+    application().with_assets(assets::Assets).run(move |cx| {
+        init(cx);
+        let config = config.clone();
+        let storage = storage.clone();
+        let _ = open_window(WindowOptions::default(), cx, |window, cx| {
+            window.set_window_title("Yuque Asset Desk · GPUI Kit");
+            cx.new(|cx| Dashboard::new(window, cx, config, storage))
+        }).expect("无法创建 GPUI Kit 主窗口");
     });
-    main.set_account_text(match (&config.mode, &config.creds) {
-        (Mode::Demo, _) => "仅生成本地 file:// 链接".into(),
-        (Mode::Yuque, Some(auth)) => format!("用户 ID: {}", auth.user_id).into(),
-        (Mode::Yuque, None) => "未配置账号凭据".into(),
-    });
-    set_status(&main, match (&config.mode, &config.creds) {
-        (Mode::Demo, _) => "演示模式：不向语雀发送任何文件",
-        (Mode::Yuque, Some(_)) => "语雀配置已加载，上传接口尚需账号验证",
-        (Mode::Yuque, None) => "请先配置 YUQUE_USER_ID、YUQUE_CTOKEN、YUQUE_COOKIE",
-    });
-    update_assets(&main, &storage)?;
-
-    // Sequential worker minimizes idle memory and prevents duplicate uploads racing each other.
-    let (sender, receiver) = mpsc::channel::<PathBuf>();
-    let pending = Arc::new(AtomicUsize::new(0));
-    let worker_weak = main.as_weak();
-    let worker_storage = storage.clone();
-    let worker_config = config.clone();
-    let worker_pending = pending.clone();
-    thread::spawn(move || {
-        while let Ok(file_path) = receiver.recv() {
-            let display = file_path.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| "文件".into());
-            let weak_before = worker_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak_before.upgrade() {
-                    ui.set_upload_active(true);
-                    set_status(&ui, format!("正在处理：{display}"));
-                }
-            });
-            let result = uploader::upload(&file_path, &worker_config, &worker_storage);
-            let waiting = worker_pending.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
-            let weak_after = worker_weak.clone();
-            let storage_for_refresh = worker_storage.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak_after.upgrade() {
-                    ui.set_queue_count(waiting.min(i32::MAX as usize) as i32);
-                    ui.set_upload_active(waiting > 0);
-                    match result {
-                        Ok(out) => {
-                            let label = if out.duplicate { "去重成功，复用历史链接" }
-                                else if out.item.provider == "demo" { "已添加本地演示资源（非公网链接）" }
-                                else { "语雀返回上传地址，已写入 SQLite" };
-                            set_status(&ui, if waiting > 0 { format!("{label} · 队列剩余 {waiting} 项") } else { label.to_string() });
-                            if let Err(error) = update_assets(&ui, &storage_for_refresh) {
-                                set_status(&ui, format!("资源入库成功，但界面刷新失败：{error}"));
-                            }
-                        }
-                        Err(error) => set_status(&ui, format!("上传失败：{error}（队列剩余 {waiting} 项）")),
-                    }
-                }
-            });
-        }
-    });
-
-    let send_files = sender.clone();
-    let pick_weak = main.as_weak();
-    let pick_pending = pending.clone();
-    main.on_pick_files(move || {
-        // The native modal dialog is intentionally run on the UI thread, not the upload worker.
-        if let Some(files) = rfd::FileDialog::new().set_title("选择要上传的图片或附件").pick_files() {
-            let count = files.len();
-            for file in files {
-                pick_pending.fetch_add(1, Ordering::SeqCst);
-                if send_files.send(file).is_err() {
-                    pick_pending.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-            if let Some(ui) = pick_weak.upgrade() {
-                ui.set_queue_count(pick_pending.load(Ordering::SeqCst).min(i32::MAX as usize) as i32);
-                set_status(&ui, format!("已加入 {count} 个文件，依次上传"));
-            }
-        }
-    });
-
-    let search_weak = main.as_weak();
-    let search_db = storage.clone();
-    main.on_search_changed(move |text| {
-        if let Some(ui) = search_weak.upgrade() {
-            ui.set_search_text(text);
-            if let Err(err) = update_assets(&ui, &search_db) { set_status(&ui, format!("搜索失败：{err}")); }
-        }
-    });
-
-    let copy_weak = main.as_weak();
-    main.on_copy_url(move |index| {
-        if let Some(ui) = copy_weak.upgrade() {
-            if let Some(asset) = ui.get_assets().row_data(index as usize) {
-                match select_clipboard(asset, false) {
-                    Ok(()) => set_status(&ui, "已复制 URL（演示模式只适用于本机）"),
-                    Err(err) => set_status(&ui, format!("无法复制：{err}")),
-                }
-            }
-        }
-    });
-    let markdown_weak = main.as_weak();
-    main.on_copy_markdown(move |index| {
-        if let Some(ui) = markdown_weak.upgrade() {
-            if let Some(asset) = ui.get_assets().row_data(index as usize) {
-                match select_clipboard(asset, true) {
-                    Ok(()) => set_status(&ui, "已复制 Markdown 引用（演示模式只适用于本机）"),
-                    Err(err) => set_status(&ui, format!("无法复制：{err}")),
-                }
-            }
-        }
-    });
-
-    let hide_weak = main.as_weak();
-    main.on_hide_main(move || {
-        if let Some(ui) = hide_weak.upgrade() { let _ = ui.hide(); }
-    });
-    let help_weak = main.as_weak();
-    main.on_show_help(move || {
-        if let Some(ui) = help_weak.upgrade() {
-            set_status(&ui, "配置说明请查看压缩包中的 README.md；不要在聊天中分享 Cookie");
-        }
-    });
-
-    let about_weak = about.as_weak();
-    main.on_show_about(move || {
-        if let Some(dialog) = about_weak.upgrade() { let _ = dialog.show(); }
-    });
-    let about_close = about.as_weak();
-    about.on_close_about(move || {
-        if let Some(dialog) = about_close.upgrade() { let _ = dialog.hide(); }
-    });
-
-    let tray_open_weak = main.as_weak();
-    tray.on_open_main(move || {
-        if let Some(ui) = tray_open_weak.upgrade() { let _ = ui.show(); }
-    });
-    tray.on_quit_app(|| { let _ = slint::quit_event_loop(); });
-
-    main.show()?;
-    tray.show()?;
-    // One-shot entrance transition. Avoid any perpetual animation in idle state.
-    let ready_weak = main.as_weak();
-    slint::Timer::single_shot(Duration::from_millis(60), move || {
-        if let Some(ui) = ready_weak.upgrade() { ui.set_ui_ready(true); }
-    });
-    slint::run_event_loop()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_size;
+    #[test]
+    fn sizes() {
+        assert_eq!(human_size(500), "500 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+    }
 }

@@ -1,13 +1,12 @@
 [package]
 name = "yuque-asset-desk"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
-description = "Lightweight cross-platform Yuque asset uploader"
+description = "Native cross-platform Yuque upload and asset manager powered by GPUI Kit"
 license = "MIT"
-build = "build.rs"
 
 [dependencies]
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "system-tray", "compat-1-18"] }
+gpui-kit = "=0.9.0"
 anyhow = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls", "json"] }
@@ -20,11 +19,8 @@ arboard = { version = "3", default-features = false }
 mime_guess = "2"
 url = "2"
 
-[build-dependencies]
-slint-build = "=1.18.1"
-
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = "thin"
 codegen-units = 1
 panic = "abort"
