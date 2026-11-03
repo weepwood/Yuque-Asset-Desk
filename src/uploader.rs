@@ -162,6 +162,17 @@ fn find_string(node: &Value, keys: &[&str], depth: usize) -> Option<String> {
 mod tests {
     use super::*;
     #[test]
+    fn unconfigured_account_is_rejected_before_reading_file() {
+        let cfg = Config { mode: Mode::Yuque, creds: None, max_file_mb: 25 };
+        let base = std::env::temp_dir().join(format!("yuque-auth-{}", std::process::id()));
+        let db = Storage::new(base.join("db.sqlite")).unwrap();
+        let error = upload(Path::new("this-file-should-not-exist"), &cfg, &db).err().unwrap();
+        assert!(error.to_string().contains("未配置语雀会话"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn payload_extracts_nested_https_only() {
         let data = serde_json::json!({"data": {"url": "https://cdn.example.org/photo.png", "filekey":"foo"}});
         assert_eq!(find_url(&data, 0).as_deref(), Some("https://cdn.example.org/photo.png"));

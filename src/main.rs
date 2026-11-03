@@ -91,9 +91,6 @@ impl UploadDesk {
             Ok(items) => self.assets = items,
             Err(error) => self.status = format!("读取上传历史失败：{error}"),
         }
-        if let Ok(count) = self.storage.count() {
-            self.total_count = count;
-        }
     }
 
     fn select_files(&mut self, cx: &mut Context<Self>) {
@@ -135,6 +132,9 @@ impl UploadDesk {
                         Err(error) => format!("上传失败：{error}"),
                     });
                     view.reload();
+                    if let Ok(count) = view.storage.count() {
+                        view.total_count = count;
+                    }
                     if view.queue_count == 0 {
                         view.busy = false;
                     }
@@ -179,7 +179,15 @@ impl UploadDesk {
 }
 
 impl Render for UploadDesk {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Event-driven, short transition. Respects the OS reduced-motion preference.
+        let feedback_opacity = gpui_kit::base::transition(
+            ("upload-feedback", "opacity"),
+            if self.busy { 1.0f32 } else { 0.82f32 },
+            gpui_kit::base::Transition::new(std::time::Duration::from_millis(160)),
+            window,
+            cx,
+        );
         // Filtering happens in SQLite before LIMIT, so older matching files are searchable.
         let visible: Vec<Asset> = self.assets.clone();
         let rows: Vec<AnyElement> = visible
@@ -196,17 +204,18 @@ impl Render for UploadDesk {
                     .p_3()
                     .rounded_lg()
                     .bg(rgb(0x1a2b42))
+                    .hover(|style| style.bg(rgb(0x243b55)))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_1()
                             .flex_1()
-                            .child(asset.name.clone())
-                            .child(format!(
+                            .child(div().font_semibold().text_sm().truncate().child(asset.name.clone()))
+                            .child(div().text_sm().text_color(rgb(0x91a9c7)).truncate().child(format!(
                                 "{} · {} · {}",
                                 file_size(asset.bytes), asset.provider, asset.created_at
-                            )),
+                            ))),
                     )
                     .child(
                         Button::new(("url", index))
@@ -249,12 +258,12 @@ impl Render for UploadDesk {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child("YUQUE")
-                            .child("ASSET DESK"),
+                            .child(div().text_lg().font_bold().child("Yuque Asset Desk"))
+                            .child(div().text_sm().text_color(rgb(0x83a3c4)).child("轻量文件上传工作台")),
                     )
                     .child(
                         Button::new("upload-navigation")
-                            .primary()
+                            .selected(!self.image_only)
                             .label("上传工作台")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.image_only = false;
@@ -264,6 +273,7 @@ impl Render for UploadDesk {
                     )
                     .child(
                         Button::new("images-navigation")
+                            .selected(self.image_only)
                             .label("图片资源")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.image_only = true;
@@ -273,6 +283,7 @@ impl Render for UploadDesk {
                     )
                     .child(
                         Button::new("choose-sidebar")
+                            .disabled(self.busy)
                             .label("选择本地文件")
                             .on_click(cx.listener(|view, _, _, cx| view.select_files(cx))),
                     )
@@ -292,8 +303,8 @@ impl Render for UploadDesk {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child("PERSONAL WORKSPACE / FILE UPLOADER")
-                            .child("上传与管理"),
+                            .child(div().text_sm().text_color(rgb(0x7995b2)).child("PERSONAL WORKSPACE  /  UPLOAD CENTER"))
+                            .child(div().text_2xl().font_bold().child("上传与管理")),
                     )
                     .child(
                         div()
@@ -303,11 +314,12 @@ impl Render for UploadDesk {
                             .p_6()
                             .rounded_xl()
                             .bg(rgb(0x1c3860))
-                            .child("轻松上传，专注创作")
-                            .child("将图片和附件上传后，一键复制可用于文章的 Markdown 引用")
+                            .child(div().text_2xl().font_bold().child("轻松上传，专注创作"))
+                            .child(div().text_sm().text_color(rgb(0xc7d9f4)).child("将图片和附件上传后，一键复制可用于文章的 Markdown 引用"))
                             .child(
                                 Button::new("choose-main")
                                     .primary()
+                                    .disabled(self.busy)
                                     .label(if self.busy { "正在上传…" } else { "＋ 选择文件上传" })
                                     .on_click(cx.listener(|view, _, _, cx| view.select_files(cx))),
                             )
@@ -378,6 +390,7 @@ impl Render for UploadDesk {
                             .p_3()
                             .rounded_lg()
                             .bg(rgb(0x142b3e))
+                            .opacity(feedback_opacity)
                             .child(self.status.clone()),
                     ),
             )

@@ -29,6 +29,8 @@ impl Storage {
         }
         let storage = Self { path };
         let conn = storage.open()?;
+        // Journal mode is database-wide; set it once at initialization, not on each read.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS assets (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,8 +53,6 @@ impl Storage {
     fn open(&self) -> Result<Connection> {
         let conn = Connection::open(&self.path).with_context(|| format!("无法打开 SQLite: {}", self.path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        // WAL allows a future read-only UI connection during a writer transaction.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
         Ok(conn)
     }
 
@@ -135,6 +135,35 @@ mod tests {
         drop(storage);
         let _ = std::fs::remove_dir_all(base);
     }
+    #[test]
+    fn filters_in_sql_before_result_limit() {
+        let base = std::env::temp_dir().join(format!("yuque-filter-{}-{}", std::process::id(), rand_seed()));
+        let db = Storage::new(base.join("assets.db")).unwrap();
+        for index in 0..14 {
+            let is_first = index == 0;
+            db.insert_or_get(&NewAsset {
+                name: if is_first { "needle-image.png".into() } else { format!("recent-{index}.zip") },
+                bytes: 42,
+                category: if is_first { "image" } else { "attachment" }.into(),
+                provider: "demo".into(),
+                owner_id: "local".into(),
+                url: format!("file:///demo/{index}"),
+                sha256: format!("sha-{index}"),
+                filekey: "".into(),
+            }).unwrap();
+        }
+        assert_eq!(db.recent_filtered(5, "", false).unwrap().len(), 5);
+        let older = db.recent_filtered(5, "needle", false).unwrap();
+        assert_eq!(older.len(), 1);
+        assert_eq!(older[0].name, "needle-image.png");
+        let images = db.recent_filtered(5, "", true).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].category, "image");
+        assert_eq!(db.count().unwrap(), 14);
+        drop(db);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     fn rand_seed() -> u128 {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
