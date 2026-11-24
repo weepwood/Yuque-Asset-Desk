@@ -174,8 +174,25 @@ impl UploadDesk {
     }
 
     pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
-        if self.backup_busy || self.queue.busy || self.account.account_busy{return;}
-        let Some(parent)=rfd::FileDialog::new().set_title("选择相册备份位置").pick_folder() else{return;};
+        if self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy{return;}
+        self.picker_pending=true;
+        self.status="请选择相册备份位置…".into();cx.notify();
+        let selection=cx.prompt_for_paths(PathPromptOptions{files:false,directories:true,multiple:false,prompt:Some("选择备份位置".into())});
+        self.picker_task=Some(cx.spawn(async move|this,cx|{
+            let result=selection.await;
+            let _=this.update(cx,|v,cx|{
+                v.picker_pending=false;
+                match result{
+                    Ok(Ok(Some(mut paths))) if paths.len()==1=>v.export_album_to(paths.remove(0),cx),
+                    Ok(Ok(_))=>v.status="已取消备份位置选择".into(),
+                    Ok(Err(_))|Err(_)=>v.status="无法打开备份目录选择窗口，请重试".into(),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn export_album_to(&mut self,parent:PathBuf,cx:&mut Context<Self>){
         self.backup_busy=true;
         let storage=self.storage.clone();
         self.status="正在备份链接数据库与本地微缩图…".into();

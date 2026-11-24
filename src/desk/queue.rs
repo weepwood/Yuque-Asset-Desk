@@ -29,7 +29,7 @@ impl UploadDesk {
     }
 
     pub(super) fn retry_one(&mut self, id: i64, cx: &mut Context<Self>) {
-        if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
         match self.storage.retry_job(self.account.config.provider(), self.account.config.owner_id(), id) {
             Ok(Some(job)) => self.run_jobs(vec![job], cx),
             Ok(None) => { self.status = "该任务已完成或不属于当前账号".into(); cx.notify(); }
@@ -38,7 +38,7 @@ impl UploadDesk {
     }
 
     pub(super) fn acknowledge_job(&mut self, id:i64,cx:&mut Context<Self>) {
-        if self.backup_busy || self.queue.busy || self.account.account_busy {return;}
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {return;}
         match self.storage.acknowledge_unknown(self.account.config.provider(),self.account.config.owner_id(),id) {
             Ok(()) => {self.status="已记录核实结果；如需重新上传，请单独重试".into();
                 self.queue.recovery_count=self.storage.recoverable(self.account.config.provider(),self.account.config.owner_id()).map(|j|j.len()).unwrap_or(0);
@@ -49,12 +49,12 @@ impl UploadDesk {
     }
 
     pub(super) fn paste_files(&mut self, cx: &mut Context<Self>) {
-        if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
         let Some(item) = cx.read_from_clipboard() else {self.status="剪贴板没有可读取内容".into();cx.notify();return;};
         self.paste_item(item,cx);
     }
     pub(super) fn paste_item(&mut self,item:ClipboardItem,cx:&mut Context<Self>){
-        if self.backup_busy || self.queue.busy || self.account.account_busy {return;}
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {return;}
         let mut files = Vec::new();
         for entry in item.entries() {
             match entry {
@@ -93,7 +93,7 @@ impl UploadDesk {
     }
 
     pub(super) fn resume_jobs(&mut self, cx: &mut Context<Self>) {
-        if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
         match self.storage.recoverable(self.account.config.provider(), self.account.config.owner_id()) {
             Ok(jobs) => self.run_jobs(jobs, cx),
             Err(error) => { self.status = format!("读取任务失败：{error}"); cx.notify(); }
@@ -101,25 +101,32 @@ impl UploadDesk {
     }
 
     pub(super) fn select_files(&mut self, cx: &mut Context<Self>) {
-        if self.backup_busy || self.queue.busy || self.account.account_busy {
-            self.status = "正在上传，请等待当前队列完成".to_string();
-            cx.notify();
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {
             return;
         }
         if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() {
-            self.status = "请先配置语雀会话再上传".into();
-            cx.notify();
-            return;
+            self.status = "请先配置语雀会话再上传".into();cx.notify();return;
         }
-        let Some(files) = rfd::FileDialog::new()
-            .set_title("选择图片或附件")
-            .pick_files() else { return; };
-        self.start_upload(files, cx);
+        self.picker_pending=true;
+        self.status="请选择图片或附件…".into();cx.notify();
+        let selection=cx.prompt_for_paths(PathPromptOptions{files:true,directories:false,multiple:true,prompt:Some("选择文件".into())});
+        self.picker_task=Some(cx.spawn(async move|this,cx|{
+            let result=selection.await;
+            let _=this.update(cx,|v,cx|{
+                v.picker_pending=false;
+                match result{
+                    Ok(Ok(Some(files))) if !files.is_empty()=>v.start_upload(files,cx),
+                    Ok(Ok(_))=>v.status="已取消文件选择".into(),
+                    Ok(Err(_))|Err(_)=>v.status="无法打开文件选择窗口，请重试，或将文件拖入相册".into(),
+                }
+                cx.notify();
+            });
+        }));
     }
 
     pub(super) fn start_upload(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         if files.is_empty(){return;}
-        if self.backup_busy || self.queue.busy || self.account.account_busy {
+        if self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {
             self.status="当前任务处理中，本次拖入的文件未加入队列，请稍后重试".into();cx.notify();return;
         }
         if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() {
@@ -132,7 +139,7 @@ impl UploadDesk {
     }
 
     pub(super) fn run_jobs(&mut self, jobs: Vec<(i64, PathBuf)>, cx: &mut Context<Self>) {
-        if self.backup_busy || self.queue.busy || jobs.is_empty() || self.account.account_busy { return; }
+        if self.picker_pending || self.backup_busy || self.queue.busy || jobs.is_empty() || self.account.account_busy { return; }
         if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() { return; }
         let control = Arc::new(AtomicU8::new(0));
         self.queue.queue_control = control.clone();

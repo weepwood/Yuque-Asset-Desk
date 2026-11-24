@@ -101,7 +101,7 @@ impl UploadDesk {
             .child(div().h(px(1.)).bg(p.line))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("相册备份").child(div().text_xs().text_color(p.muted).child("保存本地资源索引与微缩图，不含凭据")))
-                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.backup_busy||self.queue.busy||self.account.account_busy)
+                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy)
                     .on_click(cx.listener(|v,_,_,cx|v.export_album(cx)))))
     }
     pub(super) fn gallery_toolbar(&self,narrow:bool,total:i64,is_demo:bool,w:&Window,cx:&mut Context<Self>)->impl IntoElement{
@@ -137,8 +137,8 @@ impl UploadDesk {
             .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").small().ghost().icon(IconName::Plus).tooltip("放大图片").disabled(self.resource.tile_size>=240.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();}))))
             .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").small().ghost().icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出图片墙"}else{"沉浸图片墙"}).on_click(cx.listener(|v,_,_,cx|{v.immersive=!v.immersive;cx.notify();}))))
             .when(self.immersive,|d|d.child(Button::new("native-fullscreen").small().ghost().icon(if w.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
-            .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
-            .child(Button::new("choose-main").small().primary().icon(IconName::Plus).label("上传").tooltip("选择文件").disabled(self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))));
+            .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
+            .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").small().primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));
         let title=if self.resource.favorites_only{"收藏"}else{match self.resource.category{"image"=>"图片","video"=>"视频","attachment"=>"附件",_=>"全部资源"}};
         div().id("drop-zone").flex().flex_col().gap(px(self.spacing().section)).pb_2()
             .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))

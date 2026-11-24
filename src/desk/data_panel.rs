@@ -10,7 +10,7 @@ fn record_deleted(storage:&Storage,owner:&str,confirmed_absent:bool)->bool{
 }
 
 impl UploadDesk{
-    fn data_idle(&self)->bool{!self.backup_busy&&!self.queue.busy&&!self.account.account_busy&&!self.data_scan_busy&&!self.resetting}
+    fn data_idle(&self)->bool{!self.picker_pending&&!self.backup_busy&&!self.queue.busy&&!self.account.account_busy&&!self.data_scan_busy&&!self.resetting}
     pub(super) fn refresh_data(&mut self,cx:&mut Context<Self>){
         if !self.data_idle(){return;}
         self.data_scan_busy=true;self.data_feedback="正在统计本地文件…".into();cx.notify();

@@ -3,7 +3,7 @@ use gpui_kit::component::Sizable;
 
 impl UploadDesk {
     pub(super) fn activate_account(&mut self, creds: Option<YuqueCredentials>, cx: &mut Context<Self>) {
-        if self.queue.busy || self.resetting { return; }
+        if self.picker_pending || self.queue.busy || self.resetting { return; }
         self.account.config.mode = if creds.is_some() { Mode::Yuque } else { Mode::Demo };
         self.account.config.creds = creds;
         self.account.identity=None; self.account.identity_status.clear();
@@ -30,7 +30,7 @@ impl UploadDesk {
     }
 
     pub(super) fn check_session(&mut self, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy || self.account.config.mode != Mode::Yuque { return; }
+        if self.picker_pending || self.queue.busy || self.account.account_busy || self.account.config.mode != Mode::Yuque { return; }
         let Some(creds) = self.account.config.creds.clone() else { return; };
         self.account.account_busy = true;
         self.account.session_status = "正在执行只读会话检查…".into();
@@ -69,7 +69,7 @@ impl UploadDesk {
     }
 
     fn identify_account(&mut self,cx:&mut Context<Self>){
-        if self.queue.busy||self.account.account_busy||self.backup_busy{return;}
+        if self.picker_pending || self.queue.busy||self.account.account_busy||self.backup_busy{return;}
         let token=self.account.account_token.read(cx).value().trim().to_string();
         let cookie=self.account.account_cookie.read(cx).value().trim().to_string();
         if token.is_empty()&&cookie.is_empty(){self.account.identity_status="请先填写个人 API Token 或网页 Cookie".into();cx.notify();return;}
@@ -92,7 +92,7 @@ impl UploadDesk {
     }
 
     pub(super) fn save_credentials(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy || self.backup_busy { return; }
+        if self.picker_pending || self.queue.busy || self.account.account_busy || self.backup_busy { return; }
         let token=self.account.account_token.read(cx).value().trim().to_string();
         let cookie=self.account.account_cookie.read(cx).value().trim().to_string();
         let csrf=self.account.account_csrf.read(cx).value().trim().to_string();
@@ -139,7 +139,7 @@ impl UploadDesk {
 
     pub(super) fn account_form(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
-        let busy=self.account.account_busy||self.queue.busy||self.backup_busy;
+        let busy=self.picker_pending||self.account.account_busy||self.queue.busy||self.backup_busy;
         let mut form=div().flex().flex_col().gap(px(self.spacing().section))
             .child(div().text_xs().text_color(p.muted).child("无需手动填写数字 ID。个人 API Token 仅用于识别账号，不保存；网页 Cookie 用于上传。"))
             .child(div().flex().items_center().justify_between()
@@ -176,7 +176,7 @@ impl UploadDesk {
     }
 
     pub(super) fn load_credentials(&mut self, owner: String, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy { return; }
+        if self.picker_pending || self.queue.busy || self.account.account_busy { return; }
         let task = cx.read_credentials(&YuqueCredentials::vault_key(&owner));
         self.account.account_busy = true;
         self.account.account_task = Some(cx.spawn(async move |this, cx| {

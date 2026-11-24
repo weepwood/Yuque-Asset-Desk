@@ -278,3 +278,48 @@ fn gallery_external_file_drop_uses_existing_queue(){
     assert_eq!(db.jobs("demo","local",None).unwrap().len(),1);
     drop(ui);drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn upload_picker_click_cancel_select_and_backup(){
+    let root=std::env::temp_dir().join(format!("yuque-picker-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let data=root.join("data");
+    let db=Storage::new(data.join("assets.db")).unwrap();
+    let source=root.join("fixture.png");
+    image::RgbImage::new(64,48).save(&source).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let db_view=db.clone();
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db_view))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("choose-main").unwrap();
+    ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.did_prompt_for_paths());
+    assert!(app.read(|cx|desk.read(cx).picker_pending));
+    app.update(|cx|desk.update(cx,|v,cx|{v.select_files(cx);v.export_album(cx);v.start_upload(vec![source.clone()],cx);}));
+    assert!(db.jobs("demo","local",None).unwrap().is_empty());
+    app.simulate_path_prompt_response(|options|{assert!(options.files&&options.multiple&&!options.directories);None});
+    app.run_until_parked();
+    assert!(!app.did_prompt_for_paths());
+    assert!(app.read(|cx|!desk.read(cx).picker_pending&&desk.read(cx).status.contains("已取消")));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("choose-main").unwrap();
+    ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    app.simulate_path_prompt_response(|_|Some(vec![source.clone()]));
+    app.run_until_parked();
+    let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
+    assert_eq!(items.len(),1);assert!(preview::cached_path(&data,&items[0]).is_file());
+    app.update(|cx|desk.update(cx,|v,cx|v.export_album(cx)));
+    app.run_until_parked();
+    app.simulate_path_prompt_response(|options|{assert!(!options.files&&!options.multiple&&options.directories);None});
+    app.run_until_parked();assert!(app.read(|cx|!desk.read(cx).picker_pending&&!desk.read(cx).backup_busy));
+    app.update(|cx|desk.update(cx,|v,cx|v.export_album(cx)));app.run_until_parked();
+    app.simulate_path_prompt_response(|_|Some(vec![root.clone()]));
+    app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).status.contains("相册备份成功")));
+    assert!(std::fs::read_dir(&root).unwrap().filter_map(|x|x.ok()).any(|x|x.file_name().to_string_lossy().starts_with("YuqueAlbum-")&&x.path().join("assets.db").exists()));
+    drop(ui);drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
+}

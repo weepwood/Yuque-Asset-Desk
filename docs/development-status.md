@@ -150,3 +150,8 @@
 - 核对语雀官方 yuque-open-cli README 和内置 OpenAPI 2.0.1 YAML（官方文档网页无法直接读取，使用官方仓库规格）。GET /api/v2/user，X-Auth-Token，data.id/name/login/type；拒绝 Group/未知类型。Token 仅用于识别，不持久化，不请求头像。Cookie-only 使用既有 /api/mine，保存时重新获取身份并核对，CSRF 自动提取及冲突检查，禁止错误 Token 静默降级。旧版系统凭据、任务及相册数据兼容。
 - 账号独立设置页、遮蔽输入框、识别反馈、官方 Token 获取入口；移除手填 ID。成功后保存原有 Cookie/CSRF 格式并清空输入。昵称/登录名为本次识别展示，不新增元数据持久化。验证失败保留输入用于修正，不写入账号索引；密钥库失败保留索引。
 - 本地常规 36 passed/1 ignored、QA 42 passed/1 ignored；真实回环请求验证认证头隔离、302/401/429，合成响应验证身份匹配/团队/缺失 ID/CSRF 冲突/Token 不序列化，原生空表单交互测试确认不入库。深浅与窄窗三张账号页实际渲染截图审查，浅色已识别状态使用虚构账号；窄窗低频管理需滚动。未用真实 Token/Cookie 调用语雀，未测试真实上传与 Windows 真机。V0.5.1 待双平台 CI，未发布。
+
+## V0.5.1 macOS 文件选择闪退修复（基线 fab3873）
+- 用户报告点击上传即闪退；本机未找到匹配的 macOS DiagnosticReports 或统一日志异常，未确认原崩溃堆栈。旧实现 rfd 同步 NSOpenPanel/runModal 与 GPUI 事件循环存在冲突风险，GPUI 原生实现已具备异步 completion 与 nil 防护。上传、备份两处改用 GPUI prompt_for_paths，移除 rfd/独占传递依赖（离线锁文件更新），新增 picker_pending 并处理取消、失败、重复触发、账号/清理/退出互斥。
+- 本地 cargo check --offline --all-targets、静态检查、QA 43 passed/1 ignored、QA build 通过。新增真实 GPUI 模拟点击和原生平台选择回调，验证取消后再选择、Demo 图片入库与永久微缩图、备份取消及成功、重复选择和期间入队拒绝。未使用真实语雀凭据。
+- scripts/picker_native_qa.py 在实际 macOS 进程中以隔离 Demo 打开上传和备份系统窗口；两者均观察到独立 880×448 原生面板及 1160×832 主窗口，9 秒后进程存活，GPUI 回调仍执行，未新增任务。第一次 5.5 秒观察未及时收到回调，延长后通过。测试进程由脚本终止，未实际用鼠标操作 Finder 或 Windows 真机。未替换已安装 v0.5.0；新候选待双平台 CI 与正式发布。

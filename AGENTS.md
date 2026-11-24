@@ -117,3 +117,8 @@
 - 依据语雀官方 CLI 内置 OpenAPI 2.0.1 规格 https://github.com/yuque/yuque-open-cli/blob/main/spec/yuque-openapi.yaml ，GET https://www.yuque.com/api/v2/user + X-Auth-Token 仅查询个人身份。解析 data.id/name/login，明确拒绝团队或无法确认个人类型的 Token；不下载头像、不持久化 API Token。
 - 独立账号页取消手填数字 ID。个人 API Token 可选；网页上传仍须 Cookie + CSRF，Cookie 中 yuque_ctoken 可自动提取，冲突则拒绝。保存必须重新查询当前输入对应身份，API Token 和 Cookie ID 不一致或任一必要查询失败不写入凭据。无 Token 仅查询既有 /api/mine。不会静默回退无效 Token。区分身份查询和上传授权，旧凭据编码/账号索引/数据库兼容。
 - 两种查询分离认证头、固定官方域名、禁止重定向、12s 超时、256KiB 响应上限、错误不包含请求密钥/响应正文。仅显式按钮触发请求；成功保存清空输入框，Cookie/CSRF 保持系统密钥库。测试只用合成数据与回环 HTTP，不使用真实语雀凭据；V0.5.0 已发布 Tag 不动，V0.5.1 候选待双平台 CI。
+
+## 文件选择窗口稳定性
+- 上传及备份必须使用 GPUI 原生异步 prompt_for_paths，不再使用 rfd 或在点击事件中同步运行 AppKit modal loop。GPUI macOS 实现对 NSOpenPanel 返回 nil 有保护。
+- picker_pending 阻止重复选择、上传/恢复、账号切换、数据清理及退出；取消/失败必须释放状态，不创建队列。备份选择仅允许单目录，上传仅允许文件多选。
+- QA 中实际点击按钮并模拟原生选择回调验证取消/重新打开/入库/微缩图/备份。macOS 可执行 scripts/picker_native_qa.py（先 cargo build --locked --features qa），隔离 Demo 测试实际系统窗口、进程存活及 GPUI 回调；不接触用户真实文件或凭据。

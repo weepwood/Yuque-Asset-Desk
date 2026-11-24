@@ -157,6 +157,8 @@ pub(crate) struct UploadDesk {
     inspector_open: bool,
     immersive:bool,
     status: String,
+    picker_pending: bool,
+    picker_task: Option<Task<()>>,
     backup_busy: bool,
     desktop_enabled:bool,
     prefs:preferences::Preferences,
@@ -202,14 +204,14 @@ impl UploadDesk {
         self.desktop_enabled=enabled;self.status=status;cx.notify();
     }
     pub(crate) fn desktop_quick_upload(&mut self,cx:&mut Context<Self>){
-        if self.queue.busy || self.backup_busy || self.account.account_busy{
+        if self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
             self.status="当前有任务正在处理，请稍后再操作".into();cx.notify();return;
         }
         self.paste_files(cx);
     }
     pub(crate) fn desktop_can_quit(&mut self,cx:&mut Context<Self>)->bool{
-        if self.queue.busy || self.backup_busy || self.account.account_busy{
-            self.status="请先等待上传或备份结束，再退出".into();cx.notify();false
+        if self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
+            self.status="请先关闭文件选择窗口或等待任务结束，再退出".into();cx.notify();false
         }else{true}
     }
 
@@ -349,6 +351,7 @@ impl UploadDesk {
             inspector_open: false,
             immersive:false,
             status,
+            picker_pending:false,picker_task:None,
             backup_busy:false,
             desktop_enabled:false,
             prefs,
@@ -390,6 +393,22 @@ impl UploadDesk {
             }
             view.reload(cx);
         });
+        #[cfg(feature="qa")]
+        if view.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some(){
+            if let Ok(kind)=std::env::var("YUQUE_QA_PICKER"){
+                if matches!(kind.as_str(),"upload"|"backup"){
+                    cx.spawn(async move|this,cx|{
+                        cx.background_executor().timer(std::time::Duration::from_millis(900)).await;
+                        let _=this.update(cx,|v,cx|{
+                            if kind=="upload"{v.select_files(cx);}else{v.export_album(cx);}
+                            eprintln!("PICKER requested={kind} pending={}",v.picker_pending);
+                        });
+                        cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+                        let _=this.update(cx,|v,_|eprintln!("PICKER alive pending={} status={}",v.picker_pending,v.status));
+                    }).detach();
+                }
+            }
+        }
         if std::env::var("YUQUE_KEYCHAIN_SMOKE").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && view.account.config.mode == Mode::Demo {
             view.keychain_smoke(cx);
         }
