@@ -2,7 +2,7 @@
 
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
-> **当前正式版本：[v0.5.0](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.0)。** v0.5.1 为开发候选，尚未发布。
+> **当前正式版本：[v0.5.1](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.1)。**
 
 ## 技术架构
 
@@ -38,7 +38,7 @@ cargo run --release
 
 语雀上传功能使用第三方逆向研究的非公开 Web API，不是语雀正式承诺的稳定接口。请仅使用自己的合法授权会话，并保留原文件。
 
-图形界面：设置 → 语雀账号 → 管理（v0.5.1 候选）。
+图形界面：设置 → 语雀账号 → 管理（v0.5.1）。
 - 可选填写 [个人访问 Token](https://www.yuque.com/settings/tokens) 并点击「识别账号」，通过官方 OpenAPI 获取 ID、昵称、登录名；不持久化个人 Token。
 - 填写自己的网页 Cookie；其中包含 yuque_ctoken 时无需另填 CSRF Token。点击「验证并保存账号」，重新验证网页会话并核对可选的个人 Token 所属 ID，避免错绑。没有个人 Token 时直接通过 Cookie 识别；网络或身份校验失败不保存。
 - 个人 API Token 不是网页上传凭据，不能单独上传。旧账号凭据格式、历史和数据库保持兼容。团队 Token 不用于个人上传。

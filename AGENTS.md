@@ -145,3 +145,8 @@
 - 截至本轮最后查询，macOS ARM64 job 138715498817 queued，未分配 runner，未报告代码失败。尚未取得该候选 DMG、原始 SHA256 或正式包启动证据；禁止创建 Tag/Release 直至双平台 CI 完成 success。后续下载同一 run 的 macOS artifact，verify-only、smoke_dmg.py 隔离启动，草稿核对四项资产 digest 后公开，重新下载核对并检查更新接口。不要重复触发 CI 或修改既有版本。仅 Windows x64/macOS ARM64。
 
 - V0.5.1 CI 更新：45470121925 attempt 1 的 macOS job 138715498817 被 GitHub 取消，无 runner、无构建步骤；检查注释明确为 hosted runner 未分配及 macOS arm64 容量限制，不是代码失败。仅重跑该 job，attempt 2 已建立（macOS 138727948374 queued，Windows 保留 success），候选 efe4ef9 不变，继续复用原始 Windows ZIP/sha256。证据位于 dist/release-audit-v0.5.1/。不重复触发完整工作流；通过 macOS CI、DMG 校验及正式启动后才发布。
+
+## V0.5.1 正式发布（2026-11-25）
+- Tag v0.5.1 固定 efe4ef9eb8e0f44b0f1914063257ddd2555c782f，CI 45470121925 attempt 2 双平台 success；正式 Release https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.1 ，2026-11-24T19:55:48Z 公开。不得移动 Tag 或替换资产。
+- Windows ZIP 9283648 bytes SHA256 c5b592e962ae7c0ebf4f7aa92e14817e849379962a7d11aec8cffe5860af7e42；macOS DMG 8887805 bytes SHA256 4b1bea16c7f49837561d503dac202f0f5067f9ac5339dfca04dbaa09509484b7。原始校验文件和 GitHub 四项资产 digest 一致，公开后重新下载验证通过。更新检查 Current("0.5.1")。
+- macOS CI 正式 DMG 只读挂载/复制/签名/架构/布局校验，隔离实际启动窗口1160×828、托盘正常；快捷键已被占用，正常降级 hotkey=false，不声称注册通过。未安装至 Applications、未使用真实凭据；Windows 真机、Apple 公证、真实上传未验收。证据 dist/release-audit-v0.5.1/。
