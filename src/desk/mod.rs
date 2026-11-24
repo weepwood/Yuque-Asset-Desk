@@ -2,6 +2,7 @@ mod account;
 pub(crate) mod design;
 mod workspace;
 mod updates;
+mod data_panel;
 mod album;
 mod image_cache;
 pub(crate) mod preferences;
@@ -161,6 +162,13 @@ pub(crate) struct UploadDesk {
     backup_task: Option<Task<()>>,
     update_state:crate::update::State,
     update_task:Option<Task<()>>,
+    data_page:bool,
+    data_usage:Option<crate::data_management::Usage>,
+    data_scan_busy:bool,
+    data_task:Option<Task<()>>,
+    data_feedback:String,
+    reset_armed:bool,
+    resetting:bool,
 
 }
 
@@ -171,7 +179,7 @@ impl UploadDesk {
         self.prefs.tile=self.resource.tile_size;self.prefs.oldest=self.resource.oldest;self.prefs.favorites=self.resource.favorites_only;self.prefs.dates=self.resource.group_dates;
         // Serialize the small SQLite write on the main thread after debounce.
         // A cancelled old task cannot overwrite the latest settings.
-        if self.isolated_qa(){return;}
+        if self.resetting || self.isolated_qa(){return;}
         self.prefs_task=Some(cx.spawn(async move|this,cx|{
             cx.background_executor().timer(std::time::Duration::from_millis(180)).await;
             _=this.update(cx,|v,cx|{if v.storage.save_preferences(&v.prefs.encode()).is_err(){v.status="保存个性化设置失败".into();cx.notify();}});
@@ -180,7 +188,7 @@ impl UploadDesk {
     fn isolated_qa(&self)->bool{
         cfg!(feature="qa")&&self.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some())
     }
-    pub(crate) fn flush_preferences(&self){if !self.isolated_qa(){let _=self.storage.save_preferences(&self.prefs.encode());}}
+    pub(crate) fn flush_preferences(&self){if !self.resetting && !self.isolated_qa(){let _=self.storage.save_preferences(&self.prefs.encode());}}
     #[cfg(feature="qa")]
     pub(crate) fn report_perf(&self,cx:&App){
         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF final loaded={} decoded_cache={} bound={}",self.resource.assets.len(),self.resource.image_cache.read(cx).len(),image_cache::MAX_IMAGES);}
@@ -344,6 +352,8 @@ impl UploadDesk {
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
+            data_page:false,data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
+            reset_armed:false,resetting:false,
 
         };
         cx.defer_in(window, |view, _window, cx| {
@@ -358,6 +368,7 @@ impl UploadDesk {
                         view.account_panel=true;view.inspector_open=false;
                         view.update_state=crate::update::State::Newer(crate::update::Available{version:"0.6.0".into(),page:crate::update::RELEASES.into(),package:Some((crate::update::RELEASES.into(),crate::update::RELEASES.into()))});
                     }
+                    Ok("data")=>{view.account_panel=true;view.inspector_open=false;view.data_page=true;view.refresh_data(cx);}
                     Ok("settings")=>{view.account_panel=true;view.inspector_open=false;}
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}

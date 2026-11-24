@@ -2,7 +2,7 @@ use super::*;
 
 impl UploadDesk {
     pub(super) fn activate_account(&mut self, creds: Option<YuqueCredentials>, cx: &mut Context<Self>) {
-        if self.queue.busy { return; }
+        if self.queue.busy || self.resetting { return; }
         self.account.config.mode = if creds.is_some() { Mode::Yuque } else { Mode::Demo };
         self.account.config.creds = creds;
         self.account.session_status = "尚未验证会话".into();
@@ -76,6 +76,10 @@ impl UploadDesk {
             Ok(creds) => creds,
             Err(error) => { self.status = error.to_string(); cx.notify(); return; }
         };
+        if self.storage.save_account(&creds.user_id).is_err(){
+            self.status="账号索引保存失败，未写入系统凭据".into();cx.notify();return;
+        }
+        self.account.saved_accounts=self.storage.accounts().unwrap_or_default();
         let key = YuqueCredentials::vault_key(&creds.user_id);
         let task = cx.write_credentials(&key, &creds.user_id, &creds.encode());
         self.account.account_csrf.update(cx, |input, cx| input.set_value("", window, cx));
@@ -87,15 +91,10 @@ impl UploadDesk {
                 view.account.account_busy = false;
                 match result {
                     Ok(()) => {
-                        match view.storage.save_account(&creds.user_id) {
-                            Ok(()) => {
-                                view.account.saved_accounts = view.storage.accounts().unwrap_or_default();
-                                view.activate_account(Some(creds), cx);
-                            }
-                            Err(_) => view.status = "凭据已保存在系统密钥库，但账号索引写入失败".into(),
-                        }
+                        view.account.saved_accounts = view.storage.accounts().unwrap_or_default();
+                        view.activate_account(Some(creds), cx);
                     }
-                    Err(_) => view.status = "系统密钥库写入失败；未使用明文存储".into(),
+                    Err(_) => view.status = "系统密钥库写入失败；保留账号索引供重试或清理，未使用明文存储".into(),
                 }
                 cx.notify();
             });
@@ -126,25 +125,4 @@ impl UploadDesk {
         cx.notify();
     }
 
-    pub(super) fn forget_account(&mut self, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy || self.account.config.mode != Mode::Yuque { return; }
-        let owner = self.account.config.owner_id().to_string();
-        let task = cx.delete_credentials(&YuqueCredentials::vault_key(&owner));
-        self.account.account_busy = true;
-        self.account.account_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            _ = this.update(cx, |view, cx| {
-                view.account.account_busy = false;
-                if result.is_ok() {
-                    if view.storage.forget_account(&owner).is_ok() {
-                        view.account.saved_accounts = view.storage.accounts().unwrap_or_default();
-                    }
-                    view.activate_account(None, cx);
-                    view.status = "已删除系统凭据，资源历史仍保留".into();
-                } else { view.status = "系统凭据删除失败".into(); }
-                cx.notify();
-            });
-        }));
-        cx.notify();
-    }
 }

@@ -158,3 +158,6 @@ V0.4.0 已发布版本保持不变。开发分支的 V0.5.0 聚焦内容优先�
 macOS ARM64：打开 DMG，将左侧应用拖到右侧 Applications，弹出磁盘映像，再从应用程序启动。安装包的应用图标、版本、签名和 Finder 布局由构建脚本核验。ad-hoc 签名不等于 Apple 公证。Windows x64：解压便携 ZIP，运行 EXE。两个产物均附 SHA256。旧版 v0.4.0 ZIP 保持不变。
 
 开发者可运行 `python3 scripts/generate_branding.py`（Pillow 11+，macOS 字体），重新生成自有图标和安装背景；macOS 打包使用 `python -m pip install -r scripts/requirements-dmg.txt`。
+
+### 存储与卸载
+设置 → 存储与数据 → 管理，可统计空间、打开数据目录、清理无引用暂存文件、删除已保存凭据或在备份后选择完全重置。普通卸载保留本地数据；永久微缩图不会被轻量清理删除。详细步骤、残留及安全限制见 [卸载与数据管理](docs/uninstall.md)。

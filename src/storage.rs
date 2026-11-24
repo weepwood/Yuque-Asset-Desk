@@ -93,6 +93,28 @@ impl Storage {
         self.open()?.execute("INSERT INTO desk_preferences(id,value) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET value=excluded.value",[value.to_string()])?;Ok(())
     }
 
+    /// Open without migrations/recovery so an exit helper cannot mutate task state.
+    pub fn existing(path:PathBuf)->Result<Self>{
+        let m=std::fs::symlink_metadata(&path)?;
+        anyhow::ensure!(m.is_file()&&!m.file_type().is_symlink(),"数据库不是普通文件");
+        Ok(Self{path})
+    }
+    pub fn unfinished_count(&self)->Result<u64>{
+        Ok(self.open()?.query_row("SELECT count(*) FROM upload_jobs WHERE state NOT IN ('done','cancelled')",[],|r|r.get(0))?)
+    }
+    pub fn local_references(&self)->Result<Vec<PathBuf>>{
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT path FROM upload_jobs")?;
+        let mut refs=stmt.query_map([],|r|r.get::<_,String>(0))?.map(|r|r.map(PathBuf::from)).collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt=conn.prepare("SELECT url FROM assets WHERE provider='demo'")?;
+        for row in stmt.query_map([],|r|r.get::<_,String>(0))?{
+            let raw=row?;
+            let url=url::Url::parse(&raw).context("本地资源链接格式不合法")?;
+            if url.scheme()=="file"{refs.push(url.to_file_path().map_err(|_|anyhow::anyhow!("无法解析本地资源路径"))?);}
+        }
+        Ok(refs)
+    }
+
     pub fn data_dir(&self) -> &std::path::Path {
         self.path.parent().unwrap_or_else(|| std::path::Path::new("."))
     }

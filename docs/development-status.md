@@ -132,3 +132,9 @@
 - 采用 dmgbuild 1.6.7、ds_store 1.3.4、mac_alias 2.2.4，固定安装布局（165,205 / 475,205），Applications 指向 /Applications。正式交付改为 Windows x64 ZIP、macOS ARM64 DMG 及各自 SHA256；更新检查优先 DMG、旧 ZIP 回退；CI 加入 assets/build.rs 路径触发。修复 verify-only 重写校验摘要问题；故意错误摘要测试确认拒绝且不重写。
 - 本地 QA 35 通过、1 公网测试默认忽略；正式非 QA Release 构建通过。初次 DMG 验证脚本错误假设背景在子目录，实际为卷根 .background.png，已修复并复验 DS_Store、背景实际引用、卷图标、App 图标/版本/架构/签名及 Applications 链接。最终 DMG 8716435 bytes SHA256 d940e67bbcec6d14fe2c5c951ad846731c5e750f7dae7deba87e2e582ac2e0df。独立 verify-only 成功；本地 dist/branding-release。scripts/smoke_dmg.py 从只读 DMG 复制至隔离目录、签名、窗口 1160×832、数据库、托盘/快捷键注册通过；有已知 sandbox_extension 非致命警告。首次 smoke 未显式启用隔离桌面集成，修正测试环境后成功。没有安装至用户 Applications，没有真实账号上传。
 - macOS 屏幕录制权限未授权，未捕获真实 Finder 窗口；仅审查实际背景 PNG、主图标与挂载后布局元数据，未宣称物理拖拽安装或 Gatekeeper 公证通过。Python pip 默认信任链错误，使用系统 /etc/ssl/cert.pem 保持 TLS 验证完成安装。旧候选 ebcd2d5 双平台 CI 45445083095 均通过，新候选仍需完整双平台 CI，未发布。
+
+## V0.5.0 存储管理与卸载辅助（基线 ecfc9f7）
+- 设置中的独立存储页提供实际逻辑文件大小、打开目录、后台统计、轻量清理、隐私清理、两阶段重置与卸载指引。复用 GPUI Kit Button、主题和 GPUI 原生确认提示。轻量清理只删除 clipboard 中哈希可核实且跨账号无任何任务/Demo 文件链接引用的普通文件；保留同名引用、未知文件、永久离线微缩图和外部文件。
+- 新账号先保存索引再写系统凭据，避免索引写入失败导致新的孤立凭据。已确认不存在才移除索引，失败保留；当前账号凭据删除也须确认。无法枚举旧版孤立凭据，未处理环境变量及浏览器凭据。
+- 重置须先处理所有账号未完成/失败/unknown 任务，提供备份入口、警告及二次确认。凭据处理失败不启动重置；助手等待实例锁、验证一次性标记、重检任务与索引、只删除明确管理文件。不递归删除根目录；未知文件、实例锁及错误报告保留；文件删除非事务性，失败可部分完成。卸载步骤见 docs/uninstall.md。
+- 本地 macOS ARM64 常规测试 33 passed/1 ignored、QA 39 passed/1 ignored，cargo check --locked --all-targets、静态检查、QA build 通过。真实 GPUI 交互测试点击存储入口、统计、第一阶段重置并确认数据库仍存在；测试部分凭据清理只用模拟索引，不读取真实系统凭据。scripts/data_reset_qa.py 独立进程隔离验证错误 token、unknown 阻止删除、等待实例锁、释放后删除及外部原图/备份/未知文件保留。7 张实际渲染截图（3 张新存储页与基础/设置图），深浅/窄窗审查通过，窄窗需滚动。未执行真实系统凭据删除、原生确认框完整端到端、Windows 真机卸载、最新正式包启动或实际磁盘占用统计。未修改用户实际数据目录。非致命 Cargo 全局缓存清理权限警告仍存在。

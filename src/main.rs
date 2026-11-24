@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod data_management;
 mod format;
 mod storage;
 mod uploader;
@@ -19,12 +20,19 @@ use gpui_kit::*;
 
 
 fn main() -> Result<()> {
-    let config = Config::from_env();
     let path = db_path()?;
+    let mut args=std::env::args().skip(1);
+    if args.next().as_deref()==Some("--reset-after-exit"){
+        let token=args.next().context("缺少重置授权")?;
+        anyhow::ensure!(args.next().is_none(),"重置参数无效");
+        return data_management::reset_helper(path,&token);
+    }
+    let config = Config::from_env();
     let parent = path.parent().context("缺少数据目录")?;
     std::fs::create_dir_all(parent)?;
     let instance = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(parent.join("instance.lock"))?;
     instance.try_lock().context("已有 Yuque Asset Desk 实例使用此数据目录")?;
+    anyhow::ensure!(!parent.join(data_management::REQUEST).exists(),"应用重置尚未完成；请等待清理结束");
     let storage = Storage::new(path)?;
     application()
         .with_assets(assets::Assets)

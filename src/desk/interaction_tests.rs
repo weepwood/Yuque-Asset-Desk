@@ -46,6 +46,17 @@ fn native_clicks_switch_resource_and_task_views() {
     assert_eq!(app.read(|cx|desk.read(cx).spacing().gap),10.);
     app.update(|cx|desk.update(cx,|v,_|v.flush_preferences()));
     assert!(!preferences::Preferences::decode(Storage::new(root.join("assets.db")).unwrap().preferences().unwrap()).comfortable);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("open-data-settings").unwrap();ui.simulate_click(bounds.center(),Modifiers::default());
+    app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).data_page));
+    assert!(app.read(|cx|desk.read(cx).data_usage.is_some()));
+    // Arm, but do not confirm a destructive operation. No credentials touched.
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("arm-reset").unwrap();ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).reset_armed));
+    assert!(root.join("assets.db").exists());
+
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);
 }

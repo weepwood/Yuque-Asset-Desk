@@ -98,3 +98,10 @@
 - 原创品牌资源在 assets/branding，使用 scripts/generate_branding.py 生成并提交；禁止引用第三方商业品牌图标或运行时请求图标。macOS ICNS 写入 .app/Contents/Resources 和 CFBundleIconFile；Windows 使用现有锁定 embed-resource 编译 EXE 的多尺寸 ICO 和 VERSIONINFO；macOS 托盘使用透明单色模板、Windows 彩色。
 - 从 V0.5.0 起正式产物仅 Windows x64 ZIP 与 macOS ARM64 DMG，均附原始 SHA256。DMG 由锁定 dmgbuild 及依赖生成固定 Finder 布局（640×420、应用左、Applications 右、真实符号链接），不用 GUI 自动化生成布局。应用 ad-hoc 签名，未 Apple 公证；不篡改系统安全设置。
 - scripts/package_release.py --verify-only 先比较已有 SHA256，不重写校验文件；DMG 校验 hdiutil、实际挂载、Info.plist、ICNS、arm64、签名、Applications 链接和 DS_Store 坐标；Windows ZIP 校验 CRC、PE x64、图标与版本资源类型。更新检查优先 DMG，旧 macOS ZIP 回退，仅开放固定仓库完整资产组合。
+
+## 存储管理与卸载安全
+- src/data_management.rs + src/desk/data_panel.rs 独立管理页。统计为已识别普通文件的逻辑大小，不计外部备份；后台扫描不访问语雀。
+- 轻量清理只允许 clipboard 中名称与实际 SHA256 一致、未被所有账号任何任务/本地 Demo 链接引用的普通文件；保守保护同名引用、拒绝符号链接/重解析子目录，不递归删除，不删除永久微缩图、旧版预览、用户原始文件或外部备份。所有删除均须显式确认，清理期间禁用上传。
+- 保存凭据先登记账号索引；清理只处理索引和当前账号键，确认系统凭据不存在后才删除索引，失败保留索引。历史未索引孤立凭据、环境变量、浏览器 Cookie 不自动处理。删除当前账号也必须确认。
+- 完全重置需备份引导与二次确认，阻止所有账号未完成/失败/待核实任务；凭据失败停止。退出辅助进程通过一次性标记和实例锁等待退出，重新核验任务/账号，只删除明确管理文件，不递归删除根目录。未知文件、实例锁、失败报告保留；非事务性删除，失败可部分完成。详见 docs/uninstall.md。
+- 仅隔离测试数据；scripts/data_reset_qa.py 为 macOS QA 进程锁及重置回归，不用于真实目录。Windows 仍须 CI/真机验证。不使用真实语雀凭据或删除实际用户数据。
