@@ -1,7 +1,7 @@
 """Create versioned, inspectable desktop ZIPs. macOS ad-hoc signed, not notarized."""
 import argparse, hashlib, pathlib, plistlib, re, shutil, subprocess, zipfile
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-VERSION=re.search(r'^version = "([^"]+)"', (ROOT/'Cargo.toml').read_text(),re.M)[1]
+VERSION=re.search(r'^version = "([^"]+)"', (ROOT/'Cargo.toml').read_text(encoding="utf-8"),re.M)[1]
 TARGETS={'aarch64-apple-darwin','x86_64-apple-darwin','x86_64-pc-windows-msvc'}
 def verify(path,target):
     with zipfile.ZipFile(path) as z:

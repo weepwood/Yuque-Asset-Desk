@@ -85,3 +85,4 @@
 - 已统一 Cargo 版本 0.4.0、锁文件及 CHANGELOG；重构三平台 CI 打包，macOS ARM64/Intel ad-hoc 签名 app ZIP，Windows x64 便携 exe ZIP；每个归档附 SHA256，发布前按候选 SHA 核验。
 - 真实 GPUI 截图目录 dist/qa，重点 album-immersive.png 和 resources-dark.png；未验证系统全屏物理点击、托盘点击、全局键实际触发、通知送达。当前 AXIsProcessTrusted=false，不修改权限。不使用真实凭据。
 - 本地候选与远端 CI 进度需以 git/gh 实际状态为准；正式 Release 需三个架构全部通过并校验资产后执行。暂无开发者签名/公证证书，不声称 macOS 可无 Gatekeeper 提示安装。
+- 候选 2eed0fd 的 CI 45430828149 Windows job 138575344377 在 Static checks 失败：原始日志确认 Python 默认 charmap 解码中文源文件报 UnicodeDecodeError；静态检查/版本读取改为显式 UTF-8。需检查新提交的全部三平台结果，不使用旧候选产物。
