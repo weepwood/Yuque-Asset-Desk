@@ -15,7 +15,7 @@ impl UploadDesk {
                 nodes.insert(path.clone());
             }
         }
-        let mut tree=div().flex().flex_col().gap_1()
+        let mut tree=div().flex().flex_col().gap(px(self.spacing().nav))
             .child(SidebarMenuItem::new("标签").icon(if self.resource.tags_expanded{IconName::ChevronDown}else{IconName::ChevronRight})
                 .on_click(cx.listener(|v,_,_,cx|{v.resource.tags_expanded=!v.resource.tags_expanded;cx.notify();})).render("tags-toggle",w,cx));
         if self.resource.tags_expanded {
@@ -92,7 +92,7 @@ impl UploadDesk {
     }
 
     pub(super) fn inspector(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = div().id("inspector").h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad)).when(!narrow && !self.account_panel, |d| d.w(px(design::INSPECTOR_W)).flex_shrink_0()).when(narrow || self.account_panel, |d| d.w_full())
+        let mut panel = div().id("inspector").h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad)).when(!narrow && !self.account_panel, |d| d.w(px(self.spacing().inspector)).flex_shrink_0()).when(narrow || self.account_panel, |d| d.w_full())
             .bg(if self.account_panel{self.palette().canvas}else{self.palette().sidebar})
             .when(!self.account_panel,|d|d.border_l_1().border_color(self.palette().line));
         if self.account_panel && self.account_page {
@@ -121,10 +121,10 @@ impl UploadDesk {
         } else if let Some(asset) = &self.resource.selected_asset {
             let url_asset = asset.clone();
             let md_asset = asset.clone();
-            panel = panel.child(div().flex().items_center().justify_between().child(div().text_size(px(design::TITLE_SIZE)).font_semibold().child("详情"))
+            panel = panel.child(div().flex().items_center().justify_between().child(div().text_size(px(self.spacing().title)).font_semibold().child("详情"))
                 .child(Button::new("close-inspector").ghost().small().icon(IconName::PanelRightClose).tooltip("关闭详情").on_click(cx.listener(|v,_,_,cx|{v.inspector_open=false;cx.notify();}))));
             if asset.category=="image"{
-                panel=panel.child(div().h(px(184.)).w_full().rounded(px(design::CONTROL_RADIUS)).overflow_hidden().bg(self.palette().subtle).flex().items_center().justify_center()
+                panel=panel.child(div().h(px(if self.prefs.comfortable{208.}else{184.})).w_full().rounded(px(design::CONTROL_RADIUS)).overflow_hidden().bg(self.palette().subtle).flex().items_center().justify_center()
                     .child(if let Some(path)=&self.resource.thumbnail_path{img(path.clone()).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element()}else{div().text_xs().text_color(self.palette().muted).child(if self.resource.preview_loading{"读取本地预览…"}else{"无本地预览"}).into_any_element()}))
                     .child(Button::new("large-preview").small().ghost().icon(IconName::Maximize).label("沉浸式预览").disabled(self.resource.preview_loading).on_click(cx.listener(|v,_,_,cx|v.open_large_preview(cx))));
                 if self.resource.thumbnail_path.is_none()&&!self.resource.preview_loading{
@@ -132,11 +132,12 @@ impl UploadDesk {
                     if let Some(error)=&self.resource.preview_error{panel=panel.child(div().text_xs().text_color(self.palette().error).child(error.clone()));}
                 }
             }
-            panel=panel.child(div().font_semibold().child(asset.name.clone()))
-                .child(div().text_xs().text_color(self.palette().muted).child(format!("{} · {}",asset.category,file_size(asset.bytes))))
+            panel=panel.child(div().flex().flex_col().gap(px(if self.prefs.comfortable{6.}else{self.spacing().section}))
+                .child(div().font_semibold().child(asset.name.clone()))
+                .child(div().text_xs().text_color(self.palette().muted).child(format!("{} · {}",asset.category,file_size(asset.bytes)))))
                 .child(Button::new("detail-url").primary().icon(IconName::Copy).label("复制链接")
                     .on_click(cx.listener(move |view, _, w, cx| view.copy_asset(&url_asset, false,w,cx))))
-                .child(div().flex().gap_2()
+                .child(div().flex().flex_wrap().gap(px(self.spacing().control))
                     .child(Button::new("detail-open").small().ghost().label(if asset.provider=="demo" {"打开文件"} else {"浏览器打开"}).on_click(cx.listener(|v,_,_,cx|v.open_selected_resource(cx))))
                     .child(Button::new("detail-md").small().ghost().label("Markdown").on_click(cx.listener(move |view, _, w, cx| view.copy_asset(&md_asset, true,w,cx)))))
                 .child(div().h(px(1.)).bg(self.palette().line))
@@ -194,7 +195,7 @@ impl UploadDesk {
                     let menu_asset=asset.clone();
                     let weak=cx.weak_entity();
                     return div().id(("album-tile",index)).debug_selector(move||format!("tile-{index}")).relative().flex().flex_col()
-                        .w(px(tile_width)).h(px(tile_image_height+album::TILE_FOOTER)).flex_shrink_0()
+                        .w(px(tile_width)).h(px(tile_image_height+self.spacing().footer)).flex_shrink_0()
                         .on_hover(cx.listener(move |v,hovered:&bool,_,cx|{
                             let old=v.resource.hover_asset;
                             if *hovered {v.resource.hover_asset=Some(asset_id);}
@@ -223,7 +224,7 @@ impl UploadDesk {
                                     .child(Button::new(("grid-copy",index)).ghost().xsmall().icon(IconName::Copy).tooltip("复制原始链接")
                                         .on_click(cx.listener(move|v,_,w,cx|v.copy_asset(&url_asset,false,w,cx)))))))
                             .when(starred && !hovered && !checked && !selected,|d|d.child(div().absolute().top(px(6.)).right(px(6.)).p_1().rounded_sm().bg(palette.surface).text_color(palette.accent).child(IconName::StarFill))))
-                        .child(div().h(px(album::TILE_FOOTER)).flex().items_center().text_size(px(design::CAPTION_SIZE)).text_color(if selected||checked{palette.accent}else{palette.muted}).truncate().child(asset.name.clone()))
+                        .child(div().h(px(self.spacing().footer)).flex().items_center().text_size(px(self.spacing().caption)).text_color(if selected||checked{palette.accent}else{palette.muted}).truncate().child(asset.name.clone()))
                         .context_menu(move|menu,_,_|super::workspace::asset_menu(menu,weak.clone(),menu_asset.clone(),starred,checked))
                         .into_any_element();
                 }
@@ -313,7 +314,7 @@ impl Render for UploadDesk {
             }
         }
         let narrow = window.viewport_size().width < px(1000.);
-        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else if narrow {design::SIDEBAR_NARROW} else {design::SIDEBAR_W} - if !self.immersive && !narrow && self.inspector_open {design::INSPECTOR_W} else {0.} - 2.*self.spacing().pad;
+        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else {self.spacing().sidebar_width(narrow)} - if !self.immersive && !narrow && self.inspector_open {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         let gallery=if masonry_mode{
@@ -341,11 +342,11 @@ impl Render for UploadDesk {
             let mut first=usize::MAX;let mut last=0;
             // Tile start positions are monotonic; skip all earlier tiles except
             // the longest possible overlapping card.
-            let max_height=self.resource.tile_size.max(240.)*5.+album::TILE_FOOTER;
+            let max_height=self.resource.tile_size.max(240.)*5.+self.spacing().footer;
             let from=plan.tiles.partition_point(|t|t.y<lo-max_height);
             for t in &plan.tiles[from..]{
                 if t.y>hi{break;}
-                if t.y+t.height+album::TILE_FOOTER<lo{continue;}
+                if t.y+t.height+self.spacing().footer<lo{continue;}
                 first=first.min(t.index);last=last.max(t.index+1);
                 if let Some(asset)=self.resource.assets.get(t.index){
                     wall=wall.child(div().absolute().left(px(t.x)).top(px(t.y)).w(px(t.width))
@@ -444,11 +445,11 @@ impl Render for UploadDesk {
         }
         let show_inspector = !self.account_panel && !self.immersive && self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
         let show_center = !narrow || !show_inspector;
-        let detail_width=(f32::from(window.viewport_size().width)-design::SIDEBAR_NARROW).max(0.);
+        let detail_width=(f32::from(window.viewport_size().width)-self.spacing().sidebar_width(true)).max(0.);
         div()
             .flex()
             .size_full()
-            .text_size(px(design::BODY_SIZE))
+            .text_size(px(self.spacing().body))
             .bg(self.palette().canvas)
             .text_color(self.palette().text)
             .when(!self.immersive,|root|root.child(self.navigation(narrow,window,cx)))
@@ -508,7 +509,8 @@ impl Render for UploadDesk {
                             })
                             .overflow_hidden(),
                     )
-                    .child(
+                    .child(div().flex().flex_col().gap(px(if self.prefs.comfortable{6.}else{self.spacing().section}))
+                      .child(
                         div().flex().items_center().justify_between().gap_2().text_xs().text_color(self.palette().muted)
                             .child(div().flex_1().min_w(px(0.)).truncate().child(format!("{} 项 · 共 {}",self.resource.assets.len(),self.resource.total_count)))
                             .when(!self.queue.busy && self.queue.recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.queue.recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.jobs_page=true;v.account_panel=false;v.inspector_open=false;v.immersive=false;v.refresh_jobs(cx);cx.notify();}))))
@@ -524,7 +526,7 @@ impl Render for UploadDesk {
                             .px_1().text_xs().text_color(self.palette().muted)
                             .opacity(feedback_opacity)
                             .child(self.status.clone()),
-                    ),
+                    )),
             ))
             .when(show_inspector, |d| d.child(div().min_w(px(0.)).h_full().overflow_hidden().when(narrow, |d| d.w(px(detail_width)).flex_shrink_0()).opacity(inspector_opacity).child(self.inspector(narrow,cx))))
             .into_any_element()

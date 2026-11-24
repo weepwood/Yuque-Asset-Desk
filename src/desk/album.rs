@@ -61,8 +61,7 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
 #[derive(Clone,Debug)]
 pub(super) struct MasonryTile {pub index:usize,pub id:i64,pub x:f32,pub y:f32,pub width:f32,pub height:f32}
 #[derive(Clone,Debug,Default)]
-pub(super) struct MasonryPlan {pub tiles:Vec<MasonryTile>,pub days:Vec<(String,f32)>,pub height:f32}
-pub(super) const TILE_FOOTER:f32=24.;
+pub(super) struct MasonryPlan {pub tiles:Vec<MasonryTile>,pub days:Vec<(String,f32)>,pub height:f32,pub footer:f32}
 
 /// Shortest-column packing. Each date starts a new section, not a row.
 pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,dates:bool,spacing:Spacing)->MasonryPlan {
@@ -70,7 +69,7 @@ pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>
     let width=width.max(160.);
     let cols=((width+gap)/(target.clamp(96.,240.)+gap)).floor().max(1.) as usize;
     let w=(width-(cols-1) as f32*gap)/cols as f32;
-    let mut bottom=vec![0f32;cols];let mut result=MasonryPlan::default();let mut last=None;
+    let mut bottom=vec![0f32;cols];let mut result=MasonryPlan{footer:spacing.footer,..Default::default()};let mut last=None;
     for (index,a) in assets.iter().enumerate(){
         let day=a.created_at.get(..10).unwrap_or("未知日期");
         if dates && last!=Some(day){
@@ -82,14 +81,14 @@ pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>
         let h=(w/ratio).clamp(60.,w*3.);
         let y=bottom[col];
         result.tiles.push(MasonryTile{index,id:a.id,x:col as f32*(w+gap),y,width:w,height:h});
-        bottom[col]=y+h+TILE_FOOTER+gap;
+        bottom[col]=y+h+spacing.footer+gap;
     }
     result.height=bottom.into_iter().fold(0.,f32::max);
     result
 }
 impl MasonryPlan{
     pub fn anchor(&self,top:f32)->Option<(i64,f32)>{
-        self.tiles.iter().filter(|t|t.y+t.height+TILE_FOOTER>top).min_by(|a,b|a.y.total_cmp(&b.y)).map(|t|(t.id,top-t.y))
+        self.tiles.iter().filter(|t|t.y+t.height+self.footer>top).min_by(|a,b|a.y.total_cmp(&b.y)).map(|t|(t.id,top-t.y))
     }
     pub fn restore(&self,anchor:Option<(i64,f32)>)->Option<f32>{
         let (id,delta)=anchor?;
@@ -129,7 +128,7 @@ mod tests{
         for t in &plan.tiles{
             assert!(t.x+t.width<=800.1);
             assert!(t.y>=*bottoms.get(&t.x.to_bits()).unwrap_or(&0.));
-            bottoms.insert(t.x.to_bits(),t.y+t.height+TILE_FOOTER);
+            bottoms.insert(t.x.to_bits(),t.y+t.height+spacing.footer);
         }
         let anchor=plan.anchor(2000.).unwrap();
         let next=masonry(&items,&ratios,620.,148.,true,Spacing::new(!comfortable));

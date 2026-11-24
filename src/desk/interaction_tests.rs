@@ -323,3 +323,30 @@ fn upload_picker_click_cancel_select_and_backup(){
     assert!(std::fs::read_dir(&root).unwrap().filter_map(|x|x.ok()).any(|x|x.file_name().to_string_lossy().starts_with("YuqueAlbum-")&&x.path().join("assets.db").exists()));
     drop(ui);drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn comfort_toolbar_fits_minimum_window_and_preserves_density(){
+    let root=std::env::temp_dir().join(format!("yuque-comfort-min-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(720.),px(600.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    let density=app.read(|cx|desk.read(cx).resource.tile_size);
+    for comfortable in [true,false,true]{
+        app.update(|cx|desk.update(cx,|v,cx|v.set_comfortable(comfortable,cx)));
+        ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+        let bounds=ui.debug_bounds("choose-main").unwrap();
+        assert!(bounds.origin.x>=px(150.)&&bounds.origin.x+bounds.size.width<=px(720.),"{bounds:?}");
+        assert!(bounds.origin.y>=px(0.)&&bounds.origin.y+bounds.size.height<=px(600.),"{bounds:?}");
+        assert_eq!(app.read(|cx|desk.read(cx).resource.tile_size),density);
+        assert_eq!(app.read(|cx|desk.read(cx).spacing().gap),if comfortable{24.}else{10.});
+        ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+        assert!(app.did_prompt_for_paths());
+        app.simulate_path_prompt_response(|_|None);app.run_until_parked();
+    }
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}

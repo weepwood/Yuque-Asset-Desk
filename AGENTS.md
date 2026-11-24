@@ -122,3 +122,7 @@
 - 上传及备份必须使用 GPUI 原生异步 prompt_for_paths，不再使用 rfd 或在点击事件中同步运行 AppKit modal loop。GPUI macOS 实现对 NSOpenPanel 返回 nil 有保护。
 - picker_pending 阻止重复选择、上传/恢复、账号切换、数据清理及退出；取消/失败必须释放状态，不创建队列。备份选择仅允许单目录，上传仅允许文件多选。
 - QA 中实际点击按钮并模拟原生选择回调验证取消/重新打开/入库/微缩图/备份。macOS 可执行 scripts/picker_native_qa.py（先 cargo build --locked --features qa），隔离 Demo 测试实际系统窗口、进程存活及 GPUI 回调；不接触用户真实文件或凭据。
+
+## V0.5.1 舒适模式视觉密度
+- design::Spacing 是唯一密度来源：舒适模式 pad/gap/day/section/row/nav=32/24/44/22/20/10，紧凑保持 16/10/28/8/12/4；footer 32/24、宽窗 sidebar 200/184、inspector 320/280，窄窗 sidebar 150。主标题 21/18、正文 14/13、图片名 12/11。绘制、虚拟布局宽度、瀑布流页脚和锚点必须共用参数；不改变已存图片尺寸。
+- 舒适工具栏标题分离，Medium 按钮及响应式搜索换行；窄窗短标题，详情相关属性及账号字段标签局部归组。最小 720×600 双密度实际 GPUI 点击上传和取消回归必须通过，避免新 UI 破坏 1c25eac 异步文件选择修复。

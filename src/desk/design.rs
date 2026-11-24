@@ -1,25 +1,20 @@
 //! Shared visual language for the workbench, independent of business state.
 use gpui_kit::*;
 use gpui_kit::component::theme::{Theme,ThemeMode};
-pub(super) const SIDEBAR_W:f32=184.;
-pub(super) const SIDEBAR_NARROW:f32=150.;
 
 pub(super) const CONTROL_RADIUS:f32=6.;
 pub(super) const FEEDBACK_MS:u64=160;
-pub(super) const INSPECTOR_W:f32=280.;
 
-pub(super) const TITLE_SIZE:f32=18.;
-pub(super) const BODY_SIZE:f32=13.;
-pub(super) const CAPTION_SIZE:f32=11.;
 #[derive(Clone,Copy)]
 pub(super) struct Spacing{
-    pub pad:f32,pub gap:f32,pub day:f32,pub section:f32,pub row:f32,pub nav:f32,
+    pub pad:f32,pub gap:f32,pub day:f32,pub section:f32,pub row:f32,pub nav:f32,pub sidebar:f32,pub inspector:f32,pub nav_pad:f32,pub footer:f32,pub title:f32,pub body:f32,pub caption:f32,pub control:f32,
 }
 impl Spacing{
     pub fn new(comfortable:bool)->Self{
-        if comfortable{Self{pad:24.,gap:16.,day:36.,section:16.,row:16.,nav:6.}}
-        else{Self{pad:16.,gap:10.,day:28.,section:8.,row:12.,nav:4.}}
+        if comfortable{Self{pad:32.,gap:24.,day:44.,section:22.,row:20.,nav:10.,sidebar:200.,inspector:320.,nav_pad:12.,footer:32.,title:21.,body:14.,caption:12.,control:8.}}
+        else{Self{pad:16.,gap:10.,day:28.,section:8.,row:12.,nav:4.,sidebar:184.,inspector:280.,nav_pad:8.,footer:24.,title:18.,body:13.,caption:11.,control:4.}}
     }
+    pub fn sidebar_width(self,narrow:bool)->f32{if narrow{150.}else{self.sidebar}}
 }
 #[derive(Clone,Copy)]
 pub(super) struct Palette {
