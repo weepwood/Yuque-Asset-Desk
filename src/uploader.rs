@@ -371,7 +371,12 @@ mod tests {
         let repaired = upload(&second, &cfg, &db).unwrap();
         assert_eq!(repaired.item.id, uploaded.item.id);
         assert_eq!(repaired.item.name, "second.png");
-        assert_eq!(url::Url::parse(&repaired.item.url).unwrap().to_file_path().unwrap(), second.canonicalize().unwrap());
+        // A file URL round trip may remove the Windows extended-length path
+        // prefix. Compare canonical filesystem paths, not their URL spelling.
+        let repaired_path = url::Url::parse(&repaired.item.url).unwrap().to_file_path().unwrap();
+        assert_eq!(repaired_path.canonicalize().unwrap(), second.canonicalize().unwrap());
+        assert_eq!(std::fs::read(&repaired_path).unwrap(), b"same image bytes");
+        assert_eq!(sha256_file(&repaired_path).unwrap(), repaired.item.sha256);
         let empty = base.join("empty.png");
         std::fs::write(&empty, []).unwrap();
         assert!(upload(&empty, &cfg, &db).is_err());

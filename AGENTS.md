@@ -59,3 +59,7 @@
 - 无选择时隐藏批量操作行；常用相册操作复用 GPUI 图标和 tooltip。沉浸图片墙隐藏侧栏/详情栏，保留显式退出及独立系统全屏按钮；选择资源详情退出沉浸模式。
 - 版本以 Cargo.toml 为准，Cargo.lock 同步；scripts/package_release.py 统一生成三架构版本化 ZIP、macOS Info.plist、ad-hoc 签名与 SHA256。macOS 非公证，Windows 为便携 ZIP，不宣称有安装向导。
 - 发布门槛：同一候选 SHA 的 main 三平台 CI 成功，下载并核验所有归档及 SHA256，再创建 v0.4.0 Tag/Release；未完成真机项目如实记载，不自动触发发布。禁止使用真实账号或系统剪贴板自动上传测试。
+
+## v0.4.0 跨平台发布复验
+- Windows 文件 URL 的路径往返可能去除扩展长度路径前缀；比较路径时两侧均 canonicalize，并实际读取文件及核对 SHA-256，禁止通过跳过测试掩盖平台差异。
+- 下载发布产物时只接受最终候选 CI 的三个明确目标 artifact；先比对 CI 原始 SHA256 文件，再检查 ZIP、二进制架构及应用签名，避免 verify-only 重新生成校验文件掩盖损坏。

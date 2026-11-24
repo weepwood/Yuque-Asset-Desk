@@ -86,3 +86,4 @@
 - 真实 GPUI 截图目录 dist/qa，重点 album-immersive.png 和 resources-dark.png；未验证系统全屏物理点击、托盘点击、全局键实际触发、通知送达。当前 AXIsProcessTrusted=false，不修改权限。不使用真实凭据。
 - 本地候选与远端 CI 进度需以 git/gh 实际状态为准；正式 Release 需三个架构全部通过并校验资产后执行。暂无开发者签名/公证证书，不声称 macOS 可无 Gatekeeper 提示安装。
 - 候选 2eed0fd 的 CI 45430828149 Windows job 138575344377 在 Static checks 失败：原始日志确认 Python 默认 charmap 解码中文源文件报 UnicodeDecodeError；静态检查/版本读取改为显式 UTF-8。需检查新提交的全部三平台结果，不使用旧候选产物。
+- 指定候选 5c96a9a 的 CI 45431125297，Windows job 138576380836 静态检查通过，24 项测试中 23 通过、1 失败；原始日志证实文件 URL 往返去除 Windows 扩展长度路径前缀，测试直接比较普通路径与 canonicalize 路径失败。仅修复测试路径规范化，追加真实文件读取及 SHA-256 断言，保留原业务行为。新候选仍须三平台完整 CI。冻结新增功能。
