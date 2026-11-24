@@ -4,6 +4,7 @@ mod config;
 mod format;
 mod storage;
 mod uploader;
+mod update;
 mod preview;
 
 mod desk;

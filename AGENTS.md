@@ -88,3 +88,8 @@
 - Preferences.comfortable 默认 true；旧设置缺字段时使用舒适模式。布局菜单和设置 Switch 共同调用 set_comfortable；图片尺寸独立持久化。design::Spacing 统一主内容边距 24/16、图间距 16/10、日期高度 36/28、区块间距 16/8、列表内边距 16/12、导航间距 6/4（舒适/紧凑）。网格/等高/瀑布流计算与渲染必须共享 spacing；切换时重建测量、尝试恢复滚动锚点。
 - 相册内容区接受 GPUI ExternalPaths 拖拽并以原生 drag_over 反馈。忙碌时明确提示未入队，不静默丢弃；保持原有持久化、去重、unknown 人工核实约束。批次进度按已处理任务计数，字节为请求体读取量，不等于远端成功；待恢复入口仅占底栏。
 - 发布仅 Windows x64/macOS ARM64，最新候选双平台 CI 全通过后才下载/校验同一 SHA 的 ZIP 并发布。不可沿用旧候选资产。
+
+## 正式版本检查
+- 设置页「关于与更新」由 src/desk/updates.rs 实现，src/update.rs 独立读取固定 GitHub 仓库 releases/latest。仅用户主动点击时访问公开 API，独立无凭据客户端、12s 请求超时、1MiB 响应限制，不跟随重定向，不自动下载/安装。SemVer 比较，拒绝预发行和降级。
+- 仅匹配 Windows x64/macOS ARM64 对应 ZIP 及 SHA256 文件，检查 uploaded 状态、非空大小、固定仓库下载地址；缺资产时只提供 Release 页面。手动下载、手动核对 SHA256、退出后替换，不覆盖应用或数据库，不把提供校验文件视为已完成校验。
+- 测试使用合成元数据；显式运行 cargo test --locked public_release_smoke -- --ignored --nocapture 可验证公开 API，不纳入常规联网 CI。

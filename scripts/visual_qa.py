@@ -98,6 +98,8 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("preview-dark.png",YUQUE_QA_PAGE="preview")
     capture("notification-dark.png",YUQUE_QA_PAGE="notice")
     capture("settings-narrow.png",YUQUE_QA_PAGE="settings",YUQUE_QA_NARROW="1")
+    capture("updates-dark.png",YUQUE_QA_PAGE="updates")
+    capture("updates-light.png",YUQUE_QA_PAGE="updates",YUQUE_QA_LIGHT="1")
     capture("settings-dark.png",YUQUE_QA_PAGE="settings")
     capture("settings-light.png",YUQUE_QA_PAGE="settings",YUQUE_QA_LIGHT="1")
     capture("tasks-dark.png",YUQUE_QA_PAGE="tasks")

@@ -1,6 +1,7 @@
 mod account;
 pub(crate) mod design;
 mod workspace;
+mod updates;
 mod album;
 mod image_cache;
 pub(crate) mod preferences;
@@ -158,6 +159,8 @@ pub(crate) struct UploadDesk {
     prefs:preferences::Preferences,
     prefs_task:Option<Task<()>>,
     backup_task: Option<Task<()>>,
+    update_state:crate::update::State,
+    update_task:Option<Task<()>>,
 
 }
 
@@ -339,6 +342,8 @@ impl UploadDesk {
             prefs,
             prefs_task:None,
             backup_task:None,
+            update_state:Default::default(),
+            update_task:None,
 
         };
         cx.defer_in(window, |view, _window, cx| {
@@ -348,6 +353,10 @@ impl UploadDesk {
                     Ok("notice")=>{
                         use gpui_kit::component::{notification::Notification,WindowExt};
                         _window.push_notification(Notification::success("演示：资源链接已复制").autohide(false),cx);
+                    }
+                    Ok("updates")=>{
+                        view.account_panel=true;view.inspector_open=false;
+                        view.update_state=crate::update::State::Newer(crate::update::Available{version:"0.6.0".into(),page:crate::update::RELEASES.into(),package:Some((crate::update::RELEASES.into(),crate::update::RELEASES.into()))});
                     }
                     Ok("settings")=>{view.account_panel=true;view.inspector_open=false;}
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}

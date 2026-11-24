@@ -97,6 +97,8 @@ impl UploadDesk {
             .when(!self.account_panel,|d|d.border_l_1().border_color(self.palette().line));
         if self.account_panel {
             panel = panel.child(div().text_lg().font_semibold().child("设置"))
+                .child(self.update_panel(cx))
+                .child(div().h(px(1.)).bg(self.palette().line))
                 .child(self.settings_preferences(cx))
                 .child(div().h(px(1.)).bg(self.palette().line))
                 .child(div().font_semibold().child("语雀账号"))

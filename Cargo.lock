@@ -8795,6 +8795,7 @@ dependencies = [
  "reqwest",
  "rfd",
  "rusqlite",
+ "semver",
  "serde_json",
  "sha2 0.10.9",
  "tray-icon",

@@ -147,3 +147,6 @@ YUQUE_VISUAL_PROFILE=release python3 scripts/visual_qa.py
 
 ### V0.5.0 UI 开发
 V0.4.0 已发布版本保持不变。开发分支的 V0.5.0 聚焦内容优先相册、语义主题、原生菜单和独立设置；设计文档见 [docs/ui-design.md](docs/ui-design.md)。视觉脚本使用 Python Pillow 生成隔离合成测试图片（先安装 Pillow），不使用个人数据。
+
+### 检查更新
+在设置 → 关于与更新中手动检查 GitHub 正式版本。发现新版本后，下载适配平台的 ZIP 与 SHA256 文件，核对摘要，退出应用并替换程序文件。不会自动安装或修改本地数据。
