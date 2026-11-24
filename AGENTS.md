@@ -143,3 +143,5 @@
 - 本地完整 QA 47 passed/0 failed/1 ignored，QA build、静态检查通过。隔离 macOS 实际上传与备份原生面板均为 880×448，进程存活及回调正常，未创建任务；图片浏览回归通过。独立重置安全测试通过，不使用真实凭据或用户数据。
 - Windows x64 job success；首次 artifact 下载 unexpected EOF，重新下载同一 CI 后校验通过：ZIP 9283648 bytes，原始 SHA256 c5b592e962ae7c0ebf4f7aa92e14817e849379962a7d11aec8cffe5860af7e42，已核对 ZIP 完整性、PE 架构和版本资源。本地路径由 dist/release-audit-v0.5.1/verified-windows-dir.txt 记录。
 - 截至本轮最后查询，macOS ARM64 job 138715498817 queued，未分配 runner，未报告代码失败。尚未取得该候选 DMG、原始 SHA256 或正式包启动证据；禁止创建 Tag/Release 直至双平台 CI 完成 success。后续下载同一 run 的 macOS artifact，verify-only、smoke_dmg.py 隔离启动，草稿核对四项资产 digest 后公开，重新下载核对并检查更新接口。不要重复触发 CI 或修改既有版本。仅 Windows x64/macOS ARM64。
+
+- V0.5.1 CI 更新：45470121925 attempt 1 的 macOS job 138715498817 被 GitHub 取消，无 runner、无构建步骤；检查注释明确为 hosted runner 未分配及 macOS arm64 容量限制，不是代码失败。仅重跑该 job，attempt 2 已建立（macOS 138727948374 queued，Windows 保留 success），候选 efe4ef9 不变，继续复用原始 Windows ZIP/sha256。证据位于 dist/release-audit-v0.5.1/。不重复触发完整工作流；通过 macOS CI、DMG 校验及正式启动后才发布。
