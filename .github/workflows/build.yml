@@ -1,5 +1,4 @@
 name: GPUI Kit desktop builds
-
 on:
   workflow_dispatch:
   push:
@@ -10,8 +9,10 @@ on:
       - 'Cargo.lock'
       - 'scripts/**'
       - '.github/workflows/build.yml'
+      - 'CHANGELOG.md'
   pull_request:
-
+permissions:
+  contents: read
 jobs:
   build:
     strategy:
@@ -29,6 +30,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust toolchain
         run: rustup target add ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Static checks
+        run: python scripts/static_check.py
       - name: Windows native prerequisites
         if: runner.os == 'Windows'
         shell: pwsh
@@ -41,35 +47,14 @@ jobs:
         run: cargo test --locked --features qa --target ${{ matrix.target }}
       - name: Release build
         run: cargo build --locked --release --target ${{ matrix.target }}
-      - name: Package macOS app (unsigned)
-        if: runner.os == 'macOS'
+      - name: Package and verify release ZIP
         shell: bash
         run: |
-          APP="dist/Yuque Asset Desk.app"
-          mkdir -p "$APP/Contents/MacOS"
-          cp "target/${{ matrix.target }}/release/yuque-asset-desk" "$APP/Contents/MacOS/yuque-asset-desk"
-          cat > "$APP/Contents/Info.plist" <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleIdentifier</key><string>com.weepwood.yuque-asset-desk</string>
-            <key>CFBundleExecutable</key><string>yuque-asset-desk</string>
-            <key>CFBundleName</key><string>Yuque Asset Desk</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>0.3.1</string>
-            <key>LSMinimumSystemVersion</key><string>15.0</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          PLIST
-          cd dist && zip -qr "yuque-asset-desk-${{ matrix.target }}.zip" "Yuque Asset Desk.app"
-      - name: Package Windows executable
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/yuque-asset-desk.exe" dist/
-          Compress-Archive -Path dist/yuque-asset-desk.exe -DestinationPath "dist/yuque-asset-desk-${{ matrix.target }}.zip"
+          BIN="target/${{ matrix.target }}/release/yuque-asset-desk"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then BIN="$BIN.exe"; fi
+          python scripts/package_release.py --target "${{ matrix.target }}" --binary "$BIN"
       - uses: actions/upload-artifact@v4
         with:
           name: gpui-kit-${{ matrix.target }}
-          path: dist/yuque-asset-desk-${{ matrix.target }}.zip
+          path: dist/release/*
+          if-no-files-found: error

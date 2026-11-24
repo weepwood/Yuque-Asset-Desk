@@ -148,6 +148,7 @@ pub(crate) struct UploadDesk {
     _subscriptions: Vec<Subscription>,
     jobs_page: bool,
     inspector_open: bool,
+    immersive:bool,
     status: String,
     backup_busy: bool,
     desktop_enabled:bool,
@@ -319,6 +320,7 @@ impl UploadDesk {
             _subscriptions: vec![subscription,resize_subscription],
             jobs_page: false,
             inspector_open: false,
+            immersive:false,
             status,
             backup_busy:false,
             desktop_enabled:false,
@@ -334,6 +336,7 @@ impl UploadDesk {
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
+                    Ok("immersive")=>{view.immersive=true;view.resource.masonry=true;}
                     Ok("masonry")=>{view.resource.masonry=true;}
                     Ok("dense")=>{view.resource.tile_size=96.;}
                     Ok("favorites")=>{view.resource.favorites_only=true;}

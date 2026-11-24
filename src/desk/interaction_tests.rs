@@ -87,6 +87,14 @@ fn album_native_scroll_and_density_controls() {
         (actual-expected).abs()
     });
     assert!(restored<2.,"masonry anchor drift: {restored}");
+    let toggle=ui.debug_bounds("immersive-toggle").expect("immersive control");
+    ui.simulate_click(toggle.center(),Modifiers::default());app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert!(app.read(|cx|desk.read(cx).immersive));
+    let exit=ui.debug_bounds("immersive-toggle").expect("immersive exit");
+    ui.simulate_click(exit.center(),Modifiers::default());app.run_until_parked();
+    assert!(!app.read(|cx|desk.read(cx).immersive));
+
 
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);

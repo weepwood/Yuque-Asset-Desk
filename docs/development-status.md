@@ -79,3 +79,9 @@
 - macOS 原生托盘/快捷键注册实际成功；并行第二个隔离实例同键注册失败，备用 I 成功；程序化原生窗口 visibility Visible -> Hidden -> Visible。AXIsProcessTrusted=false，未模拟物理菜单点击/快捷键，未修改系统权限。系统通知实际送达未验收。详见 docs/performance/desktop-2026-11-24.json。
 - 常规编译、28 项 QA 回归通过；不使用真实语雀凭据，不推送，不发布。Windows / macOS Intel 及正式安装包仍未验收，Cargo 全局缓存非致命权限警告仍存在。
 - 最终 Release QA 视觉脚本通过，实际生成14张渲染 PNG（含 persisted-preferences.png）；审查深色瀑布流、窄窗网格、从数据库恢复的浅色/196px/最早优先/收藏筛选/备用 I 快捷键。窗口恢复宽高比断言通过。截图不含系统标题栏；已加载计数分母仍为账户资源总数，不是过滤后精确计数。
+
+## v0.4.0 发布候选（基线 d48dddc，2026-11-24）
+- 相册精修：筛选图标、批量操作栏按需出现、卡片选择/收藏/复制统一 GPUI 图标、悬停操作背景；沉浸图片墙释放左右栏，显式退出，独立系统全屏按钮。加载数与账号总数分别标注。原生点击回归验证进入/退出沉浸模式，28 项 QA 通过。
+- 已统一 Cargo 版本 0.4.0、锁文件及 CHANGELOG；重构三平台 CI 打包，macOS ARM64/Intel ad-hoc 签名 app ZIP，Windows x64 便携 exe ZIP；每个归档附 SHA256，发布前按候选 SHA 核验。
+- 真实 GPUI 截图目录 dist/qa，重点 album-immersive.png 和 resources-dark.png；未验证系统全屏物理点击、托盘点击、全局键实际触发、通知送达。当前 AXIsProcessTrusted=false，不修改权限。不使用真实凭据。
+- 本地候选与远端 CI 进度需以 git/gh 实际状态为准；正式 Release 需三个架构全部通过并校验资产后执行。暂无开发者签名/公证证书，不声称 macOS 可无 Gatekeeper 提示安装。

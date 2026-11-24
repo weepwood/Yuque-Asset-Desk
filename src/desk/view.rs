@@ -219,7 +219,7 @@ impl UploadDesk {
                         .child(div().id(("album-image",index)).relative().h(px(tile_image_height)).w_full().overflow_hidden()
                             .rounded_md().bg(self.color(0x303338,0xeef0f3)).flex().items_center().justify_center()
                             .cursor_pointer()
-                            .on_click(cx.listener(move |v,_,window,cx|v.select_asset(detail_asset.clone(),window,cx)))
+                            .on_click(cx.listener(move |v,_,window,cx|{v.immersive=false;v.select_asset(detail_asset.clone(),window,cx)}))
                             .child(match thumbnail {
                                 Some(path)=>img(path).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element(),
                                 None=>div().flex().flex_col().items_center().gap_1()
@@ -227,7 +227,7 @@ impl UploadDesk {
                                     .child(IconName::File)
                                     .child(div().text_xs().child(if asset.category=="image" {"无本地缩略图"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
                             }))
-                        .when(hovered || selected,|d|d.child(div().absolute().top(px(6.)).left(px(6.)).right(px(6.)).flex().items_center().justify_end().gap_1()
+                        .when(hovered || selected,|d|d.child(div().absolute().top(px(6.)).left(px(6.)).right(px(6.)).flex().items_center().justify_end().gap_1().p_1().rounded_md().bg(self.color(0x202226,0xffffff))
                             .child(Button::new(("grid-md",index)).xsmall().label("MD").tooltip("复制 Markdown")
                                 .on_click(cx.listener(move |v,_,_,cx|v.copy_asset(&markdown_asset,true,cx))))
                             .when(asset.category=="image" && tile_width>=112.,|d|d.child(Button::new(("grid-similar",index)).xsmall().label("相似")
@@ -235,12 +235,12 @@ impl UploadDesk {
                         .child(div().h(px(19.)).text_xs().font_medium().truncate().px_1().child(asset.name.clone()))
                         .child(div().h(px(22.)).flex().items_center().justify_between().gap_1()
                             .child(Button::new(("grid-select",index)).ghost().xsmall().selected(checked)
-                                .label(if checked {"✓"} else {"□"}).tooltip("选择")
+                                .icon(if checked {IconName::Check} else {IconName::Square}).tooltip("选择")
                                 .on_click(cx.listener(move |v,_,_,cx|{if !v.resource.selected_ids.remove(&asset_id){if v.resource.selected_ids.len()<150{v.resource.selected_ids.insert(asset_id);}else{v.status="单批最多选择 150 项".into();}}cx.notify();})))
                             .child(Button::new(("grid-fav",index)).ghost().xsmall()
-                                .label(if starred {"★"} else {"☆"}).tooltip("收藏")
+                                .icon(if starred {IconName::StarFill} else {IconName::Star}).tooltip("收藏")
                                 .on_click(cx.listener(move |v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))))
-                            .child(Button::new(("grid-copy",index)).xsmall().label(if tile_width<115.{"↗"}else{"URL"}).tooltip("复制原始链接")
+                            .child(Button::new(("grid-copy",index)).ghost().xsmall().icon(IconName::Copy).tooltip("复制原始链接")
                                 .on_click(cx.listener(move |v,_,_,cx|v.copy_asset(&url_asset,false,cx)))))
                         .into_any_element();
                 }
@@ -313,7 +313,7 @@ impl Render for UploadDesk {
             cx,
         );
         let narrow = window.viewport_size().width < px(1000.);
-        let available = f32::from(window.viewport_size().width) - if narrow {150.} else {184.} - if !narrow && self.inspector_open {260.} else {0.} - 40.;
+        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else if narrow {150.} else {184.} - if !self.immersive && !narrow && self.inspector_open {260.} else {0.} - 32.;
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         let gallery=if masonry_mode{
@@ -434,7 +434,7 @@ impl Render for UploadDesk {
                     else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
                 }).into_any_element();
         }
-        let show_inspector = self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
+        let show_inspector = !self.immersive && self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
         let show_center = !narrow || !show_inspector;
         div()
             .flex()
@@ -442,7 +442,7 @@ impl Render for UploadDesk {
             .text_sm()
             .bg(self.color(0x17191b, 0xf3f4f6))
             .text_color(self.color(0xebedf0, 0x24272c))
-            .child(
+            .when(!self.immersive,|root|root.child(
                 div()
                     .id("navigation-sidebar").w(px(if narrow { 150. } else { 184. })).flex_shrink_0()
                     .h_full()
@@ -507,7 +507,7 @@ impl Render for UploadDesk {
                         .on_click(cx.listener(|v,_,_,cx|v.export_album(cx))))
                     .child(div().flex_1())
                     .child(self.status_panel()).overflow_y_scrollbar(),
-            )
+            ))
             .when(show_center && self.jobs_page, |d| d.child(self.task_center(cx)))
             .when(show_center && !self.jobs_page, |d| d.child(
                 div()
@@ -515,14 +515,17 @@ impl Render for UploadDesk {
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .gap_2().p_3()
+                    .gap_1().p_3()
                     .child(div().id("drop-zone").flex().flex_wrap().items_center().gap_2()
                         .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
                         .child(div().flex_1().min_w(px(120.)).child(div().text_lg().font_semibold().child(match self.resource.category{"image"=>"图片相册","video"=>"视频","attachment"=>"附件",_=>"资源相册"}))
                             .child(div().text_xs().text_color(self.color(0xa6a9b0,0x646a73)).child(format!("{} 项 · {}",total,if is_demo{"本地演示"}else{"离线预览"}))))
+                        .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").small().ghost().icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出沉浸图片墙"}else{"沉浸图片墙"}).when(self.immersive,|b|b.label("退出图片墙"))
+                            .on_click(cx.listener(|v,_,_,cx|{v.immersive=!v.immersive;cx.notify();}))))
+                        .when(self.immersive,|d|d.child(Button::new("native-fullscreen").small().ghost().icon(if window.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("切换系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
                         .child(Button::new("paste").small().label("粘贴").disabled(self.queue.busy || self.account.account_busy)
                             .on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
-                        .child(Button::new("choose-main").small().primary().label("＋ 导入").tooltip("选择或拖放文件").disabled(self.queue.busy || self.account.account_busy)
+                        .child(Button::new("choose-main").small().primary().icon(IconName::Plus).label("导入").tooltip("选择或拖放文件").disabled(self.queue.busy || self.account.account_busy)
                             .on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))))
                     .child(div().flex().items_center().gap_2()
                         .child(div().flex_1().min_w(px(0.)).child(Input::new(&self.resource.search_input)))
@@ -534,15 +537,17 @@ impl Render for UploadDesk {
                         .child(div().text_xs().child(format!("相似图片 · {} · 同账号本地微缩图",self.resource.similar_to.as_ref().map(|a|a.name.as_str()).unwrap_or(""))))
                         .child(Button::new("exit-similar").small().label("退出").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.reset_history(cx);})))) )
                     .child(div().flex().flex_wrap().items_center().gap_1()
-                        .child(Button::new("sort-time").small().label(if self.resource.oldest { "最早优先" } else { "最新优先" })
+                        .child(Button::new("select-all-compact").small().ghost().icon(IconName::Check).tooltip("选择已加载资源（最多150项）")
+                            .on_click(cx.listener(|v,_,_,cx|{v.resource.selected_ids=v.resource.assets.iter().take(150).map(|a|a.id).collect();cx.notify();})))
+                        .child(Button::new("sort-time").small().icon(if self.resource.oldest{IconName::SortAscending}else{IconName::SortDescending}).label(if self.resource.oldest { "最早优先" } else { "最新优先" })
                             .on_click(cx.listener(|v,_,_,cx|{v.resource.oldest=!v.resource.oldest;v.persist_preferences(cx);v.reset_history(cx);})))
-                        .child(Button::new("favorites").small().selected(self.resource.favorites_only).label("收藏").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.resource.favorites_only=!v.resource.favorites_only;v.persist_preferences(cx);v.reset_history(cx);})))
-                        .child(Button::new("date-groups").small().selected(self.resource.group_dates).label("日期分组").on_click(cx.listener(|v,_,_,cx|{v.resource.group_dates=!v.resource.group_dates;v.persist_preferences(cx);cx.notify();})))
+                        .child(Button::new("favorites").small().selected(self.resource.favorites_only).icon(IconName::Star).tooltip("仅收藏").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.resource.favorites_only=!v.resource.favorites_only;v.persist_preferences(cx);v.reset_history(cx);})))
+                        .child(Button::new("date-groups").small().selected(self.resource.group_dates).icon(IconName::Calendar).tooltip("日期分组").on_click(cx.listener(|v,_,_,cx|{v.resource.group_dates=!v.resource.group_dates;v.persist_preferences(cx);cx.notify();})))
                         .when(self.resource.grid_view,|d|d
                             .child(Button::new("justified").small().selected(self.resource.justified).label(if self.resource.masonry {"瀑布流"}else if self.resource.justified {"等高拼图"}else{"等宽网格"}).on_click(cx.listener(|v,_,_,cx|{if v.resource.masonry{v.resource.masonry=false;v.resource.justified=false;}else if v.resource.justified{v.resource.justified=false;v.resource.masonry=true;}else{v.resource.justified=true;}v.persist_preferences(cx);cx.notify();})))
-                            .child(Button::new("tile-smaller").small().label("−").disabled(self.resource.tile_size<=96.).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
+                            .child(Button::new("tile-smaller").small().ghost().icon(IconName::Minus).tooltip("缩小图片").disabled(self.resource.tile_size<=96.).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
                             .child(div().text_xs().child(format!("{:.0}px",self.resource.tile_size)))
-                            .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").small().label("+").disabled(self.resource.tile_size>=240.).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();}))))))
+                            .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").small().ghost().icon(IconName::Plus).tooltip("放大图片").disabled(self.resource.tile_size>=240.).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();}))))))
                     .when(self.resource.tag_filter.is_some(),|d|d.child(div().flex().items_center().gap_2()
                         .child(format!("标签：{}",self.resource.tag_filter.as_deref().unwrap_or_default()))
                         .child(Button::new("clear-tag").small().label("清除").on_click(cx.listener(|v,_,_,cx|{v.resource.tag_filter=None;v.reset_history(cx);})))) )
@@ -550,7 +555,7 @@ impl Render for UploadDesk {
                         .child(div().flex_1().min_w(px(0.)).child(Input::new(&self.resource.batch_tag_input)))
                         .child(Button::new("batch-add-tags").small().label("添加标签").on_click(cx.listener(|v,_,_,cx|v.apply_batch_tags(false,cx))))
                         .child(Button::new("batch-remove-tags").small().label("移除标签").on_click(cx.listener(|v,_,_,cx|v.apply_batch_tags(true,cx))))))
-                    .child(div().flex().flex_wrap().gap_1().items_center()
+                    .when(!self.resource.selected_ids.is_empty(),|d|d.child(div().flex().flex_wrap().gap_1().items_center()
                         .child(Button::new("select-page").small().label("选择已加载（最多150）")
                             .on_click(cx.listener(|view, _, _, cx| { view.resource.selected_ids = view.resource.assets.iter().take(150).map(|a| a.id).collect(); cx.notify(); })))
                         .when(!self.resource.selected_ids.is_empty(),|d|d.child(Button::new("batch-copy").small().label(format!("复制已选 ({})", self.resource.selected_ids.len()))
@@ -559,7 +564,7 @@ impl Render for UploadDesk {
                         .when(!self.resource.selected_ids.is_empty(),|d|d.child(Button::new("batch-url").small().label("复制 URL").disabled(self.resource.selected_ids.is_empty())
                             .on_click(cx.listener(|v,_,_,cx| v.copy_selected(false,cx)))))
                         .when(!self.resource.selected_ids.is_empty(),|d|d.child(Button::new("clear-selection").small().label("取消选择").disabled(self.resource.selected_ids.is_empty())
-                            .on_click(cx.listener(|v,_,_,cx| {v.resource.selected_ids.clear();cx.notify();})))))
+                            .on_click(cx.listener(|v,_,_,cx| {v.resource.selected_ids.clear();cx.notify();}))))))
                     .child(
                         div()
                             .id("asset-history")
@@ -584,7 +589,7 @@ impl Render for UploadDesk {
                     )
                     .child(
                         div().flex().items_center().justify_between().gap_2()
-                            .child(format!("已加载 {} / {} 项",self.resource.assets.len(),self.resource.total_count))
+                            .child(format!("已加载 {} 项 · 账号共 {} 项",self.resource.assets.len(),self.resource.total_count))
                             .when(self.resource.history_error.is_some(),|d|d.child(Button::new("refresh-history").small().label("重试读取")
                                 .on_click(cx.listener(|v,_,_,cx|{v.resource.history_error=None;if v.resource.assets.is_empty(){v.reload(cx);}else{v.load_more(cx);}}))))
                             .child(Button::new("next-page").small().label(if self.resource.loading_history{"加载中…"}else if self.resource.has_more{"加载更多"}else{"已到底"})

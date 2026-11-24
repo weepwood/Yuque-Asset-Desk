@@ -54,3 +54,8 @@
 - desk_preferences 增量表保存主题、布局、密度、排序、收藏筛选、日期分组、正常窗口尺寸与快捷键 U/I/off。写入防抖，退出补存；QA 截图和性能参数不覆盖用户配置。
 - 系统快捷键冲突不得抢占其他进程；切换 U/I/off 后重启生效。剪贴板只在用户主动操作时读取，隔离测试使用 TestAppContext 私有剪贴板。未经授权不注入物理按键、不修改系统辅助功能权限。
 - 性能：cargo build --release --locked --features qa; python3 scripts/album_perf.py。原生帧回调有 6 秒超时，回调间隔不等于硬件呈现 FPS；ioreg 为整机 GPU 利用率。真实系统操作与模拟交互必须区分。
+
+## v0.4.0 发布候选
+- 无选择时隐藏批量操作行；常用相册操作复用 GPUI 图标和 tooltip。沉浸图片墙隐藏侧栏/详情栏，保留显式退出及独立系统全屏按钮；选择资源详情退出沉浸模式。
+- 版本以 Cargo.toml 为准，Cargo.lock 同步；scripts/package_release.py 统一生成三架构版本化 ZIP、macOS Info.plist、ad-hoc 签名与 SHA256。macOS 非公证，Windows 为便携 ZIP，不宣称有安装向导。
+- 发布门槛：同一候选 SHA 的 main 三平台 CI 成功，下载并核验所有归档及 SHA256，再创建 v0.4.0 Tag/Release；未完成真机项目如实记载，不自动触发发布。禁止使用真实账号或系统剪贴板自动上传测试。

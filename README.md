@@ -2,7 +2,7 @@
 
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
-> **迁移状态：v0.3.1 GPUI Kit 初版。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
+> **当前版本：v0.4.0 发布候选。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
 
 ## 技术架构
 
