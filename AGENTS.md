@@ -78,3 +78,8 @@
 - 继续使用 GPUI Kit 0.9.0，原生 Slider/Switch/Empty/Notification；完整 Settings 组件经评估不套入第二层导航。复制通知仅应用内，不新增系统通知权限或网络请求。
 - design.rs 统一间距、字体、主按钮/浮层色和动效，album.rs 共用布局间距；保持离线预览、虚拟化、缓存及现有数据库。详情栏窄窗口必须保持关闭入口可见，100% 放大预览必须完整适应窗口并保留比例。
 - scripts/visual_qa.py 默认完整截图，YUQUE_VISUAL_ONLY 可局部复验（仍初始化隔离数据与生成基础图）。不测试真实剪贴板、真实语雀账号。发布范围仅 Windows x64 与 macOS ARM64，既有 v0.4.0 正式资产不动。
+
+## V0.5.0 上传收口与双平台 CI
+- 保留语雀网页端非公开 multipart 接口，不新增其他图床。队列暂停依据 TransferProgress 的实际 HTTP 状态及远端结果分类（QueueStop），不得依赖本地化错误文案。401/403 提示检查会话与 CSRF，429 暂停，结果不明保留 unknown，不自动重传。
+- 上传 JSON 解析独立测试；仅接受已有契约中的 HTTPS 链接，不把返回成功、请求体读取完成或本地入库失败混为一谈。测试使用合成响应及回环 HTTP，不访问真实语雀或真实账号。
+- 正式构建矩阵仅 windows-2022 x86_64-pc-windows-msvc、macos-15 aarch64-apple-darwin；不再构建 Intel Mac 发布包。完整 CI 成功后方可发布。

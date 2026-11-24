@@ -23,6 +23,7 @@ pub struct TransferProgress {
     pub cancel: AtomicBool,
     pub remote_started: AtomicBool,
     pub rejected: AtomicBool,
+    pub http_status: std::sync::atomic::AtomicU16,
 }
 
 struct MeteredReader<R> {
@@ -52,6 +53,18 @@ impl<R: Read> Read for MeteredReader<R> {
         }
         self.progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
+    }
+}
+
+/// Queue decisions use structured transport evidence, never localized error strings.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum QueueStop { Authorization, RateLimit, Unknown }
+pub fn queue_stop(progress:&TransferProgress)->Option<QueueStop>{
+    match progress.http_status.load(Ordering::Acquire){
+        401|403=>Some(QueueStop::Authorization),
+        429=>Some(QueueStop::RateLimit),
+        _ if failure_state(progress)=="unknown"=>Some(QueueStop::Unknown),
+        _=>None,
     }
 }
 
@@ -193,6 +206,7 @@ fn send_multipart(client:Client,url:reqwest::Url,headers:HeaderMap,form:multipar
     let response = client.post(url).headers(headers).multipart(form).send()
         .map_err(|_| anyhow::anyhow!("语雀上传请求失败：网络超时、代理异常或接口无法访问"))?;
     let status = response.status();
+    progress.http_status.store(status.as_u16(),Ordering::Release);
     if !status.is_success() {
         if matches!(status.as_u16(), 401 | 403 | 429) {
             progress.rejected.store(true, Ordering::Release);
@@ -211,7 +225,11 @@ fn send_multipart(client:Client,url:reqwest::Url,headers:HeaderMap,form:multipar
     response.take(1024 * 1024 + 1).read_to_end(&mut limited_body)
         .map_err(|_| anyhow::anyhow!("读取语雀上传响应失败；请先确认网页端是否已上传成功"))?;
     if limited_body.len() > 1024 * 1024 { bail!("语雀上传响应异常：内容超过 1 MB"); }
-    let payload: Value = serde_json::from_slice(&limited_body)
+    parse_upload_payload(&limited_body)
+}
+
+fn parse_upload_payload(body:&[u8])->Result<(String,String)>{
+    let payload: Value = serde_json::from_slice(body)
         .context("语雀响应不是有效 JSON；可能需要重新登录")?;
     if payload.get("success").and_then(Value::as_bool) == Some(false) {
         bail!("语雀明确返回上传失败（具体错误可在网页端开发者工具核实）");
@@ -299,9 +317,27 @@ mod tests {
             server.join().unwrap();
             assert!(result.is_err());
             assert_eq!(failure_state(&progress),expected);
+            assert_eq!(queue_stop(&progress),match status{
+                "401 Unauthorized"|"403 Forbidden"=>Some(QueueStop::Authorization),
+                "429 Too Many Requests"=>Some(QueueStop::RateLimit),
+                _=>Some(QueueStop::Unknown),
+            });
         }
     }
 
+    #[test]
+    fn upload_response_contract(){
+        let ok=br#"{"success":true,"code":200,"data":{"attachment":{"url":"https://example.invalid/p.png","filekey":"fixture"}}}"#;
+        assert_eq!(parse_upload_payload(ok).unwrap(),("https://example.invalid/p.png".into(),"fixture".into()));
+        for body in [
+            r#"{"success":false,"url":"https://example.invalid/p.png"}"#,
+            r#"{"code":403,"url":"https://example.invalid/p.png"}"#,
+            r#"{"data":{"url":"http://example.invalid/p.png"}}"#,
+            r#"{"data":{"url":"https://"}} "#,
+            r#"{"data":{}}"#,
+            "not json",
+        ]{assert!(parse_upload_payload(body.as_bytes()).is_err(),"{body}");}
+    }
     #[test]
     fn cancellation_and_unknown_outcome_are_distinct() {
         let p = Arc::new(TransferProgress::default());

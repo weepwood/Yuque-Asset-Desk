@@ -195,7 +195,7 @@ impl UploadDesk {
                     cx.notify();
                 });
                 let result = cx.background_spawn(async move {
-                    storage.job_state(job_id, "running", "").map_err(|error| error.to_string())?;
+                    storage.job_state(job_id, "running", "").map_err(|error| (error.to_string(),None))?;
                     let result = uploader::upload_with_progress(&upload_path, &config, &storage, progress.clone())
                         .map(|out| (out.duplicate, out.item.provider))
                         .map_err(|error| error.to_string());
@@ -203,13 +203,14 @@ impl UploadDesk {
                         Ok(_) => ("done", ""),
                         Err(error) => (uploader::failure_state(&progress), error.as_str()),
                     };
-                    storage.job_state(job_id, state, error).map_err(|_| "远端结果待核实：任务结果保存失败".to_string())?;
+                    storage.job_state(job_id, state, error).map_err(|_| ("远端结果待核实：任务结果保存失败".to_string(),Some(uploader::QueueStop::Unknown)))?;
                     if state == "unknown" {
-                        return Err(format!("远端结果待核实：{error}"));
+                        return Err((format!("远端结果待核实：{error}"),Some(uploader::QueueStop::Unknown)));
                     }
-                    result
+                    result.map_err(|error|(error,uploader::queue_stop(&progress)))
                 }).await;
-                if result.as_ref().err().is_some_and(|e| e.contains("HTTP 429") || e.contains("HTTP 401") || e.contains("HTTP 403") || e.contains("远端结果待核实")) {
+                let stop=result.as_ref().err().and_then(|(_,reason)|*reason);
+                if stop.is_some() {
                     let _ = control.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
                 }
                 _ = this.update(cx, |view, cx| {
@@ -224,7 +225,10 @@ impl UploadDesk {
                             view.queue.succeeded += 1;
                             if provider == "demo" { "已保存本地记录".into() } else { "上传成功".into() }
                         }
-                        Err(error) => {
+                        Err((error,reason)) => {
+                            if reason==Some(uploader::QueueStop::Authorization){
+                                view.account.session_status="上传未获授权：请在设置检查会话及 CSRF Token，再手动恢复任务".into();
+                            }
                             view.queue.failed.push((path.clone(), error.clone()));
                             format!("失败：{error}")
                         }
