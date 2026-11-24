@@ -171,3 +171,6 @@
 - 图片双击进入预览，首次单击即选择，当布局变化延迟 500ms 开详情；预览独立焦点，左右键切换已加载图片，+/-/0/Esc，滚轮指针锚点、边界拖动。滚轮直接响应，按钮缩放保持160ms插值；不自动加载下一页或远程原图。侧栏折叠仅会话内状态。
 - 首轮完整 QA 中设置页切换发生栈溢出，拆出独立 preview_view 后默认栈复验通过；预览渲染提前返回，跳过图库布局。最终功能完整 QA 47 passed/0 failed/1 ignored，cargo check --locked --all-targets、QA build、静态检查及 diff check 通过；最终品牌文字修正后专项交互测试1/1与构建通过。新增合成几何测试和实际 GPUI 窄窗双击、键盘切图、滚轮缩放、拖动释放、侧栏点击证据。既有异步选择、降低动态效果、连续滚动回归通过。
 - 首轮13张真实渲染截图、复验6张、最后4张（含重复基础图）；审查双主题收起侧栏、宽窄图库、详情、设置及预览，最终窄栏无文字截断。截图均隔离 Demo 合成数据，位于 dist/qa。未录制实际动效视频，未测试物理鼠标/系统双击间隔变化/Windows 真机或重新跑 Release 性能基准。新候选未正式发布。
+
+## V0.5.1 发布候选复验（2026-11-25）
+固定候选 efe4ef9eb8e0f44b0f1914063257ddd2555c782f；CI 45470121925。完整 QA 47 passed/1 ignored、QA build 和静态检查通过。原生上传/备份选择面板实测正常且 GPUI 回调执行，隔离任务为0；独立重置安全测试通过。Windows CI 成功，同一 artifact 首次下载 EOF 后重试，ZIP 9283648 bytes，SHA256 c5b592e962ae7c0ebf4f7aa92e14817e849379962a7d11aec8cffe5860af7e42，verify-only 成功。macOS runner 仍 queued，未取得 DMG，未发布。证据与候选发布说明保存在 dist/release-audit-v0.5.1/（ignored）。本轮只提交交接文档，未修改源码、CHANGELOG 或 Tag。未覆盖 Windows 真机、真实语雀上传/凭据删除、macOS 正式包及 Apple 公证。

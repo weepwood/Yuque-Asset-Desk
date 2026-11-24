@@ -137,3 +137,9 @@
 - 图片首次点击在布局变化时先高亮再延迟 500ms 打开详情，第二次原生 click_count 可直接预览；切换资源/搜索、收起侧栏/沉浸切换取消旧任务，异步回调核对资源和历史代际。详情已打开时不延迟。系统双击间隔超过 500ms 的特殊设置未适配。
 - 预览拥有独立 FocusHandle；仅预览处理左右键、+/-、0、Esc。只浏览已加载图片，跳过非图片，保持离线缩略图。滚轮锚点与拖动几何使用 album::fit_preview/clamp_pan/anchor_pan，限制可拖动范围；滚轮与拖动可中断缩放动画。preview_view 独立渲染，预览时跳过图库布局；不要将预览大渲染函数重新内联到主工作台，默认测试栈曾出现溢出。
 - 设置沿用 GPUI Kit 原生菜单、Tooltip、通知及系统确认，8px 圆角，细边框分组；不替换已有破坏性操作确认或异步上传文件选择。不需要新框架或依赖。
+
+## V0.5.1 发布冻结与候选验收
+- 固定候选 efe4ef9eb8e0f44b0f1914063257ddd2555c782f，CI 45470121925。冻结业务改动；后续仅文档提交不改变发布候选。正式 Tag 必须指向完成双平台验收的源码 SHA，不能使用旧候选产物。
+- 本地完整 QA 47 passed/0 failed/1 ignored，QA build、静态检查通过。隔离 macOS 实际上传与备份原生面板均为 880×448，进程存活及回调正常，未创建任务；图片浏览回归通过。独立重置安全测试通过，不使用真实凭据或用户数据。
+- Windows x64 job success；首次 artifact 下载 unexpected EOF，重新下载同一 CI 后校验通过：ZIP 9283648 bytes，原始 SHA256 c5b592e962ae7c0ebf4f7aa92e14817e849379962a7d11aec8cffe5860af7e42，已核对 ZIP 完整性、PE 架构和版本资源。本地路径由 dist/release-audit-v0.5.1/verified-windows-dir.txt 记录。
+- 截至本轮最后查询，macOS ARM64 job 138715498817 queued，未分配 runner，未报告代码失败。尚未取得该候选 DMG、原始 SHA256 或正式包启动证据；禁止创建 Tag/Release 直至双平台 CI 完成 success。后续下载同一 run 的 macOS artifact，verify-only、smoke_dmg.py 隔离启动，草稿核对四项资产 digest 后公开，重新下载核对并检查更新接口。不要重复触发 CI 或修改既有版本。仅 Windows x64/macOS ARM64。
