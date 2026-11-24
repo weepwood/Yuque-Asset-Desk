@@ -138,3 +138,10 @@
 - 新账号先保存索引再写系统凭据，避免索引写入失败导致新的孤立凭据。已确认不存在才移除索引，失败保留；当前账号凭据删除也须确认。无法枚举旧版孤立凭据，未处理环境变量及浏览器凭据。
 - 重置须先处理所有账号未完成/失败/unknown 任务，提供备份入口、警告及二次确认。凭据处理失败不启动重置；助手等待实例锁、验证一次性标记、重检任务与索引、只删除明确管理文件。不递归删除根目录；未知文件、实例锁及错误报告保留；文件删除非事务性，失败可部分完成。卸载步骤见 docs/uninstall.md。
 - 本地 macOS ARM64 常规测试 33 passed/1 ignored、QA 39 passed/1 ignored，cargo check --locked --all-targets、静态检查、QA build 通过。真实 GPUI 交互测试点击存储入口、统计、第一阶段重置并确认数据库仍存在；测试部分凭据清理只用模拟索引，不读取真实系统凭据。scripts/data_reset_qa.py 独立进程隔离验证错误 token、unknown 阻止删除、等待实例锁、释放后删除及外部原图/备份/未知文件保留。7 张实际渲染截图（3 张新存储页与基础/设置图），深浅/窄窗审查通过，窄窗需滚动。未执行真实系统凭据删除、原生确认框完整端到端、Windows 真机卸载、最新正式包启动或实际磁盘占用统计。未修改用户实际数据目录。非致命 Cargo 全局缓存清理权限警告仍存在。
+
+## V0.5.0 正式发布收口（2026-11-25）
+- 候选 bdb29ac，CI 45447816768 双平台完成 success，无实际失败项需要修改代码。静态检查、本地 QA 39 passed/1 ignored，独立重置进程复验成功；全程隔离数据目录。
+- 两个平台直接下载指定 CI 原始产物并 verify-only（不重写原始 SHA256）。macOS DMG 8855946 bytes，SHA256 cfa0ffd0b2bf0049ac161907adbdac46030346a4446f2e5db0b6e029e0d5f3ef；Windows ZIP 9245630 bytes，SHA256 fad393c7850ed32149c792679abccff686f3fb89ebb8ee7a72e82a2544d6d107。DMG 结构、背景、图标位置、签名、架构、版本与 Windows PE 图标/版本资源和 ZIP CRC 均通过。
+- 实际 CI DMG 应用复制到临时目录并启动（非 QA 正式构建），窗口 1160×828，隔离数据库初始化，托盘/快捷键注册成功；有非致命 sandbox_extension 日志、hdiutil 弃用提示。未安装至 Applications，未触碰真实凭据或用户数据。未验证 Windows 真机、真实批量凭据删除、Apple 公证、真实上传或系统通知送达。
+- v0.5.0 正式 Release 已公开（2026-11-24T17:27:44Z），Tag 指向 bdb29acc6983b248a39d7481a3904c82789d74c8。草稿先核对四项资产的 GitHub SHA256 digest 后公开；公开后重新下载四项资产，全部大小、digest 及包内外校验一致。公网更新检查返回 Current("0.5.0")。本地验收产物位于 dist/release-audit-v0.5.0/，未提交二进制。
+- 发布说明 https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.0 。后续文档提交不改变已发布 Tag。

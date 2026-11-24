@@ -105,3 +105,10 @@
 - 保存凭据先登记账号索引；清理只处理索引和当前账号键，确认系统凭据不存在后才删除索引，失败保留索引。历史未索引孤立凭据、环境变量、浏览器 Cookie 不自动处理。删除当前账号也必须确认。
 - 完全重置需备份引导与二次确认，阻止所有账号未完成/失败/待核实任务；凭据失败停止。退出辅助进程通过一次性标记和实例锁等待退出，重新核验任务/账号，只删除明确管理文件，不递归删除根目录。未知文件、实例锁、失败报告保留；非事务性删除，失败可部分完成。详见 docs/uninstall.md。
 - 仅隔离测试数据；scripts/data_reset_qa.py 为 macOS QA 进程锁及重置回归，不用于真实目录。Windows 仍须 CI/真机验证。不使用真实语雀凭据或删除实际用户数据。
+
+## V0.5.0 正式发布（2026-11-25）
+- 正式 Tag v0.5.0 固定在 bdb29acc6983b248a39d7481a3904c82789d74c8；CI 45447816768 的 Windows x64 与 macOS ARM64 job 均 success。不要移动 Tag、替换正式资产或使用其他候选构建混发。
+- 正式 Release https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.0 ，2026-11-24T17:27:44Z 公开，非草稿/预发行。四项资产均从指定 CI 下载，原始 SHA256、Windows ZIP CRC/PE x64/ICO 与版本资源、macOS DMG/ICNS/Info.plist/arm64/签名/Finder 布局均独立验证。
+- Windows ZIP 9245630 bytes SHA256 fad393c7850ed32149c792679abccff686f3fb89ebb8ee7a72e82a2544d6d107；macOS DMG 8855946 bytes SHA256 cfa0ffd0b2bf0049ac161907adbdac46030346a4446f2e5db0b6e029e0d5f3ef。两份原始 SHA256 文件亦核对 GitHub digest；公开后四项资产重新下载并校验一致。
+- 本地 QA 39 passed/1 ignored；隔离进程重置复验通过（错误 token、unknown 阻止删除、等待实例锁、外部原图/备份/未知文件保留）。CI DMG 只读挂载并复制至隔离目录实际启动，窗口 1160×828、空 Demo 数据库、托盘和快捷键注册成功；公网更新 smoke 返回 Current("0.5.0")。
+- 未测试 Windows 真机、真实系统凭据批量清除、真实语雀上传、物理拖拽安装、Gatekeeper 公证或系统通知送达。macOS 启动有非致命 sandbox_extension 日志，hdiutil 有弃用提示；不修改系统权限或真实数据目录。本次仅发布与文档收口，不增加功能。
