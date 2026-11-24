@@ -91,3 +91,70 @@ fn album_native_scroll_and_density_controls() {
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn continuous_loading_keeps_selection_and_preferences(){
+    let root=std::env::temp_dir().join(format!("yuque-stream-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    for i in 0..310{
+        db.insert_or_get(&crate::storage::NewAsset{name:format!("fixture-{i}.txt"),bytes:10,category:"attachment".into(),provider:"demo".into(),owner_id:"local".into(),url:format!("file:///fixture-{i}.txt"),sha256:format!("fixture-{i}"),filekey:String::new()}).unwrap();
+    }
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let db_for_view=db.clone();
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db_for_view))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),150);
+    let id=app.read(|cx|desk.read(cx).resource.assets[0].id);
+    app.update(|cx|desk.update(cx,|v,cx|{v.resource.selected_ids.insert(id);cx.notify();}));
+    for _ in 0..45{
+        ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+        ui.simulate_event(ScrollEvent{position:point(px(600.),px(450.)),delta:ScrollDelta::Pixels(point(px(0.),px(-480.))),..Default::default()});
+        app.run_until_parked();
+        ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+        app.run_until_parked();
+        if app.read(|cx|desk.read(cx).resource.assets.len())>=300{break;}
+    }
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),300);
+    assert!(app.read(|cx|desk.read(cx).resource.selected_ids.contains(&id)));
+    app.update(|cx|desk.update(cx,|v,cx|v.load_more(cx)));app.run_until_parked();
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),310);
+    assert!(!app.read(|cx|desk.read(cx).resource.has_more));
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>().len()),310);
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.dark=false;v.resource.masonry=true;v.resource.oldest=true;v.resource.favorites_only=true;
+        v.resource.tile_size=196.;v.resource.group_dates=false;v.prefs.shortcut="I".into();v.prefs.width=920.;v.prefs.height=680.;
+        v.persist_preferences(cx);v.flush_preferences();
+    }));
+    let restored=preferences::Preferences::decode(db.preferences().unwrap());
+    assert_eq!(restored.layout,"masonry");assert_eq!(restored.tile,196.);assert_eq!(restored.shortcut,"I");
+    assert!(!restored.dark && restored.oldest && restored.favorites && !restored.dates);
+    assert_eq!((restored.width,restored.height),(920.,680.));
+    drop(ui);drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn isolated_clipboard_image_creates_offline_resource(){
+    let root=std::env::temp_dir().join(format!("yuque-clipboard-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let db_for_view=db.clone();
+    let (_,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db_for_view))).unwrap());
+    app.run_until_parked();
+    let mut png=std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(64,48)).write_to(&mut png,image::ImageFormat::Png).unwrap();
+    // TestAppContext uses a private clipboard, not the OS pasteboard.
+    app.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png,png.into_inner())));
+    app.update(|cx|desk.update(cx,|v,cx|v.desktop_quick_upload(cx)));
+    app.run_until_parked();
+    let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
+    assert_eq!(items.len(),1);assert!(preview::cached_path(&root,&items[0]).is_file());
+    assert!(root.join("clipboard").is_dir());
+    assert!(!app.read(|cx|desk.read(cx).queue.busy));
+    drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
+}

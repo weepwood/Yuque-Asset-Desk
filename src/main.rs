@@ -29,24 +29,25 @@ fn main() -> Result<()> {
         .with_assets(assets::Assets)
         .run(move |cx| {
             init(cx);
+            let prefs=desk::preferences::Preferences::decode(storage.preferences().unwrap_or_default());
             let light = std::env::var("YUQUE_QA_LIGHT").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && config.mode == config::Mode::Demo;
-            Theme::change(if light {ThemeMode::Light} else {ThemeMode::Dark}, None, cx);
+            Theme::change(if light || !prefs.dark {ThemeMode::Light} else {ThemeMode::Dark}, None, cx);
             let config = config.clone();
             let storage = storage.clone();
             let narrow = std::env::var("YUQUE_QA_NARROW").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && config.mode == config::Mode::Demo;
-            let bounds = Bounds::centered(None, size(px(if narrow {780.} else {1160.}), px(if narrow {640.} else {800.})), cx);
+            let bounds = Bounds::centered(None, size(px(if narrow {780.} else {prefs.width}), px(if narrow {640.} else {prefs.height})), cx);
             let (window_handle,desk)=open_window(WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), window_min_size: Some(size(px(720.),px(600.))), ..Default::default() }, cx, move |window, cx| {
                 window.set_window_title("Yuque Asset Desk");
                 #[cfg(feature="qa")]
                 if config.mode == config::Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() {
                     if std::env::var_os("YUQUE_QA_PERF").is_some(){
                         window.spawn(cx,async move|cx|{
-                            cx.background_executor().timer(std::time::Duration::from_millis(2200)).await;
+                            cx.background_executor().timer(std::time::Duration::from_millis(1800)).await;
                             let mut times=Vec::new();
                             for _ in 0..120{
                                 let time=cx.update(|window,cx|{
                                     let start=std::time::Instant::now();
-                                    window.dispatch_event(PlatformInput::Scroll(ScrollEvent{position:point(px(600.),px(420.)),delta:ScrollDelta::Pixels(point(px(0.),px(-32.))),..Default::default()}),cx);
+                                    window.dispatch_event(PlatformInput::Scroll(ScrollEvent{position:point(px(600.),px(420.)),delta:ScrollDelta::Pixels(point(px(0.),px(-72.))),..Default::default()}),cx);
                                     window.refresh();window.draw(cx).clear(cx);
                                     start.elapsed().as_secs_f64()*1000.
                                 }).unwrap_or(0.);
@@ -55,7 +56,14 @@ fn main() -> Result<()> {
                             }
                             times.sort_by(|a,b|a.total_cmp(b));
                             eprintln!("PERF render_cpu_ms p50={:.3} p95={:.3} max={:.3} samples={}",times[60],times[114],times[119],times.len());
-                            _=cx.update(|_,cx|cx.quit());
+                            let samples=std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                            let shared=samples.clone();
+                            _=cx.update(|window,_|perf_native_frames(window,shared,std::time::Instant::now()));
+                            cx.background_executor().timer(std::time::Duration::from_secs(6)).await;
+                            if samples.borrow().len()<120{
+                                eprintln!("PERF native_callback_unavailable samples={} (display frame source not delivering enough callbacks)",samples.borrow().len());
+                                _=cx.update(|_,cx|cx.quit());
+                            }
                         }).detach();
                     }
                     if let Some(path) = std::env::var_os("YUQUE_QA_CAPTURE") {
@@ -82,12 +90,62 @@ fn main() -> Result<()> {
                 cx.new(|cx| UploadDesk::new(window, cx, config, storage))
             })
             .expect("无法创建 GPUI 桌面窗口");
+            #[cfg(feature="qa")]
+            if std::env::var_os("YUQUE_DATA_DIR").is_some() && (std::env::var_os("YUQUE_QA_PERF").is_some() || std::env::var("YUQUE_DESKTOP_SMOKE").as_deref()==Ok("2")) {
+                // An inactive CLI-launched test window may be occluded: activate
+                // the isolated app before attempting platform frame sampling.
+                cx.activate(true);
+                let _=window_handle.update(cx,|_,w,_|w.activate_window());
+            }
+            let close_desk=desk.downgrade();
+            let _=window_handle.update(cx,|_,w,cx|w.on_window_should_close(cx,move|_,cx|{
+                if let Some(desk)=close_desk.upgrade(){desk.read(cx).flush_preferences();desk.update(cx,|v,cx|v.desktop_can_quit(cx))}else{true}
+            }));
+            let quit_desk=desk.downgrade();
+            cx.on_app_quit(move|cx|{
+                if let Some(desk)=quit_desk.upgrade(){
+                    desk.read(cx).flush_preferences();
+                    #[cfg(feature="qa")] desk.read(cx).report_perf(cx);
+                }
+                async {}
+            }).detach();
             #[cfg(any(target_os="macos",target_os="windows"))]
             if std::env::var("YUQUE_DESKTOP_INTEGRATION").as_deref()!=Ok("0")
-                && (std::env::var_os("YUQUE_DATA_DIR").is_none() || std::env::var("YUQUE_DESKTOP_SMOKE").as_deref()==Ok("1"))
+                && (std::env::var_os("YUQUE_DATA_DIR").is_none() || matches!(std::env::var("YUQUE_DESKTOP_SMOKE").as_deref(),Ok("1"|"2")))
                 && std::env::var_os("YUQUE_QA_CAPTURE").is_none() {
                 desktop::install(window_handle,desk,cx);
+                #[cfg(feature="qa")]
+                if std::env::var("YUQUE_DESKTOP_SMOKE").as_deref()==Ok("2") && std::env::var_os("YUQUE_DATA_DIR").is_some(){
+                    cx.spawn(async move|cx|{
+                        cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
+                        cx.update(|cx|{let _=window_handle.update(cx,|_,w,_|{eprintln!("DESKTOP visibility_before={:?}",w.visibility());w.minimize_window();});});
+                        cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
+                        cx.update(|cx|{let _=window_handle.update(cx,|_,w,cx|{eprintln!("DESKTOP visibility_minimized={:?}",w.visibility());cx.activate(true);w.activate_window();});});
+                        cx.background_executor().timer(std::time::Duration::from_millis(900)).await;
+                        cx.update(|cx|{let _=window_handle.update(cx,|_,w,_|eprintln!("DESKTOP visibility_restored={:?}",w.visibility()));cx.quit();});
+                    }).detach();
+                }
             }
         });
     Ok(())
+}
+
+
+#[cfg(feature="qa")]
+fn perf_native_frames(window:&Window,intervals:std::rc::Rc<std::cell::RefCell<Vec<f64>>>,last:std::time::Instant){
+    window.on_next_frame(move|window,cx|{
+        let now=std::time::Instant::now();
+        intervals.borrow_mut().push(now.duration_since(last).as_secs_f64()*1000.);
+        if intervals.borrow().len()>=120 {
+            let mut values=intervals.borrow_mut();
+            // First callback interval includes startup scheduling.
+            values.remove(0);values.sort_by(|a,b|a.total_cmp(b));
+            eprintln!("PERF native_callback_ms p50={:.3} p95={:.3} samples={}",values[59],values[112],values.len());
+            cx.quit();
+        }else{
+            window.dispatch_event(PlatformInput::Scroll(ScrollEvent{position:point(px(600.),px(420.)),delta:ScrollDelta::Pixels(point(px(0.),px(-72.))),..Default::default()}),cx);
+            window.refresh();
+            perf_native_frames(window,intervals,now);
+        }
+    });
 }

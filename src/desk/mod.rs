@@ -1,5 +1,7 @@
 mod account;
 mod album;
+mod image_cache;
+pub(crate) mod preferences;
 mod queue;
 mod resources;
 mod view;
@@ -89,6 +91,8 @@ struct ResourceState {
     ratio_revision:u64,
     #[cfg(feature="qa")]
     perf_start:std::time::Instant,
+    #[cfg(feature="qa")]
+    perf_preview_count:usize,
     tile_size: f32,
     group_dates: bool,
     favorites_only: bool,
@@ -98,6 +102,11 @@ struct ResourceState {
     similar_to: Option<Asset>,
     album_list: ListState,
     layout_signature: u64,
+    row_plan: std::rc::Rc<Vec<album::AlbumRow>>,
+    visible_range: (usize,usize),
+    preview_attempted:std::collections::HashSet<i64>,
+    preview_loading_batch:bool,
+    image_cache:Entity<image_cache::AlbumImageCache>,
     selected_asset: Option<Asset>,
     oldest: bool,
     selected_ids: std::collections::HashSet<i64>,
@@ -142,11 +151,35 @@ pub(crate) struct UploadDesk {
     status: String,
     backup_busy: bool,
     desktop_enabled:bool,
+    prefs:preferences::Preferences,
+    prefs_task:Option<Task<()>>,
     backup_task: Option<Task<()>>,
 
 }
 
 impl UploadDesk {
+    pub(crate) fn persist_preferences(&mut self,cx:&mut Context<Self>){
+        self.prefs.dark=self.dark;
+        self.prefs.layout=if !self.resource.grid_view{"list"}else if self.resource.masonry{"masonry"}else if self.resource.justified{"justified"}else{"grid"}.into();
+        self.prefs.tile=self.resource.tile_size;self.prefs.oldest=self.resource.oldest;self.prefs.favorites=self.resource.favorites_only;self.prefs.dates=self.resource.group_dates;
+        // Serialize the small SQLite write on the main thread after debounce.
+        // A cancelled old task cannot overwrite the latest settings.
+        if self.isolated_qa(){return;}
+        self.prefs_task=Some(cx.spawn(async move|this,cx|{
+            cx.background_executor().timer(std::time::Duration::from_millis(180)).await;
+            _=this.update(cx,|v,cx|{if v.storage.save_preferences(&v.prefs.encode()).is_err(){v.status="保存个性化设置失败".into();cx.notify();}});
+        }));
+    }
+    fn isolated_qa(&self)->bool{
+        cfg!(feature="qa")&&self.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some())
+    }
+    pub(crate) fn flush_preferences(&self){if !self.isolated_qa(){let _=self.storage.save_preferences(&self.prefs.encode());}}
+    #[cfg(feature="qa")]
+    pub(crate) fn report_perf(&self,cx:&App){
+        if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF final loaded={} decoded_cache={} bound={}",self.resource.assets.len(),self.resource.image_cache.read(cx).len(),image_cache::MAX_IMAGES);}
+    }
+    pub(crate) fn shortcut(&self)->&str{&self.prefs.shortcut}
+
     pub(crate) fn desktop_status(&mut self,enabled:bool,status:String,cx:&mut Context<Self>){
         self.desktop_enabled=enabled;self.status=status;cx.notify();
     }
@@ -183,30 +216,44 @@ impl UploadDesk {
         };
         let saved_accounts = storage.accounts().unwrap_or_default();
         let recovery_count = storage.recoverable(config.provider(), config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
+        let prefs=preferences::Preferences::decode(storage.preferences().unwrap_or_default());
+        let resize_subscription=cx.observe_window_bounds(window,|v,w,cx|{
+            if w.is_maximized() || w.is_fullscreen(){return;}
+            let size=w.bounds().size;
+            v.prefs.width=f32::from(size.width).clamp(720.,3840.);v.prefs.height=f32::from(size.height).clamp(600.,2160.);
+            v.persist_preferences(cx);
+        });
         let mut view = Self {
             resource: ResourceState {
                 assets: Vec::new(),
                 search: String::new(),
-                grid_view: true,
-                justified: false,
-                masonry:false,
+                grid_view:prefs.layout!="list",
+                justified:prefs.layout=="justified",
+                masonry:prefs.layout=="masonry",
                 masonry_scroll:ScrollHandle::new(),
                 masonry_plan:Default::default(),
                 masonry_signature:0,
                 ratio_revision:0,
                 #[cfg(feature="qa")]
                 perf_start:std::time::Instant::now(),
-                tile_size: 148.,
-                group_dates: true,
-                favorites_only: false,
+                #[cfg(feature="qa")]
+                perf_preview_count:usize::MAX,
+                tile_size:prefs.tile,
+                group_dates:prefs.dates,
+                favorites_only:prefs.favorites,
                 favorites: Default::default(),
                 ratios: Default::default(),
                 hover_asset: None,
                 similar_to: None,
                 album_list: ListState::new(0,ListAlignment::Top,px(180.)),
                 layout_signature: 0,
+                row_plan:Default::default(),
+                visible_range:(0,48),
+                preview_attempted:Default::default(),
+                preview_loading_batch:false,
+                image_cache:image_cache::AlbumImageCache::new(cx),
                 selected_asset: None,
-                oldest: false,
+                oldest:prefs.oldest,
                 selected_ids: Default::default(),
                 tag_input: cx.new(|cx| InputState::new(window, cx).placeholder("标签，用逗号分隔")),
                 batch_tag_input: cx.new(|cx| InputState::new(window,cx).placeholder("批量标签，如 设计/UI")),
@@ -269,12 +316,14 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             account_panel: false,
             storage,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription,resize_subscription],
             jobs_page: false,
             inspector_open: false,
             status,
             backup_busy:false,
             desktop_enabled:false,
+            prefs,
+            prefs_task:None,
             backup_task:None,
 
         };

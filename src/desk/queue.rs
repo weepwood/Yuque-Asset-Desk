@@ -50,7 +50,11 @@ impl UploadDesk {
 
     pub(super) fn paste_files(&mut self, cx: &mut Context<Self>) {
         if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
-        let Some(item) = cx.read_from_clipboard() else { return; };
+        let Some(item) = cx.read_from_clipboard() else {self.status="剪贴板没有可读取内容".into();cx.notify();return;};
+        self.paste_item(item,cx);
+    }
+    pub(super) fn paste_item(&mut self,item:ClipboardItem,cx:&mut Context<Self>){
+        if self.backup_busy || self.queue.busy || self.account.account_busy {return;}
         let mut files = Vec::new();
         for entry in item.entries() {
             match entry {
@@ -59,14 +63,20 @@ impl UploadDesk {
                     if image.bytes().len() as u64 > self.account.config.max_file_mb * 1024 * 1024 { continue; }
                     let result = (|| -> Result<PathBuf> {
                         use sha2::{Digest, Sha256};
-                        let dir = db_path()?.parent().context("缺少数据目录")?.join("clipboard");
+                        let dir = self.storage.data_dir().join("clipboard");
                         std::fs::create_dir_all(&dir)?;
                         let path = dir.join(format!("{}.{}", hex::encode(Sha256::digest(image.bytes())), image.format().extension()));
                         // Keep a stable local source for Demo links and interrupted tasks.
                         if !path.exists() {
-                            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
-                            use std::io::Write;
-                            file.write_all(image.bytes())?;
+                            let temp=path.with_extension(format!("{}.tmp",std::process::id()));
+                            let result=(||->Result<()>{
+                                let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+                                use std::io::Write;
+                                file.write_all(image.bytes())?;file.sync_all()?;drop(file);
+                                std::fs::rename(&temp,&path)?;Ok(())
+                            })();
+                            if result.is_err(){let _=std::fs::remove_file(&temp);}
+                            result?;
                         }
                         Ok(path)
                     })();

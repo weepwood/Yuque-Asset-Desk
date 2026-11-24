@@ -7,11 +7,12 @@ import subprocess
 import tempfile
 import struct
 import zlib
+import json
 
 root = Path(__file__).resolve().parent.parent
 out = root / "dist" / "qa"
 out.mkdir(parents=True, exist_ok=True)
-binary = root / "target" / "debug" / ("yuque-asset-desk.exe" if os.name == "nt" else "yuque-asset-desk")
+binary = root / "target" / os.getenv("YUQUE_VISUAL_PROFILE","debug") / ("yuque-asset-desk.exe" if os.name == "nt" else "yuque-asset-desk")
 def fixture_png(index):
     """Deterministic RGB test pattern; not user image content."""
     w,h=[(320,240),(210,320),(440,180),(320,320)][index%4]
@@ -71,3 +72,11 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("tasks-dark.png",YUQUE_QA_PAGE="tasks")
     capture("tags-light.png",YUQUE_QA_LIGHT="1",YUQUE_QA_PAGE="tags")
     assert (out/"empty-dark.png").read_bytes() != (out/"resources-dark.png").read_bytes(), "populated frame did not change"
+    with sqlite3.connect(data/"assets.db") as conn:
+        conn.execute("INSERT INTO desk_preferences(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
+            (json.dumps({"dark":False,"layout":"masonry","tile":196,"oldest":True,"favorites":True,"dates":False,"width":920,"height":680,"shortcut":"I"}),))
+    capture("persisted-preferences.png")
+    with (out/"persisted-preferences.png").open("rb") as f:
+        header=f.read(24)
+        w,h=struct.unpack(">II",header[16:24])
+        assert abs(w/h-920/680)<0.04, f"restored window aspect ratio mismatch: {w}x{h}"

@@ -46,3 +46,11 @@
 - 保持 150 项游标分页和永久本地微缩图；每 12 项批量更新预览状态；已索引图片读取尺寸头，不重复计算 dHash。性能验收用隔离合成 JPEG，不访问真实图片或账号。
 - macOS/Windows 使用 tray-icon 和 global-hotkey，托盘上传必须主动点击；全局快捷键仅唤起相册。关闭窗口仅在托盘可用时最小化。默认运行可通过 YUQUE_DESKTOP_INTEGRATION=0 禁用；隔离目录默认不注册系统集成，显式 YUQUE_DESKTOP_SMOKE=1 才允许测试。
 - QA 性能脚本 scripts/album_perf.py 依赖 Python Pillow，指标为 CPU dispatch/draw 耗时和进程采样 RSS/CPU，不等于真实显示 FPS 或应用 GPU 利用率。不要宣称未实测的硬件性能。
+
+## 连续相册、内存缓存和偏好持久化
+- 资源查询按 150 项 keyset 批次追加，滚动接近已加载末尾自动加载；同一次查询保留选择，筛选或账号变化重置游标，防止旧异步结果污染。批量选择上限 150，保持既有 SQLite 标签事务约束。
+- GPUI ListState 原生滚动、未变化行保留测量；Masonry 复用布局和资源 ID 锚点，按 y 起始位置二分定位。不得用滚动事件中的旧可视区直接触发分页；延迟读取实际逻辑滚动锚点。
+- 已有 JPEG 预览先读取本地尺寸头；缺失预览优先可视区及附近每批 12 项，禁止网络补图。AlbumImageCache 限制 192 个解码条目，淘汰调用 GPUI drop_image，永久微缩图不删除。资源元数据仍随连续加载累积。
+- desk_preferences 增量表保存主题、布局、密度、排序、收藏筛选、日期分组、正常窗口尺寸与快捷键 U/I/off。写入防抖，退出补存；QA 截图和性能参数不覆盖用户配置。
+- 系统快捷键冲突不得抢占其他进程；切换 U/I/off 后重启生效。剪贴板只在用户主动操作时读取，隔离测试使用 TestAppContext 私有剪贴板。未经授权不注入物理按键、不修改系统辅助功能权限。
+- 性能：cargo build --release --locked --features qa; python3 scripts/album_perf.py。原生帧回调有 6 秒超时，回调间隔不等于硬件呈现 FPS；ioreg 为整机 GPU 利用率。真实系统操作与模拟交互必须区分。

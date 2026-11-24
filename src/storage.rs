@@ -60,6 +60,7 @@ impl Storage {
                 path TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT ''
              );
              CREATE INDEX IF NOT EXISTS idx_upload_jobs_scope ON upload_jobs(provider, owner_id, state, id);
+             CREATE TABLE IF NOT EXISTS desk_preferences (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS saved_accounts (owner_id TEXT PRIMARY KEY NOT NULL);
              CREATE TABLE IF NOT EXISTS asset_favorites (
                  asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE
@@ -82,6 +83,14 @@ impl Storage {
             UPDATE upload_jobs SET state='paused' WHERE provider='demo' AND state='running';
             COMMIT;")?;
         Ok(storage)
+    }
+
+    pub fn preferences(&self)->Result<serde_json::Value>{
+        let raw:Option<String>=self.open()?.query_row("SELECT value FROM desk_preferences WHERE id=1",[],|r|r.get(0)).optional()?;
+        Ok(raw.and_then(|v|serde_json::from_str(&v).ok()).unwrap_or_default())
+    }
+    pub fn save_preferences(&self,value:&serde_json::Value)->Result<()>{
+        self.open()?.execute("INSERT INTO desk_preferences(id,value) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET value=excluded.value",[value.to_string()])?;Ok(())
     }
 
     pub fn data_dir(&self) -> &std::path::Path {

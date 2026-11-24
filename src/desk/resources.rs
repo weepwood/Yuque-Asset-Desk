@@ -9,9 +9,14 @@ impl UploadDesk {
         self.resource.large_preview_path = None;
         self.resource.thumbnail_path = None;
         self.resource.cached_thumbnails.clear();
+        self.resource.preview_attempted.clear();
+        self.resource.preview_loading_batch=false;
+        self.resource.visible_range=(0,48);
         self.resource.ratios.clear();
         self.resource.hover_asset=None;
         self.resource.album_list.reset(0);
+        self.resource.row_plan=Default::default();
+        self.resource.layout_signature=0;
         self.resource.masonry_scroll.set_offset(point(px(0.),px(0.)));
         self.resource.masonry_plan=Default::default();
         self.resource.masonry_signature=0;
@@ -25,6 +30,23 @@ impl UploadDesk {
     }
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.resource.page_cursors=vec![None];
+        self.resource.visible_range=(0,48);
+        self.resource.album_list.reset(0);
+        self.resource.row_plan=Default::default();
+        self.resource.layout_signature=0;
+        self.resource.masonry_scroll.set_offset(point(px(0.),px(0.)));
+        self.resource.masonry_plan=Default::default();
+        self.resource.preview_attempted.clear();
+        self.resource.preview_loading_batch=false;
+        self.resource.thumbnails_task=None;
+        self.load_history(false,cx);
+    }
+    pub(super) fn load_more(&mut self,cx:&mut Context<Self>){
+        if self.resource.loading_history || !self.resource.has_more || self.resource.history_error.is_some() || self.resource.similar_to.is_some(){return;}
+        if let Some(last)=self.resource.assets.last(){self.resource.page_cursors.push(Some(last.id));self.load_history(true,cx);}
+    }
+    fn load_history(&mut self,append:bool,cx:&mut Context<Self>){
         let storage = self.storage.clone();
         let query = self.resource.search.clone();
         let category = self.resource.category;
@@ -37,6 +59,8 @@ impl UploadDesk {
         ));
         let before = self.resource.page_cursors.last().copied().flatten();
         self.resource.history_generation += 1;
+        self.resource.thumbnails_task=None;self.resource.preview_loading_batch=false;
+        self.resource.preview_attempted.retain(|id|self.resource.cached_thumbnails.contains_key(id));
         let generation = self.resource.history_generation;
         self.resource.loading_history = true;
         self.resource.history_error = None;
@@ -65,19 +89,34 @@ impl UploadDesk {
                     let total=items.len() as i64;
                     (items,false,total)
                 }else{storage.page_album(PAGE_SIZE,&query,category,scope,before,oldest,tag.as_deref(),favorites_only)?};
+                let ratios=page.0.iter().filter(|a|a.category=="image").filter_map(|a|{
+                    let path=preview::cached_path(storage.data_dir(),a);
+                    image::image_dimensions(&path).ok().map(|(w,h)|(a.id,w as f32/h.max(1) as f32,path))
+                }).collect::<Vec<_>>();
                 let tags=storage.tag_catalog(scope)?;
                 let favorites=storage.favorite_ids(scope)?;
-                Ok::<_,anyhow::Error>((page,tags,favorites))
+                Ok::<_,anyhow::Error>((page,tags,favorites,ratios))
             }).await;
             _ = this.update(cx, |view, cx| {
                 if generation != view.resource.history_generation { return; }
                 view.resource.loading_history = false;
                 match result {
-                    Ok(((items, more, total), tags,favorites)) => {
+                    Ok(((items, more, total), tags,favorites,ratios)) => {
                         view.resource.favorites=favorites;
                         view.resource.tag_catalog=tags;
-                        view.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
-                        view.resource.assets = items;
+                        if append {
+                            let existing=view.resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
+                            view.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
+                        } else {
+                            view.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
+                            view.resource.assets=items;
+                            view.resource.cached_thumbnails.clear();view.resource.ratios.clear();
+                        }
+                        for (id,ratio,path) in ratios{
+                            view.resource.ratios.insert(id,ratio);view.resource.cached_thumbnails.insert(id,path);
+                        }
+                        view.resource.ratio_revision+=1;
+                        view.resource.preview_loading_batch=false;view.resource.thumbnails_task=None;
                         #[cfg(feature="qa")]
                         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF page_ready_ms={} count={}",view.resource.perf_start.elapsed().as_millis(),view.resource.assets.len());}
                         view.resource.has_more = more;
@@ -85,8 +124,7 @@ impl UploadDesk {
                         view.refresh_thumbnails(cx);
                     }
                     Err(error) => {
-                        view.resource.assets.clear();
-                        view.resource.has_more = false;
+                        if append{view.resource.page_cursors.pop();}else{view.resource.assets.clear();view.resource.has_more=false;}
                         view.resource.history_error = Some(error.to_string());
                     }
                 }
@@ -96,33 +134,38 @@ impl UploadDesk {
         cx.notify();
     }
 
+    pub(super) fn update_visible(&mut self,start:usize,end:usize,cx:&mut Context<Self>){
+        self.resource.visible_range=(start,end);
+        if end.saturating_add(24)>=self.resource.assets.len(){self.load_more(cx);}
+        self.refresh_thumbnails(cx);
+    }
     pub(super) fn refresh_thumbnails(&mut self,cx:&mut Context<Self>){
+        if self.resource.preview_loading_batch || self.resource.loading_history{return;}
         let generation=self.resource.history_generation;
-        let items=self.resource.assets.iter().filter(|a|a.category=="image").cloned().collect::<Vec<_>>();
-        let ids=items.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
-        self.resource.cached_thumbnails.retain(|id,_|ids.contains(id));
-        self.resource.ratios.retain(|id,_|ids.contains(id));
+        let (start,end)=self.resource.visible_range;
+        let lo=start.saturating_sub(24).min(self.resource.assets.len());
+        let hi=end.saturating_add(48).min(self.resource.assets.len());
+        let mid=start.min(self.resource.assets.len());
+        let items=self.resource.assets[mid..hi].iter().chain(self.resource.assets[lo..mid].iter()).filter(|a|a.category=="image"&&!self.resource.preview_attempted.contains(&a.id)&&!self.resource.cached_thumbnails.contains_key(&a.id)).take(12).cloned().collect::<Vec<_>>();
+        if items.is_empty(){
+            #[cfg(feature="qa")]
+            if std::env::var_os("YUQUE_QA_PERF").is_some() && self.resource.perf_preview_count!=self.resource.cached_thumbnails.len(){
+                self.resource.perf_preview_count=self.resource.cached_thumbnails.len();
+                eprintln!("PERF previews_ready_ms={} count={}",self.resource.perf_start.elapsed().as_millis(),self.resource.cached_thumbnails.len());
+            }
+            return;
+        }
+        self.resource.preview_loading_batch=true;
+        for a in &items{self.resource.preview_attempted.insert(a.id);}
         let storage=self.storage.clone();
         self.resource.thumbnails_task=Some(cx.spawn(async move|this,cx|{
-            for batch in items.chunks(12){
-                let batch=batch.to_vec();let storage=storage.clone();
-                let found=cx.background_spawn(async move{
-                    batch.into_iter().filter_map(|a|preview::index_local(&storage,&a).ok().map(|(p,r)|(a.id,p,r))).collect::<Vec<_>>()
-                }).await;
-                let result=this.update(cx,|v,cx|{
-                    if generation!=v.resource.history_generation{return false;}
-                    for (id,p,r) in found{
-                        v.resource.cached_thumbnails.insert(id,p);
-                        if v.resource.ratios.insert(id,r)!=Some(r){v.resource.ratio_revision+=1;}
-                    }
-                    cx.notify();true
-                });
-                if !matches!(result,Ok(true)){break;}
-            }
-            #[cfg(feature="qa")]
-            if std::env::var_os("YUQUE_QA_PERF").is_some(){
-                _=this.update(cx,|v,_|eprintln!("PERF previews_ready_ms={} count={}",v.resource.perf_start.elapsed().as_millis(),v.resource.cached_thumbnails.len()));
-            }
+            let found=cx.background_spawn(async move{items.into_iter().filter_map(|a|preview::index_local(&storage,&a).ok().map(|(p,r)|(a.id,p,r))).collect::<Vec<_>>()}).await;
+            _=this.update(cx,|v,cx|{
+                if generation!=v.resource.history_generation{return;}
+                v.resource.preview_loading_batch=false;
+                for (id,p,r) in found{v.resource.cached_thumbnails.insert(id,p);if v.resource.ratios.insert(id,r)!=Some(r){v.resource.ratio_revision+=1;}}
+                v.refresh_thumbnails(cx);cx.notify();
+            });
         }));
     }
 

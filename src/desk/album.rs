@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug,Clone)]
+#[derive(Debug,Clone,PartialEq)]
 pub(super) enum AlbumRow {
     Day(String),
     Tiles { items: Vec<(usize,f32)>, height:f32 },

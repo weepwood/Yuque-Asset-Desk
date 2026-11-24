@@ -1,0 +1,289 @@
+{
+  "profile": "release",
+  "platform": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+  "binary_bytes": 18194752,
+  "dataset": 10000,
+  "fixture_type": "synthetic encoded JPEG, distinct files, no original source",
+  "bytes": 17514051,
+  "seed_seconds": 4.295,
+  "runs": [
+    {
+      "mode": "grid",
+      "timed_out": false,
+      "process_seconds": 10.979,
+      "metrics": [
+        "PERF page_ready_ms=48 count=150",
+        "PERF previews_ready_ms=48 count=150",
+        "PERF page_ready_ms=2632 count=300",
+        "PERF previews_ready_ms=2632 count=300",
+        "PERF page_ready_ms=3867 count=450",
+        "PERF previews_ready_ms=3867 count=450",
+        "PERF render_cpu_ms p50=2.443 p95=3.938 max=9.468 samples=120",
+        "PERF native_callback_unavailable samples=0 (display frame source not delivering enough callbacks)",
+        "PERF final loaded=450 decoded_cache=192 bound=192"
+      ],
+      "wall_markers": [
+        {
+          "wall_ms": 261.9,
+          "message": "PERF page_ready_ms=48 count=150"
+        },
+        {
+          "wall_ms": 262.1,
+          "message": "PERF previews_ready_ms=48 count=150"
+        },
+        {
+          "wall_ms": 2845.5,
+          "message": "PERF page_ready_ms=2632 count=300"
+        },
+        {
+          "wall_ms": 2845.6,
+          "message": "PERF previews_ready_ms=2632 count=300"
+        },
+        {
+          "wall_ms": 4081.0,
+          "message": "PERF page_ready_ms=3867 count=450"
+        },
+        {
+          "wall_ms": 4081.0,
+          "message": "PERF previews_ready_ms=3867 count=450"
+        },
+        {
+          "wall_ms": 4500.3,
+          "message": "PERF render_cpu_ms p50=2.443 p95=3.938 max=9.468 samples=120"
+        },
+        {
+          "wall_ms": 10800.3,
+          "message": "PERF native_callback_unavailable samples=0 (display frame source not delivering enough callbacks)"
+        },
+        {
+          "wall_ms": 10800.7,
+          "message": "PERF final loaded=450 decoded_cache=192 bound=192"
+        }
+      ],
+      "peak_sampled_rss_mib": 137.89,
+      "mean_sampled_ps_cpu_percent": 4.99,
+      "sample_count": 52,
+      "system_gpu_samples": [
+        [
+          20.5,
+          9
+        ],
+        [
+          545.9,
+          11
+        ],
+        [
+          1071.8,
+          11
+        ],
+        [
+          1602.4,
+          10
+        ],
+        [
+          2130.4,
+          18
+        ],
+        [
+          2654.3,
+          17
+        ],
+        [
+          3175.8,
+          19
+        ],
+        [
+          3699.0,
+          13
+        ],
+        [
+          4220.4,
+          9
+        ],
+        [
+          4743.4,
+          10
+        ],
+        [
+          5268.8,
+          9
+        ],
+        [
+          5791.1,
+          19
+        ],
+        [
+          6314.3,
+          11
+        ],
+        [
+          6831.7,
+          8
+        ],
+        [
+          7349.3,
+          20
+        ],
+        [
+          7872.2,
+          8
+        ],
+        [
+          8391.0,
+          24
+        ],
+        [
+          8912.9,
+          20
+        ],
+        [
+          9434.2,
+          9
+        ],
+        [
+          9956.1,
+          7
+        ],
+        [
+          10474.4,
+          9
+        ]
+      ]
+    },
+    {
+      "mode": "masonry",
+      "timed_out": false,
+      "process_seconds": 11.119,
+      "metrics": [
+        "PERF page_ready_ms=45 count=150",
+        "PERF previews_ready_ms=45 count=150",
+        "PERF page_ready_ms=3011 count=300",
+        "PERF previews_ready_ms=3011 count=300",
+        "PERF render_cpu_ms p50=2.791 p95=5.056 max=7.298 samples=120",
+        "PERF native_callback_unavailable samples=0 (display frame source not delivering enough callbacks)",
+        "PERF final loaded=300 decoded_cache=192 bound=192"
+      ],
+      "wall_markers": [
+        {
+          "wall_ms": 223.5,
+          "message": "PERF page_ready_ms=45 count=150"
+        },
+        {
+          "wall_ms": 223.6,
+          "message": "PERF previews_ready_ms=45 count=150"
+        },
+        {
+          "wall_ms": 3188.7,
+          "message": "PERF page_ready_ms=3011 count=300"
+        },
+        {
+          "wall_ms": 3188.8,
+          "message": "PERF previews_ready_ms=3011 count=300"
+        },
+        {
+          "wall_ms": 4482.8,
+          "message": "PERF render_cpu_ms p50=2.791 p95=5.056 max=7.298 samples=120"
+        },
+        {
+          "wall_ms": 10637.2,
+          "message": "PERF native_callback_unavailable samples=0 (display frame source not delivering enough callbacks)"
+        },
+        {
+          "wall_ms": 10639.5,
+          "message": "PERF final loaded=300 decoded_cache=192 bound=192"
+        }
+      ],
+      "peak_sampled_rss_mib": 143.22,
+      "mean_sampled_ps_cpu_percent": 4.97,
+      "sample_count": 51,
+      "system_gpu_samples": [
+        [
+          19.8,
+          11
+        ],
+        [
+          537.1,
+          11
+        ],
+        [
+          1054.7,
+          17
+        ],
+        [
+          1579.3,
+          21
+        ],
+        [
+          2108.4,
+          27
+        ],
+        [
+          2629.6,
+          25
+        ],
+        [
+          3165.5,
+          18
+        ],
+        [
+          3709.4,
+          13
+        ],
+        [
+          4253.5,
+          11
+        ],
+        [
+          4794.5,
+          0
+        ],
+        [
+          5319.7,
+          0
+        ],
+        [
+          5845.4,
+          6
+        ],
+        [
+          6391.7,
+          6
+        ],
+        [
+          6914.6,
+          0
+        ],
+        [
+          7451.8,
+          47
+        ],
+        [
+          7986.9,
+          30
+        ],
+        [
+          8518.0,
+          20
+        ],
+        [
+          9041.0,
+          24
+        ],
+        [
+          9565.0,
+          24
+        ],
+        [
+          10087.9,
+          16
+        ],
+        [
+          10613.6,
+          18
+        ]
+      ]
+    }
+  ],
+  "limits": "release QA build; 150 item batches; native callback cadence is not display presentation FPS; ioreg GPU samples are system-wide, not per-process; process launch cold, OS disk cache not flushed",
+  "window_context": "CLI-launched window not activated; native frame callback unavailable; CPU manual-draw samples only"
+}

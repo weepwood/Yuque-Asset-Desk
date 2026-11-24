@@ -127,3 +127,17 @@ cargo build --locked --features qa
 python3 scripts/album_perf.py
 ```
 报告写入 dist/qa/album-perf.json；测试使用 10,000 个合成 JPEG 和 150 项分页。CPU 渲染耗时不等于屏幕 FPS。系统托盘和快捷键的注册冒烟不读取剪贴板、不使用真实凭据。
+
+### 连续浏览与偏好
+相册接近已加载末尾时自动追加下一批 150 项，也保留「加载更多」按钮。过滤或账号变化后重新查询，批量选择最多 150 项。已有微缩图预读取比例，缺失预览优先处理可见资源。GPUI 解码缓存采用 192 项 LRU，不清除磁盘永久微缩图。
+
+主题、布局、卡片尺寸、排序、收藏过滤、日期分组、正常窗口大小和快捷键方案保存于 SQLite。侧栏快捷键设置可以循环 U / I / 禁用，重启生效。默认 macOS Cmd+Shift+U / Windows Ctrl+Shift+U；备用为对应 I 键。
+
+Release QA 性能和桌面测试（macOS；Pillow）：
+```bash
+cargo build --release --locked --features qa
+python3 scripts/album_perf.py
+python3 scripts/desktop_qa.py
+YUQUE_VISUAL_PROFILE=release python3 scripts/visual_qa.py
+```
+报告区分 CPU 绘制耗时、原生帧回调、整机 GPU 样本。原生回调未到达会超时记录，不能将 CPU 耗时或回调频率当作屏幕真实呈现 FPS。

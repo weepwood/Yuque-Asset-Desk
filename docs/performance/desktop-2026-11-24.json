@@ -1,0 +1,6 @@
+{
+  "default_registration": "DESKTOP tray=true hotkey=true\n",
+  "simultaneous_registration": "DESKTOP shortcut unavailable: HotKey already registered: HotKey { mods: Modifiers(META | SHIFT), key: KeyU, id: 37748775 }\nDESKTOP tray=true hotkey=false\n",
+  "alternate_and_window": "DESKTOP tray=true hotkey=true\nDESKTOP visibility_before=Visible\nDESKTOP visibility_minimized=Hidden\nDESKTOP visibility_restored=Visible\n",
+  "limitations": "Programmatic native window calls, not physical menu clicks or key events. No system clipboard modification or notification delivery test."
+}
