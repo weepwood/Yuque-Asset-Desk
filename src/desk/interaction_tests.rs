@@ -394,11 +394,12 @@ fn motion_samples_retarget_and_respect_reduced_motion(){
 
 #[::core::prelude::v1::test]
 fn preview_double_click_keyboard_zoom_and_sidebar(){
+    let _serial=crate::high_preview::TEST_LOCK.lock().unwrap();
     let root=std::env::temp_dir().join(format!("yuque-preview-ui-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     let db=Storage::new(root.join("assets.db")).unwrap();
     for i in 0..3{
         let source=root.join(format!("fixture-{i}.png"));
-        image::RgbImage::from_pixel(80,60,image::Rgb([i as u8*50,120,70])).save(&source).unwrap();
+        image::RgbImage::from_pixel(640,480,image::Rgb([i as u8*50,120,70])).save(&source).unwrap();
         db.insert_or_get(&crate::storage::NewAsset{name:format!("{i}.png"),bytes:100,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:url::Url::from_file_path(&source).unwrap().to_string(),sha256:{use sha2::{Digest,Sha256};hex::encode(Sha256::digest(std::fs::read(&source).unwrap()))},filekey:String::new()}).unwrap();
     }
     let app=TestAppContext::single();app.update(gpui_kit::init);
@@ -428,6 +429,26 @@ fn preview_double_click_keyboard_zoom_and_sidebar(){
     app.run_until_parked();draw(&mut ui);
     assert!(app.read(|cx|desk.read(cx).resource.large_preview_open));
     assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
+    assert!(app.read(|cx|desk.read(cx).resource.quality.is_none()));
+    let load=ui.debug_bounds("local-quality").unwrap();
+    ui.simulate_click(load.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.quality.as_ref().is_some_and(|q|q.width==640&&q.height==480&&!q.remote)));
+    let quality_id=app.read(|cx|desk.read(cx).resource.quality.as_ref().unwrap().image.id);
+    // A rejected alternate source must not replace the current render image.
+    app.update(|cx|desk.update(cx,|v,cx|v.load_quality(true,cx)));
+    app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.quality.as_ref().is_some_and(|q|q.image.id==quality_id)&&!r.quality_status.is_empty()&&!r.quality_busy}));
+    let offline=ui.debug_bounds("offline-quality").unwrap();
+    ui.simulate_click(offline.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.quality.is_none()&&r.large_preview_path.is_some()&&r.quality_status.is_empty()}));
+    let load=ui.debug_bounds("local-quality").unwrap();
+    ui.simulate_click(load.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.quality.is_some()));
+    let strip=ui.debug_bounds("preview-strip-2").unwrap();
+    ui.simulate_click(strip.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),2);
+    assert!(app.read(|cx|desk.read(cx).resource.quality.is_none()));
+    ui.simulate_keystrokes("left");app.run_until_parked();draw(&mut ui);
     ui.simulate_keystrokes("right");app.run_until_parked();draw(&mut ui);
     assert_ne!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
     ui.simulate_keystrokes("left");app.run_until_parked();draw(&mut ui);
@@ -447,5 +468,50 @@ fn preview_double_click_keyboard_zoom_and_sidebar(){
     assert_eq!(app.read(|cx|desk.read(cx).resource.zoom),1.);
     ui.simulate_keystrokes("escape");app.run_until_parked();draw(&mut ui);
     assert!(!app.read(|cx|desk.read(cx).resource.large_preview_open));
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn preview_next_crosses_filtered_page_and_can_return(){
+    let root=std::env::temp_dir().join(format!("yuque-preview-pages-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    for i in 0..151{
+        let category=if i==0||i==150{"image"}else{"attachment"};
+        let source=root.join(format!("fixture-{i}.png"));
+        let (url,digest)=if category=="image"{
+            image::RgbImage::from_pixel(640,320,image::Rgb([i as u8,100,30])).save(&source).unwrap();
+            use sha2::{Digest,Sha256};
+            (url::Url::from_file_path(&source).unwrap().to_string(),hex::encode(Sha256::digest(std::fs::read(&source).unwrap())))
+        }else{(format!("file:///fixture-{i}.png"),format!("fixture-{i}"))};
+        db.insert_or_get(&crate::storage::NewAsset{name:format!("fixture-{i}.png"),bytes:10,category:category.into(),provider:"demo".into(),owner_id:"local".into(),url,sha256:digest,filekey:String::new()}).unwrap();
+    }
+    let app=TestAppContext::single();app.update(gpui_kit::init);app.update(|cx|cx.set_reduce_motion(true));
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(780.),px(640.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),150);
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{
+        desk.update(cx,|v,cx|{let a=v.resource.assets[0].clone();v.select_asset(a,w,cx);v.open_large_preview(w,cx);});
+        w.refresh();w.draw(cx).clear(cx);
+    });
+    app.run_until_parked();
+    ui.simulate_keystrokes("right");
+    for _ in 0..5{app.run_until_parked();ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});}
+    assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),1);
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),151);
+    assert!(app.read(|cx|desk.read(cx).resource.pending_preview.is_none()));
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.cached_thumbnails.get(&1).is_some_and(|p|p.is_file())&&r.ratios.get(&1)==Some(&2.)}));
+    assert!(app.read(|cx|desk.read(cx).preview_strip().iter().map(|a|a.id).collect::<Vec<_>>()==vec![151,1]));
+    // Simulate upload completion invoking reload while on a later page.
+    app.update(|cx|desk.update(cx,|v,cx|v.reload(cx)));app.run_until_parked();
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.preview_reload_pending&&r.assets.len()==151&&r.selected_asset.as_ref().unwrap().id==1}));
+    ui.simulate_keystrokes("left");app.run_until_parked();
+    assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),151);
+    ui.simulate_keystrokes("escape");app.run_until_parked();
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;!r.large_preview_open&&!r.preview_reload_pending&&r.assets.len()==150}));
+    assert!(root.join("fixture-0.png").exists()&&root.join("fixture-150.png").exists());
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }

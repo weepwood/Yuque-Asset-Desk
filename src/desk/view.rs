@@ -295,7 +295,10 @@ impl UploadDesk {
             let (canvas_w,canvas_h,ratio)=self.preview_size(window);
             let (image_w,image_h)=album::fit_preview(canvas_w,canvas_h,ratio,zoom);
             let pan=album::clamp_pan((canvas_w,canvas_h),(image_w,image_h),(f32::from(self.resource.pan.x),f32::from(self.resource.pan.y)));
-            let previous=self.preview_neighbor(false).is_some();let next=self.preview_neighbor(true).is_some();
+            let previous=self.preview_neighbor(false).is_some();let next=self.resource.pending_preview.is_none()&&(self.preview_neighbor(true).is_some()||(self.resource.has_more&&self.resource.history_error.is_none()));
+            if !self.resource.loading_history{
+                if let Some((id,left))=self.resource.pending_preview{cx.defer_in(window,move|v,w,cx|{if v.resource.pending_preview==Some((id,left))&&!v.resource.loading_history{v.resource.pending_preview=None;v.continue_preview_page(id,left,w,cx);}});}
+            }
             div().id("preview-root").track_focus(&self.resource.preview_focus).size_full().flex().flex_col().p_4().gap_3().opacity(surface_alpha)
                 .on_key_down(cx.listener(|v,e:&KeyDownEvent,w,cx|{
                     if e.keystroke.modifiers.control||e.keystroke.modifiers.platform||e.keystroke.modifiers.alt{return;}
@@ -319,7 +322,7 @@ impl UploadDesk {
                     .child(Button::new("zoom-out").ghost().small().icon(IconName::Minus).on_click(cx.listener(|v,_,_,cx|v.zoom_by(-0.25,cx))))
                     .child(format!("{:.0}%",zoom*100.))
                     .child(Button::new("zoom-in").ghost().small().icon(IconName::Plus).on_click(cx.listener(|v,_,_,cx|v.zoom_by(0.25,cx))))
-                    .child(div().text_xs().text_color(self.palette().muted).child("本地低清预览"))
+
                     .child(Button::new("zoom-reset").ghost().small().label("适应窗口").on_click(cx.listener(|v,_,_,cx|{v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));cx.notify();}))))
                 .child({
                     let panel=div().id("preview-canvas").bg(self.palette().sidebar).rounded(px(design::CONTROL_RADIUS)).relative().flex_1().min_h(px(0.)).overflow_hidden().flex().items_center().justify_center()
@@ -340,14 +343,48 @@ impl UploadDesk {
                         }))
                         .on_mouse_up(MouseButton::Left,cx.listener(|v,_,_,cx|{v.resource.drag_at=None;cx.notify();}))
                         .on_mouse_up_out(MouseButton::Left,cx.listener(|v,_,_,cx|{v.resource.drag_at=None;cx.notify();}));
-                    if let Some(path)=&self.resource.large_preview_path { panel.child(div().absolute()
+                    if let Some(q)=&self.resource.quality {panel.child(div().absolute()
+                        .left(px((canvas_w-image_w)*0.5)+px(pan.0)).top(px((canvas_h-image_h)*0.5)+px(pan.1)).w(px(image_w)).h(px(image_h))
+                        .child(img(q.image.clone()).w(px(image_w)).h(px(image_h)).object_fit(ObjectFit::Contain)))}
+                    else if let Some(path)=&self.resource.large_preview_path { panel.child(div().absolute()
                         .left(px((canvas_w-image_w)*0.5)+px(pan.0))
                         .top(px((canvas_h-image_h)*0.5)+px(pan.1))
                         .w(px(image_w)).h(px(image_h))
                         .child(img(path.clone()).image_cache(&self.resource.image_cache).w(px(image_w)).h(px(image_h)).object_fit(ObjectFit::Contain))) }
                     else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
-                }).into_any_element()
+                }).child(self.preview_footer(cx)).into_any_element()
 
+    }
+    #[inline(never)]
+    fn preview_footer(&self,cx:&mut Context<Self>)->AnyElement{
+        let p=self.palette();
+        let current=self.resource.selected_asset.as_ref().map(|a|a.id);
+        let online=self.resource.selected_asset.as_ref().is_some_and(|a|a.provider=="yuque");
+        let quality=self.resource.quality.as_ref();
+        let mode=if let Some(q)=quality{
+            let source=if q.remote{"在线原图"}else{"本地原图"};
+            if (q.width,q.height)==(q.shown_width,q.shown_height){format!("{source} · {}×{}",q.width,q.height)}else{format!("{source} · {}×{} · 预览 {}×{}",q.width,q.height,q.shown_width,q.shown_height)}
+        }else{"离线微缩图".into()};
+        let message=if self.resource.pending_preview.is_some(){"正在加载下一页…"}else{self.resource.quality_status.as_str()};
+        let mut strip=div().h(px(48.)).flex().justify_center().items_center().gap_2().overflow_hidden();
+        for a in self.preview_strip(){
+            let selected=Some(a.id)==current;
+            let asset=a.clone();let id=a.id;
+            let mut tile=div().id(("preview-strip",a.id as usize)).debug_selector(move||format!("preview-strip-{id}")).w(px(56.)).h(px(44.)).flex_shrink_0().rounded_md().overflow_hidden().border_1().border_color(if selected{p.accent}else{p.line}).bg(p.sidebar).cursor_pointer().flex().items_center().justify_center()
+                .on_click(cx.listener(move|v,_,w,cx|{if v.resource.selected_asset.as_ref().is_none_or(|a|a.id!=asset.id){v.select_asset(asset.clone(),w,cx);v.open_large_preview(w,cx);}}));
+            if let Some(path)=self.resource.cached_thumbnails.get(&a.id){tile=tile.child(img(path.clone()).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Cover));}
+            else{tile=tile.child(IconName::GalleryVerticalEnd);}
+            strip=strip.child(tile);
+        }
+        div().h(px(112.)).flex_shrink_0().flex().flex_col().gap_2()
+            .child(div().h(px(28.)).flex().items_center().gap_2()
+                .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(mode))
+                .when(quality.is_some()||self.resource.quality_busy,|d|d.child(div().debug_selector(||"offline-quality".into()).child(Button::new("offline-quality").small().ghost().label("离线预览").on_click(cx.listener(|v,_,_,cx|{v.clear_quality(cx);cx.notify();})))))
+                .child(div().debug_selector(||"local-quality".into()).child(Button::new("local-quality").small().label("本地原图").selected(quality.is_some_and(|q|!q.remote)).disabled(self.resource.quality_busy||quality.is_some_and(|q|!q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(false,cx)))))
+                .when(online,|d|d.child(Button::new("remote-quality").small().label("在线原图").selected(quality.is_some_and(|q|q.remote)).disabled(self.resource.quality_busy||quality.is_some_and(|q|q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(true,cx)))))
+                .child(Button::new("preview-browser").ghost().small().label("打开原文件").on_click(cx.listener(|v,_,_,cx|v.open_selected_resource(cx)))))
+            .child(div().h(px(20.)).flex().items_center().justify_center().text_xs().text_color(p.muted).truncate().child(if message.is_empty(){if self.resource.preview_reload_pending{"相册有更新，返回后刷新".to_string()}else{"左右键切图 · 原图按需加载".to_string()}}else{message.to_owned()}))
+            .child(strip).into_any_element()
     }
 }
 
@@ -367,12 +404,14 @@ impl Render for UploadDesk {
         #[cfg(feature="qa")]
         if self.isolated_qa(){
             let page=std::env::var("YUQUE_QA_PAGE").unwrap_or_default();
-            if matches!(page.as_str(),"detail"|"preview") && self.resource.selected_asset.is_none(){
+            if matches!(page.as_str(),"detail"|"preview"|"quality") && self.resource.selected_asset.is_none(){
                 if let Some(asset)=self.resource.assets.iter().find(|a|a.category=="image").cloned(){
                     cx.defer_in(window,move|v,w,cx|{if v.resource.selected_asset.is_none(){v.select_asset(asset,w,cx);}});
                 }
-            }else if page=="preview" && !self.resource.large_preview_open && self.resource.thumbnail_path.is_some(){
+            }else if matches!(page.as_str(),"preview"|"quality") && !self.resource.large_preview_open && self.resource.thumbnail_path.is_some(){
                 cx.defer_in(window,|v,w,cx|{if !v.resource.large_preview_open{v.open_large_preview(w,cx);}});
+            }else if page=="quality" && self.resource.large_preview_open && self.resource.quality.is_none() && !self.resource.quality_busy && self.resource.quality_status.is_empty(){
+                cx.defer_in(window,|v,_,cx|{v.load_quality(false,cx);});
             }
         }
         let narrow = window.viewport_size().width < px(1000.);

@@ -76,6 +76,9 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("resources-dark.png")
     previews=list((data/"album-previews").glob("*.jpg"))
     assert len(previews)==11, f"expected 11 offline previews, got {len(previews)}"
+    capture("preview-quality-dark.png",YUQUE_QA_PAGE="quality")
+    capture("preview-quality-light.png",YUQUE_QA_PAGE="quality",YUQUE_QA_LIGHT="1")
+    capture("preview-quality-narrow.png",YUQUE_QA_PAGE="quality",YUQUE_QA_NARROW="1")
     for path in data.glob("*.png"):
         path.unlink()
     capture("album-offline-dark.png")

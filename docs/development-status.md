@@ -178,3 +178,12 @@
 - 发布进展：CI 45470121925 attempt 1 macOS 被取消（GitHub check annotation: The job was not acquired by Runner of type hosted even after multiple attempts；macOS arm64 capacity constraints）。仅重跑 macOS job，attempt 2 macOS 138727948374 queued、Windows success；不修改源码、不重复本地测试。正式 Tag/Release 尚未创建。
 
 - V0.5.1 已正式发布：45470121925 attempt 2 success；Tag efe4ef9；2026-11-24T19:55:48Z 公开，四项资产重新下载与原始 SHA256/GitHub digest 一致。Windows ZIP 9283648 bytes，macOS DMG 8887805 bytes。DMG 签名、架构、布局和隔离正式启动通过（1160×828，tray=true，hotkey=false 因已注册冲突），未改真实数据。公网更新 Current("0.5.1")。后续仅文档提交不改变 Tag；证据 dist/release-audit-v0.5.1/。
+
+## V0.6.0 预览专项（基线正式 v0.5.1）
+- 独立分支 feat/v0.6-preview：按需本地/在线原图（哈希一致才展示），仅当前一张内存高清 RenderImage；输入32MiB/1600万像素/单边8192、显示最长边2560，默认永久160px离线微缩图不变。网络限制固定语雀CDN HTTPS、无认证头、无重定向，尊重系统代理，不自动请求；其他地址/CDN转换或失败可浏览器打开。无需新增依赖或 schema。预览底部最多七张附近微缩图，可直接切换；向后跨分页追加并跳过非图片，保留筛选范围、可返回已加载页；单次最多九页。详见 README/AGENTS。
+- 本地 QA 51 passed/1 ignored、QA build、静态检查、diff check 通过。隔离 GPUI 测试覆盖点击高清/缩略图/释放、跨150条页面边界与回退、缩放/拖动/退出。HTTP回环验证无认证头、200/302/403/超限；源文件哈希/安全限额/颜色通道/下采样验证。真实渲染7张，其中4张预览（深浅窄窗高清及离线）已审查，位于 dist/qa/preview*.png。未用真实用户数据或凭据、未请求真实语雀 CDN，未执行 Windows 真机或新 Release 性能基准；新版待 PR CI，未发布。
+
+## V0.6.0 预览专项收口（基线 ebb7c6d）
+- 复查 PR #3 的 CI 45476368867，Windows success、macOS queued。未放宽门禁，继续在同一分支修复实际体验差距。
+- 预览缩略图恢复按选中资源的七图范围而非旧图库视口调度；主图本地恢复同时更新路径和比例，尾部向前补齐导航。后台上传触发刷新时保留预览游标/选中项，退出后统一刷新。高清加载失败不覆盖成功的图，支持显式切回离线，加载/错误独立展示；原文件打开失败可见。未新增依赖或持久化缓存，切换来源时可能短暂共存两张高清图，后台阻塞请求仍受20s超时约束。
+- 51 passed/0 failed/1 ignored；QA build、all-targets check、static/diff check；增加原生交互断言（失败保留、离线释放、跨页实际缩略图和2:1比例、延迟刷新、源文件保留）。重新生成7张真实渲染截图，其中深浅/窄窗高清与离线4张预览。无真实账号/CDN/Windows真机/正式内存性能测量，未发布新版。

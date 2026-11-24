@@ -150,3 +150,16 @@
 - Tag v0.5.1 固定 efe4ef9eb8e0f44b0f1914063257ddd2555c782f，CI 45470121925 attempt 2 双平台 success；正式 Release https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.1 ，2026-11-24T19:55:48Z 公开。不得移动 Tag 或替换资产。
 - Windows ZIP 9283648 bytes SHA256 c5b592e962ae7c0ebf4f7aa92e14817e849379962a7d11aec8cffe5860af7e42；macOS DMG 8887805 bytes SHA256 4b1bea16c7f49837561d503dac202f0f5067f9ac5339dfca04dbaa09509484b7。原始校验文件和 GitHub 四项资产 digest 一致，公开后重新下载验证通过。更新检查 Current("0.5.1")。
 - macOS CI 正式 DMG 只读挂载/复制/签名/架构/布局校验，隔离实际启动窗口1160×828、托盘正常；快捷键已被占用，正常降级 hotkey=false，不声称注册通过。未安装至 Applications、未使用真实凭据；Windows 真机、Apple 公证、真实上传未验收。证据 dist/release-audit-v0.5.1/。
+
+## V0.6.0 按需原图预览专项
+- V0.5.1 正式 Tag efe4ef9 不改变；独立 feat/v0.6-preview 分支、单 PR。src/high_preview.rs 复用 image/reqwest/GPUI RenderImage，只有显式操作才读取本地原图或在线请求。默认永久离线 160px JPEG 不改；不新增磁盘缓存或依赖。
+- 本地路径来自 Demo file URL/当前资源所属账号的已完成任务记录，普通文件、32MiB、SHA256 严格验证。线上仅 yuque provider 的 https://cdn.nlark.com/yuque/ (443、无 URL 用户名密码)，遵循 TLS/系统代理，不跟随重定向、不传 Cookie/API/CSRF/Referer；HTTP 200、大小和 SHA256 均检查。CDN 不一致或其他链接使用浏览器；不自动请求或回退到网络。1600万像素、8192单边、96MiB image decoder alloc limit，最长边2560显示，PNG/JPEG/WebP/GIF首帧/BMP，不支持矢量或动图播放。
+- 当前高清图只保留单个 RenderImage（最长边2560，GPU/CPU 实际峰值未测）；切换/关闭/筛选重置 cx.drop_image；generation 和 asset id 拒绝过期回调；单工作锁防并发解码，取消后后台请求可能继续直至超时。保留低清图供失败回退，不写源文件或永久微缩图。
+- 预览邻近七张缩略图仅使用本地缓存；左右键及原生按钮跨页追加（沿用当前账号/筛选/排序/收藏标签查询，最多九页每次，非图片跳过）。退出或切换取消待跳转。复用 existing page cursor/virtual gallery，不做全量加载。
+- 验收：51 passed/0 failed/1 ignored QA、QA build、静态检查、diff check；真实 GPUI 点击本地原图及缩略图、跨150条边界跳过附件并返回、高清释放、缩放/拖动/退出；回环 HTTP 200/302/403/超限、无认证头；源文件 hash/尺寸/BGRA/下采样/不写预览测试。7张实际渲染截图含高清深/浅/窄及离线；四张预览截图已审查。未测试真实 CDN、Windows 真机或 Release 性能，不提前发布。
+
+## V0.6.0 预览专项可靠性收口
+- 高清来源切换：当前同源已加载时不重复读取；切换其他来源失败保留原高清图，成功后 drop_image 旧图；显式“离线预览”释放当前高清并使后台回调过期。稳态仅一张高清，切换成功前可能短暂同时存在两张；阻塞 HTTP 尚不能立即中止，单工作锁及20s请求超时继续保留。
+- 预览导航及本地缩略图生成共用 preview_strip 的邻近七图范围，靠近末尾向前补足，首尾均不超七；跨页没有缓存时使用既有本地恢复机制，禁止网络缩略图。恢复选中图片时同步写入内存路径/宽高比，返回详情可复用。
+- 上传结束等 reload 请求在预览期间合并为一个待刷新标记；返回相册再执行一次 reload，当前页游标、选中图片及左右浏览不被异步刷新打断。显式筛选/账号 reset_history 仍立即清理旧状态。预览单独显示图源、尺寸和失败/加载状态；打开原文件失败可在预览内看见。
+- 本地51项完整QA、QA build、cargo check --locked --all-targets、静态检查、diff check通过；既有两项实际GPUI预览回归增加替代来源失败保留、离线释放、跨页真实本地源恢复/比例、刷新延迟与返回刷新断言。深浅窄窗高清及离线截图重新生成；未使用真实语雀CDN、未做Windows真机或正式性能基准。保留 PR #3，等待新提交双平台CI，不创建新版本Tag。
