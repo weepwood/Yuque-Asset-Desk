@@ -28,7 +28,23 @@ pub fn upload(path: &Path, cfg: &Config, storage: &Storage) -> Result<UploadResu
     let file_name = path.file_name().and_then(|v| v.to_str()).context("文件名不是有效 UTF-8")?.to_string();
     let category = asset_category(path);
     let digest = sha256_file(path)?;
-    if let Some(existing) = storage.find(cfg.provider(), cfg.owner_id(), &digest)? {
+    if let Some(mut existing) = storage.find(cfg.provider(), cfg.owner_id(), &digest)? {
+        // Demo links refer to real local files. Repair stale links when the same
+        // content is imported from another location, retaining its ID and tags.
+        if cfg.mode == Mode::Demo {
+            let old_path = url::Url::parse(&existing.url).ok().and_then(|u| u.to_file_path().ok());
+            let usable = old_path.as_ref().is_some_and(|p| {
+                std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == metadata.len())
+                    && sha256_file(p).is_ok_and(|hash| hash == digest)
+            });
+            if !usable {
+                let local = url::Url::from_file_path(path.canonicalize()?)
+                    .map_err(|_| anyhow::anyhow!("无法生成本机文件 URL"))?.to_string();
+                storage.refresh_demo_link(existing.id, &file_name, &local)?;
+                existing.name = file_name;
+                existing.url = local;
+            }
+        }
         return Ok(UploadResult { item: existing, duplicate: true });
     }
     let (url, filekey) = match cfg.mode {
@@ -77,8 +93,12 @@ fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config) -> Re
         ("ctoken", &auth.csrf),
     ])?;
     let mut headers = HeaderMap::new();
-    headers.insert(COOKIE, HeaderValue::from_str(&auth.cookie).context("语雀 Cookie 格式错误")?);
-    headers.insert("x-csrf-token", HeaderValue::from_str(&auth.csrf).context("CSRF Token 格式错误")?);
+    let mut cookie = HeaderValue::from_str(&auth.cookie).context("语雀 Cookie 格式错误")?;
+    cookie.set_sensitive(true);
+    headers.insert(COOKIE, cookie);
+    let mut csrf = HeaderValue::from_str(&auth.csrf).context("CSRF Token 格式错误")?;
+    csrf.set_sensitive(true);
+    headers.insert("x-csrf-token", csrf);
     headers.insert(ORIGIN, HeaderValue::from_static("https://www.yuque.com"));
     headers.insert(REFERER, HeaderValue::from_static("https://www.yuque.com/"));
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -109,7 +129,8 @@ fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config) -> Re
     }
     // Bound the response even if the server does not provide a Content-Length header.
     let mut limited_body = Vec::new();
-    response.take(1024 * 1024 + 1).read_to_end(&mut limited_body)?;
+    response.take(1024 * 1024 + 1).read_to_end(&mut limited_body)
+        .map_err(|_| anyhow::anyhow!("读取语雀上传响应失败；请先确认网页端是否已上传成功"))?;
     if limited_body.len() > 1024 * 1024 { bail!("语雀上传响应异常：内容超过 1 MB"); }
     let payload: Value = serde_json::from_slice(&limited_body)
         .context("语雀响应不是有效 JSON；可能需要重新登录")?;
@@ -168,6 +189,39 @@ mod tests {
         let db = Storage::new(base.join("db.sqlite")).unwrap();
         let error = upload(Path::new("this-file-should-not-exist"), &cfg, &db).err().unwrap();
         assert!(error.to_string().contains("未配置语雀会话"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn demo_validates_files_and_deduplicates_without_network() {
+        let base = std::env::temp_dir().join(format!("yuque-demo-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db = Storage::new(base.join("db.sqlite")).unwrap();
+        let cfg = Config { mode: Mode::Demo, creds: None, max_file_mb: 1 };
+        let first = base.join("first.png");
+        let second = base.join("second.png");
+        std::fs::write(&first, b"same image bytes").unwrap();
+        std::fs::write(&second, b"same image bytes").unwrap();
+        let uploaded = upload(&first, &cfg, &db).unwrap();
+        assert!(!uploaded.duplicate);
+        assert!(uploaded.item.url.starts_with("file:"));
+        let duplicate = upload(&second, &cfg, &db).unwrap();
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.item.id, uploaded.item.id);
+        std::fs::remove_file(&first).unwrap();
+        let repaired = upload(&second, &cfg, &db).unwrap();
+        assert_eq!(repaired.item.id, uploaded.item.id);
+        assert_eq!(repaired.item.name, "second.png");
+        assert_eq!(url::Url::parse(&repaired.item.url).unwrap().to_file_path().unwrap(), second.canonicalize().unwrap());
+        let empty = base.join("empty.png");
+        std::fs::write(&empty, []).unwrap();
+        assert!(upload(&empty, &cfg, &db).is_err());
+        let large = base.join("large.bin");
+        std::fs::write(&large, vec![0u8; 1024 * 1024 + 1]).unwrap();
+        assert!(upload(&large, &cfg, &db).is_err());
+        assert!(upload(&base, &cfg, &db).is_err());
         drop(db);
         let _ = std::fs::remove_dir_all(base);
     }

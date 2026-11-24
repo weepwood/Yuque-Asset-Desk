@@ -34,9 +34,9 @@ jobs:
         run: cmake --version
       - uses: Swatinem/rust-cache@v2
       - name: Compile and run unit tests
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test --locked --target ${{ matrix.target }}
       - name: Release build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package macOS app (unsigned)
         if: runner.os == 'macOS'
         shell: bash

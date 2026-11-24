@@ -17,6 +17,7 @@ directories = "6"
 rfd = "0.15"
 arboard = { version = "3", default-features = false }
 mime_guess = "2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 url = "2"
 
 [profile.release]

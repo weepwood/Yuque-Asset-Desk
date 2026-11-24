@@ -20,6 +20,30 @@ pub struct Config {
     pub max_file_mb: u64,
 }
 
+impl YuqueCredentials {
+    pub fn validated(user_id: String, csrf: String, cookie: String) -> anyhow::Result<Self> {
+        anyhow::ensure!(!user_id.is_empty() && user_id.len() <= 32 && user_id.bytes().all(|b| b.is_ascii_digit()), "用户 ID 必须是数字");
+        anyhow::ensure!(!csrf.is_empty() && csrf.len() <= 4096 && reqwest::header::HeaderValue::from_str(&csrf).is_ok(), "CSRF Token 格式错误");
+        anyhow::ensure!(!cookie.is_empty() && cookie.len() <= 16384 && reqwest::header::HeaderValue::from_str(&cookie).is_ok(), "Cookie 格式错误");
+        Ok(Self { user_id, csrf, cookie })
+    }
+
+    pub fn vault_key(owner: &str) -> String {
+        format!("https://yuque.com/yuque-asset-desk/account/{owner}")
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"csrf": self.csrf, "cookie": self.cookie})).unwrap_or_default()
+    }
+
+    pub fn decode(owner: String, data: &[u8]) -> anyhow::Result<Self> {
+        let value: serde_json::Value = serde_json::from_slice(data)
+            .map_err(|_| anyhow::anyhow!("凭据数据格式错误"))?;
+        Self::validated(owner, value["csrf"].as_str().unwrap_or_default().into(),
+            value["cookie"].as_str().unwrap_or_default().into())
+    }
+}
+
 impl Config {
     pub fn from_env() -> Self {
         let mode = if env::var("YUQUE_MODE").unwrap_or_default().eq_ignore_ascii_case("yuque") {
@@ -38,11 +62,7 @@ impl Config {
         } else {
             String::new()
         };
-        let creds = if !cookie.is_empty() && !csrf.is_empty() && user_id.bytes().all(|b| b.is_ascii_digit()) && !user_id.is_empty() {
-            Some(YuqueCredentials { user_id, csrf, cookie })
-        } else {
-            None
-        };
+        let creds = YuqueCredentials::validated(user_id, csrf, cookie).ok();
         let max_file_mb = env::var("YUQUE_MAX_FILE_MB")
             .ok().and_then(|x| x.parse::<u64>().ok())
             .filter(|n| (1..=1024).contains(n)).unwrap_or(25);
@@ -65,6 +85,18 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vault_payload_roundtrip_and_validation() {
+        let creds = YuqueCredentials::validated("123".into(), "test-csrf".into(), "test-cookie=example".into()).unwrap();
+        let recovered = YuqueCredentials::decode("123".into(), &creds.encode()).unwrap();
+        assert_eq!(recovered.user_id, "123");
+        assert_eq!(recovered.csrf, "test-csrf");
+        assert!(YuqueCredentials::validated("../invalid".into(), "x".into(), "y".into()).is_err());
+        assert!(YuqueCredentials::validated("123".into(), "x\r\n".into(), "y".into()).is_err());
+        assert!(YuqueCredentials::decode("123".into(), b"invalid").is_err());
+        assert_ne!(YuqueCredentials::vault_key("123"), YuqueCredentials::vault_key("456"));
+    }
+
     #[test]
     fn demo_has_stable_owner() {
         let config = Config { mode: Mode::Demo, creds: None, max_file_mb: 25 };
