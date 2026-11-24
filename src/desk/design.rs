@@ -3,15 +3,24 @@ use gpui_kit::*;
 use gpui_kit::component::theme::{Theme,ThemeMode};
 pub(super) const SIDEBAR_W:f32=184.;
 pub(super) const SIDEBAR_NARROW:f32=150.;
-pub(super) const CONTENT_PAD:f32=16.;
+
 pub(super) const CONTROL_RADIUS:f32=6.;
 pub(super) const FEEDBACK_MS:u64=160;
 pub(super) const INSPECTOR_W:f32=280.;
-pub(super) const TILE_GAP:f32=10.;
-pub(super) const DAY_H:f32=28.;
+
 pub(super) const TITLE_SIZE:f32=18.;
 pub(super) const BODY_SIZE:f32=13.;
 pub(super) const CAPTION_SIZE:f32=11.;
+#[derive(Clone,Copy)]
+pub(super) struct Spacing{
+    pub pad:f32,pub gap:f32,pub day:f32,pub section:f32,pub row:f32,pub nav:f32,
+}
+impl Spacing{
+    pub fn new(comfortable:bool)->Self{
+        if comfortable{Self{pad:24.,gap:16.,day:36.,section:16.,row:16.,nav:6.}}
+        else{Self{pad:16.,gap:10.,day:28.,section:8.,row:12.,nav:4.}}
+    }
+}
 #[derive(Clone,Copy)]
 pub(super) struct Palette {
     pub canvas:Rgba,pub sidebar:Rgba,pub surface:Rgba,pub subtle:Rgba,pub line:Rgba,

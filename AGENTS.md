@@ -83,3 +83,8 @@
 - 保留语雀网页端非公开 multipart 接口，不新增其他图床。队列暂停依据 TransferProgress 的实际 HTTP 状态及远端结果分类（QueueStop），不得依赖本地化错误文案。401/403 提示检查会话与 CSRF，429 暂停，结果不明保留 unknown，不自动重传。
 - 上传 JSON 解析独立测试；仅接受已有契约中的 HTTPS 链接，不把返回成功、请求体读取完成或本地入库失败混为一谈。测试使用合成响应及回环 HTTP，不访问真实语雀或真实账号。
 - 正式构建矩阵仅 windows-2022 x86_64-pc-windows-msvc、macos-15 aarch64-apple-darwin；不再构建 Intel Mac 发布包。完整 CI 成功后方可发布。
+
+## V0.5.0 舒适与紧凑模式
+- Preferences.comfortable 默认 true；旧设置缺字段时使用舒适模式。布局菜单和设置 Switch 共同调用 set_comfortable；图片尺寸独立持久化。design::Spacing 统一主内容边距 24/16、图间距 16/10、日期高度 36/28、区块间距 16/8、列表内边距 16/12、导航间距 6/4（舒适/紧凑）。网格/等高/瀑布流计算与渲染必须共享 spacing；切换时重建测量、尝试恢复滚动锚点。
+- 相册内容区接受 GPUI ExternalPaths 拖拽并以原生 drag_over 反馈。忙碌时明确提示未入队，不静默丢弃；保持原有持久化、去重、unknown 人工核实约束。批次进度按已处理任务计数，字节为请求体读取量，不等于远端成功；待恢复入口仅占底栏。
+- 发布仅 Windows x64/macOS ARM64，最新候选双平台 CI 全通过后才下载/校验同一 SHA 的 ZIP 并发布。不可沿用旧候选资产。

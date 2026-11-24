@@ -38,6 +38,14 @@ fn native_clicks_switch_resource_and_task_views() {
     let bounds=ui.debug_bounds("settings-theme").unwrap(); ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
     assert_ne!(app.read(|cx|desk.read(cx).dark),dark);
+    assert!(app.read(|cx|desk.read(cx).prefs.comfortable));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("settings-comfortable").unwrap();
+    ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    assert!(!app.read(|cx|desk.read(cx).prefs.comfortable));
+    assert_eq!(app.read(|cx|desk.read(cx).spacing().gap),10.);
+    app.update(|cx|desk.update(cx,|v,_|v.flush_preferences()));
+    assert!(!preferences::Preferences::decode(Storage::new(root.join("assets.db")).unwrap().preferences().unwrap()).comfortable);
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);
 }
@@ -96,6 +104,11 @@ fn album_native_scroll_and_density_controls() {
         (actual-expected).abs()
     });
     assert!(restored<2.,"masonry anchor drift: {restored}");
+    let anchor=app.read(|cx|{let r=&desk.read(cx).resource;r.masonry_plan.anchor(-f32::from(r.masonry_scroll.offset().y))}).unwrap();
+    app.update(|cx|desk.update(cx,|v,cx|v.set_comfortable(false,cx)));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;(r.masonry_plan.restore(Some(anchor)).unwrap()+f32::from(r.masonry_scroll.offset().y)).abs()<2.}));
+
     let toggle=ui.debug_bounds("immersive-toggle").expect("immersive control");
     ui.simulate_click(toggle.center(),Modifiers::default());app.run_until_parked();
     ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
@@ -213,4 +226,33 @@ fn native_filter_layout_and_card_context_menu(){
     ui.simulate_keystrokes("down down down down enter");app.run_until_parked();
     assert!(app.read(|cx|desk.read(cx).resource.favorites.contains(&id)));
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn gallery_external_file_drop_uses_existing_queue(){
+    use qa_gpui::{FileDropEvent,InputEvent};
+    let root=std::env::temp_dir().join(format!("yuque-drop-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let source=root.join("drop.png");
+    image::RgbImage::new(64,48).save(&source).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let db_view=db.clone();
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db_view))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let pos=point(px(600.),px(420.));
+    ui.update(|w,cx|{w.dispatch_event(FileDropEvent::Entered{position:pos,paths:ExternalPaths([source.clone()].into_iter().collect())}.to_platform_input(),cx);w.refresh();w.draw(cx).clear(cx);});
+    ui.update(|w,cx|{w.dispatch_event(FileDropEvent::Submit{position:pos}.to_platform_input(),cx);});
+    app.run_until_parked();
+    let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
+    assert_eq!(items.len(),1);
+    assert!(preview::cached_path(&root,&items[0]).is_file());
+    assert!(!app.read(|cx|desk.read(cx).queue.busy));
+    app.update(|cx|desk.update(cx,|v,cx|{v.queue.busy=true;v.start_upload(vec![source],cx);assert!(v.status.contains("未加入队列"));v.queue.busy=false;}));
+    assert_eq!(db.jobs("demo","local",None).unwrap().len(),1);
+    drop(ui);drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
 }

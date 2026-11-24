@@ -355,7 +355,9 @@ impl UploadDesk {
                     Ok("justified")=>{view.resource.justified=true;}
                     Ok("immersive")=>{view.immersive=true;view.resource.masonry=true;}
                     Ok("masonry")=>{view.resource.masonry=true;}
-                    Ok("dense")=>{view.resource.tile_size=96.;}
+                    Ok("dense")=>{view.resource.tile_size=96.;view.prefs.comfortable=false;}
+                    Ok("compact")=>{view.prefs.comfortable=false;}
+                    Ok("compact-masonry")=>{view.prefs.comfortable=false;view.resource.masonry=true;}
                     Ok("favorites")=>{view.resource.favorites_only=true;}
                     _=>{}
                 }

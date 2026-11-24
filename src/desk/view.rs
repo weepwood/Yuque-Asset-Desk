@@ -2,6 +2,7 @@ use super::*;
 use gpui_kit::component::{IconName, Sizable, empty::{Empty,EmptyHeader,EmptyMedia,EmptyMediaVariant,EmptyTitle,EmptyDescription}, menu::ContextMenuExt, sidebar::{SidebarItem,SidebarMenuItem}};
 
 impl UploadDesk {
+    pub(super) fn spacing(&self)->design::Spacing{design::Spacing::new(self.prefs.comfortable)}
     pub(super) fn palette(&self)->design::Palette{design::Palette::new(self.dark)}
 
     pub(super) fn tag_tree(&self,w:&mut Window,cx:&mut Context<Self>) -> impl IntoElement {
@@ -43,15 +44,15 @@ impl UploadDesk {
             let retry = matches!(job.state.as_str(), "pending" | "paused" | "failed");
             let total = self.queue.transfer.total.load(Ordering::Relaxed);
             let bytes = self.queue.transfer.bytes.load(Ordering::Relaxed).min(total);
-            let mut row = div().flex().flex_col().gap_2().p_3()
+            let mut row = div().flex().flex_col().gap_2().p(px(self.spacing().row))
                 .border_b_1().border_color(self.palette().line)
                 .child(div().flex().items_center().gap_2()
                     .child(div().flex_1().min_w(px(0.)).font_semibold().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
                     .child(div().text_xs().text_color(if job.state=="failed"||job.state=="unknown"{self.palette().error}else if job.state=="done"{self.palette().accent}else{self.palette().muted}).child(state))
-                    .when(retry, |d| d.child(Button::new(("retry-job",id as usize))
-                        .label("重试（先核实远端）").disabled(self.queue.busy || self.account.account_busy)
+                    .when(retry, |d| d.child(Button::new(("retry-job",id as usize)).small().ghost()
+                        .label(if job.state=="failed"{"重试"}else{"继续"}).tooltip("重试前请确认远端结果").disabled(self.queue.busy || self.account.account_busy)
                         .on_click(cx.listener(move |view, _, _, cx| view.retry_one(id,cx)))))
-                    .when(matches!(job.state.as_str(),"unknown"|"running") && !active, |d| d.child(Button::new(("ack-job",id as usize))
+                    .when(matches!(job.state.as_str(),"unknown"|"running") && !active, |d| d.child(Button::new(("ack-job",id as usize)).small()
                         .label("已确认远端无文件").disabled(self.queue.busy || self.account.account_busy)
                         .on_click(cx.listener(move |v,_,_,cx| v.acknowledge_job(id,cx))))));
             if active {
@@ -64,11 +65,11 @@ impl UploadDesk {
             if !job.error.is_empty() { row = row.child(div().text_sm().text_color(self.palette().error).child(job.error.clone())); }
             list = list.child(row);
         }
-        div().flex_1().min_w(px(0.)).flex().flex_col().gap_3().p_4()
+        div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad))
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().text_lg().font_semibold().child("上传任务"))
-                .child(Button::new("refresh-jobs").label("刷新").on_click(cx.listener(|v,_,_,cx| v.refresh_jobs(cx))))
-                .child(Button::new("resume-jobs").label("恢复任务").disabled(self.queue.busy || self.account.account_busy || self.queue.recovery_count == 0)
+                .child(Button::new("refresh-jobs").small().ghost().label("刷新").on_click(cx.listener(|v,_,_,cx| v.refresh_jobs(cx))))
+                .child(Button::new("resume-jobs").small().label("恢复任务").disabled(self.queue.busy || self.account.account_busy || self.queue.recovery_count == 0)
                     .on_click(cx.listener(|v,_,_,cx| v.resume_jobs(cx)))))
             .child(div().text_sm().child(format!("当前账号：{} / {} · 未完成 {}",self.account.config.provider(),self.account.config.owner_id(),self.queue.recovery_count)))
             .when(self.queue.busy, |d| d.child(div().flex().gap_2()
@@ -91,7 +92,7 @@ impl UploadDesk {
     }
 
     pub(super) fn inspector(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = div().id("inspector").h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap_3().p_4().when(!narrow && !self.account_panel, |d| d.w(px(design::INSPECTOR_W)).flex_shrink_0()).when(narrow || self.account_panel, |d| d.w_full())
+        let mut panel = div().id("inspector").h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad)).when(!narrow && !self.account_panel, |d| d.w(px(design::INSPECTOR_W)).flex_shrink_0()).when(narrow || self.account_panel, |d| d.w_full())
             .bg(if self.account_panel{self.palette().canvas}else{self.palette().sidebar})
             .when(!self.account_panel,|d|d.border_l_1().border_color(self.palette().line));
         if self.account_panel {
@@ -113,7 +114,7 @@ impl UploadDesk {
                 .child(Button::new("save-account").primary().label("保存并切换")
                     .disabled(self.account.account_busy || self.queue.busy)
                     .on_click(cx.listener(|view, _, window, cx| view.save_credentials(window, cx))))
-                .child(Button::new("demo-account").label("本地演示")
+                .child(Button::new("demo-account").small().ghost().label("切换本地演示")
                     .disabled(self.account.account_busy || self.queue.busy)
                     .on_click(cx.listener(|view, _, _, cx| view.activate_account(None, cx))))
                 .when(self.account.config.mode == Mode::Yuque, |d| d.child(
@@ -154,7 +155,7 @@ impl UploadDesk {
                 .child(div().h(px(1.)).bg(self.palette().line))
                 .child(div().text_xs().font_medium().text_color(self.palette().muted).child("标签"));
             panel = panel.child(Input::new(&self.resource.tag_input))
-                .child(Button::new("save-tags").label("保存标签")
+                .child(Button::new("save-tags").small().label("保存标签")
                     .on_click(cx.listener(|view, _, _, cx| {
                         if let Some(asset) = &view.resource.selected_asset {
                             let text = view.resource.tag_input.read(cx).value().to_string();
@@ -166,11 +167,11 @@ impl UploadDesk {
                         cx.notify();
                     })));
             let favorite_asset=asset.clone();
-            panel=panel.child(Button::new("detail-favorite").label(if self.resource.favorites.contains(&asset.id){"取消收藏"}else{"收藏资源"})
+            panel=panel.child(Button::new("detail-favorite").small().ghost().icon(IconName::Star).label(if self.resource.favorites.contains(&asset.id){"取消收藏"}else{"收藏资源"})
                 .on_click(cx.listener(move |v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))));
             if asset.category == "image" {
                 let similar_asset=asset.clone();
-                panel=panel.child(Button::new("detail-similar").label("查找相似图片")
+                panel=panel.child(Button::new("detail-similar").small().ghost().label("查找相似图片")
                     .on_click(cx.listener(move |v,_,_,cx|v.find_similar(similar_asset.clone(),cx))));
             }
             panel=panel.child(div().h(px(1.)).bg(self.palette().line))
@@ -244,7 +245,7 @@ impl UploadDesk {
                     .items_center()
                     .justify_between()
                     .gap_3()
-                    .p_2()
+                    .p(px(self.spacing().row))
                     .rounded_md()
                     .bg(self.palette().surface)
                     .hover(|style| style.bg(self.palette().subtle))
@@ -289,9 +290,9 @@ impl UploadDesk {
 
     fn album_row(&self,row:&album::AlbumRow,narrow:bool,cx:&mut Context<Self>)->AnyElement {
         match row {
-            album::AlbumRow::Day(day)=>div().h(px(design::DAY_H)).flex().items_center().text_xs().font_medium().text_color(self.palette().muted).child(day.clone()).into_any_element(),
+            album::AlbumRow::Day(day)=>div().h(px(self.spacing().day)).flex().items_center().text_xs().font_medium().text_color(self.palette().muted).child(day.clone()).into_any_element(),
             album::AlbumRow::Item(i)=>div().pb_2().child(self.album_item(self.resource.assets[*i].clone(),0.,0.,narrow,cx)).into_any_element(),
-            album::AlbumRow::Tiles{items,height}=>div().w_full().flex().items_start().gap(px(design::TILE_GAP)).pb(px(design::TILE_GAP))
+            album::AlbumRow::Tiles{items,height}=>div().w_full().flex().items_start().gap(px(self.spacing().gap)).pb(px(self.spacing().gap))
                 .children(items.iter().map(|(i,w)|self.album_item(self.resource.assets[*i].clone(),*w,*height,narrow,cx)).collect::<Vec<_>>()).into_any_element(),
         }
     }
@@ -325,16 +326,16 @@ impl Render for UploadDesk {
             }
         }
         let narrow = window.viewport_size().width < px(1000.);
-        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else if narrow {design::SIDEBAR_NARROW} else {design::SIDEBAR_W} - if !self.immersive && !narrow && self.inspector_open {design::INSPECTOR_W} else {0.} - 2.*design::CONTENT_PAD;
+        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else if narrow {design::SIDEBAR_NARROW} else {design::SIDEBAR_W} - if !self.immersive && !narrow && self.inspector_open {design::INSPECTOR_W} else {0.} - 2.*self.spacing().pad;
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         let gallery=if masonry_mode{
-            let signature=(self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),self.resource.ratio_revision,available.to_bits(),self.resource.tile_size.to_bits(),self.resource.group_dates);
+            let signature=(self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),self.resource.ratio_revision,available.to_bits(),self.resource.tile_size.to_bits(),self.resource.group_dates,self.prefs.comfortable);
             let mut h=std::collections::hash_map::DefaultHasher::new();signature.hash(&mut h);let sig=h.finish();
             if self.resource.masonry_signature!=sig{
                 let old_top=(-f32::from(self.resource.masonry_scroll.offset().y)).max(0.);
                 let anchor=self.resource.masonry_plan.anchor(old_top);
-                let plan=album::masonry(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.group_dates);
+                let plan=album::masonry(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.group_dates,self.spacing());
                 if let Some(top)=plan.restore(anchor){
                     self.resource.masonry_scroll.set_offset(point(px(0.),px(-top)));
                 }
@@ -347,8 +348,8 @@ impl Render for UploadDesk {
             let lo=(top-160.).max(0.);let hi=top+viewport+160.;
             let plan=&self.resource.masonry_plan;
             let mut wall=div().relative().w_full().h(px(plan.height)).flex_shrink_0();
-            for (day,y) in &plan.days{if *y+design::DAY_H>=lo && *y<=hi{
-                wall=wall.child(div().absolute().top(px(*y)).left(px(0.)).h(px(design::DAY_H)).text_xs().font_medium().text_color(self.palette().muted).child(day.clone()));
+            for (day,y) in &plan.days{if *y+self.spacing().day>=lo && *y<=hi{
+                wall=wall.child(div().absolute().top(px(*y)).left(px(0.)).h(px(self.spacing().day)).text_xs().font_medium().text_color(self.palette().muted).child(day.clone()));
             }}
             let mut first=usize::MAX;let mut last=0;
             // Tile start positions are monotonic; skip all earlier tiles except
@@ -374,18 +375,20 @@ impl Render for UploadDesk {
             let mut hash=std::collections::hash_map::DefaultHasher::new();
             (self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),
              if self.resource.justified{self.resource.ratio_revision}else{0},available.to_bits(),self.resource.tile_size.to_bits(),
-             self.resource.grid_view,self.resource.justified,self.resource.group_dates).hash(&mut hash);
+             self.resource.grid_view,self.resource.justified,self.resource.group_dates,self.prefs.comfortable).hash(&mut hash);
             let signature=hash.finish();
             if self.resource.layout_signature!=signature {
                 let old=self.resource.album_list.logical_scroll_top();
-                let planned=album::plan_rows(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,self.resource.group_dates);
+                let planned=album::plan_rows(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,self.resource.group_dates,self.spacing());
+                let anchor=self.resource.row_plan.get(old.item_ix).and_then(|row|match row{album::AlbumRow::Tiles{items,..}=>items.first().map(|(i,_)|*i),album::AlbumRow::Item(i)=>Some(*i),_=>None});
                 let prefix=self.resource.row_plan.iter().zip(&planned).take_while(|(a,b)|a==b).count();
-                if self.resource.album_list.item_count()==self.resource.row_plan.len() && prefix>0 {
+                if self.resource.layout_signature!=0 && self.resource.album_list.item_count()==self.resource.row_plan.len() && prefix>0 {
                     self.resource.album_list.splice(prefix..self.resource.row_plan.len(),planned.len()-prefix);
                 }else{
                     self.resource.album_list.reset(planned.len());
                     if !planned.is_empty() && old.item_ix>0{
-                        self.resource.album_list.scroll_to(ListOffset{item_ix:old.item_ix.min(planned.len()-1),offset_in_item:old.offset_in_item});
+                        let item_ix=anchor.and_then(|i|planned.iter().position(|row|match row{album::AlbumRow::Tiles{items,..}=>items.iter().any(|(j,_)|*j==i),album::AlbumRow::Item(j)=>*j==i,_=>false})).unwrap_or(old.item_ix.min(planned.len()-1));
+                        self.resource.album_list.scroll_to(ListOffset{item_ix,offset_in_item:px(0.)});
                     }
                 }
                 self.resource.row_plan=std::rc::Rc::new(planned);self.resource.layout_signature=signature;
@@ -470,7 +473,7 @@ impl Render for UploadDesk {
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .gap_2().p(px(design::CONTENT_PAD))
+                    .gap(px(self.spacing().section)).p(px(self.spacing().pad))
                     .child(self.gallery_toolbar(available<760.,total,is_demo,window,cx))
                     .when(self.resource.similar_to.is_some(),|d|d.child(div().flex().items_center().gap_2()
                         .child(div().text_xs().text_color(self.palette().muted).child(format!("相似图片 · {}",self.resource.similar_to.as_ref().map(|a|a.name.as_str()).unwrap_or(""))))
@@ -495,6 +498,8 @@ impl Render for UploadDesk {
                     .child(
                         div()
                             .id("asset-history")
+                            .drag_over::<ExternalPaths>({let p=self.palette();move|style,_,_,_|style.bg(p.accent_soft)})
+                            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
                             .flex_1()
                             .min_h(px(0.))
                             .flex()
@@ -510,7 +515,7 @@ impl Render for UploadDesk {
                                 container.child(Empty::new().header(EmptyHeader::new()
                                     .media(EmptyMedia::new().with_variant(EmptyMediaVariant::Icon).child(IconName::FolderOpen))
                                     .title(EmptyTitle::new().child(if initial{"还没有资源"}else{"没有符合条件的资源"}))
-                                    .description(EmptyDescription::new().child(if initial{"上传文件后即可在这里离线浏览、复制链接。"}else{"尝试调整搜索词或筛选条件。"})))
+                                    .description(EmptyDescription::new().child(if initial{"拖入文件或点击上传，即可离线浏览、复制链接。"}else{"尝试调整搜索词或筛选条件。"})))
                                     .when(initial,|e|e.child(Button::new("empty-upload").small().primary().icon(IconName::Plus).label("上传文件")
                                         .disabled(self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))))))
                             })
@@ -519,12 +524,14 @@ impl Render for UploadDesk {
                     .child(
                         div().flex().items_center().justify_between().gap_2().text_xs().text_color(self.palette().muted)
                             .child(div().flex_1().min_w(px(0.)).truncate().child(format!("{} 项 · 共 {}",self.resource.assets.len(),self.resource.total_count)))
+                            .when(!self.queue.busy && self.queue.recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.queue.recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.jobs_page=true;v.account_panel=false;v.inspector_open=false;v.immersive=false;v.refresh_jobs(cx);cx.notify();}))))
                             .when(self.resource.grid_view,|d|d.child(self.density_control()))
                             .when(self.resource.history_error.is_some(),|d|d.child(Button::new("refresh-history").small().label("重试读取")
                                 .on_click(cx.listener(|v,_,_,cx|{v.resource.history_error=None;if v.resource.assets.is_empty(){v.reload(cx);}else{v.load_more(cx);}}))))
                             .when(self.resource.has_more || self.resource.loading_history,|d|d.child(Button::new("next-page").ghost().small().label(if self.resource.loading_history{"加载中…"}else{"加载更多"})
                                 .disabled(self.resource.loading_history).on_click(cx.listener(|v,_,_,cx|v.load_more(cx)))))
                     )
+                    .when(self.queue.busy,|d|d.child(self.upload_summary(cx)))
                     .child(
                         div()
                             .px_1().text_xs().text_color(self.palette().muted)

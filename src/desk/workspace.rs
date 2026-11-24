@@ -25,6 +25,26 @@ impl UploadDesk {
         }
         cx.notify();
     }
+    pub(super) fn set_comfortable(&mut self,value:bool,cx:&mut Context<Self>){
+        if self.prefs.comfortable==value{return;}
+        self.prefs.comfortable=value;
+        self.resource.layout_signature=0;
+        self.resource.masonry_signature=0;
+        self.persist_preferences(cx);cx.notify();
+    }
+    pub(super) fn upload_summary(&self,cx:&mut Context<Self>)->impl IntoElement{
+        let total=self.queue.queue_total;
+        let finished=total.saturating_sub(self.queue.queue_count);
+        let p=self.palette();
+        let bytes=self.queue.transfer.bytes.load(Ordering::Relaxed);
+        let size=self.queue.transfer.total.load(Ordering::Relaxed);
+        div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(p.surface)
+            .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
+                .child(div().text_xs().text_color(p.text).child(if self.queue.busy{format!("正在处理 · {finished}/{total} 项")}else{format!("{} 项可恢复任务",self.queue.recovery_count)}))
+                .when(size>0&&self.queue.active_job.is_some(),|d|d.child(div().text_xs().text_color(p.muted).child(format!("当前文件已读取 {} / {} · 等待服务端确认",file_size((bytes.min(size)) as i64),file_size(size as i64)))))
+                .when(self.queue.busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
+            .child(Button::new("view-upload-jobs").small().ghost().label("查看任务").on_click(cx.listener(|v,_,_,cx|{v.jobs_page=true;v.account_panel=false;v.inspector_open=false;v.immersive=false;v.refresh_jobs(cx);cx.notify();})))
+    }
     fn navigate(&mut self,category:&'static str,favorites:bool,cx:&mut Context<Self>){
         self.jobs_page=false;self.account_panel=false;self.inspector_open=false;self.immersive=false;
         self.resource.similar_to=None;self.resource.tag_filter=None;self.resource.favorites_only=favorites;self.resource.category=category;
@@ -34,7 +54,7 @@ impl UploadDesk {
         let p=self.palette();
         let section=|label:&str|div().px_2().pt_3().pb_1().text_xs().font_medium().text_color(p.muted).child(label.to_owned());
         let rows=[("nav-all","全部资源","",false,IconName::FolderOpen),("nav-images","图片","image",false,IconName::GalleryVerticalEnd),("nav-favorites","收藏","",true,IconName::Star),("nav-videos","视频","video",false,IconName::Play),("nav-attachments","附件","attachment",false,IconName::File)];
-        let mut nav=div().flex().flex_col().gap_1().child(section("资源库"));
+        let mut nav=div().flex().flex_col().gap(px(self.spacing().nav)).child(section("资源库"));
         for (id,label,cat,fav,icon) in rows{
             let active=!self.jobs_page&&!self.account_panel&&self.resource.category==cat&&self.resource.favorites_only==fav&&self.resource.tag_filter.is_none();
             nav=nav.child(div().debug_selector(move||id.into()).child(SidebarMenuItem::new(label).icon(icon).active(active)
@@ -56,11 +76,14 @@ impl UploadDesk {
     }
     pub(super) fn settings_preferences(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
-        div().flex().flex_col().gap_3()
+        div().flex().flex_col().gap(px(self.spacing().section))
             .child(div().text_sm().font_medium().child("外观与快捷操作"))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("深色主题").child(div().text_xs().text_color(p.muted).child("切换应用的整体配色")))
                 .child(div().debug_selector(||"settings-theme".into()).child(Switch::new("theme-toggle").checked(self.dark).small().color(p.accent).accessibility_label("深色主题").on_change(cx.listener(|v,checked:&bool,w,cx|{v.dark=*checked;design::apply(v.dark,Some(w),cx);v.persist_preferences(cx);cx.notify();})))))
+            .child(div().flex().items_center().justify_between().gap_2()
+                .child(div().flex_1().child("舒适模式").child(div().text_xs().text_color(p.muted).child("增加图片、导航与表单留白；关闭后为紧凑模式")))
+                .child(div().debug_selector(||"settings-comfortable".into()).child(Switch::new("comfortable-toggle").checked(self.prefs.comfortable).small().color(p.accent).accessibility_label("舒适模式").on_change(cx.listener(|v,checked:&bool,_,cx|v.set_comfortable(*checked,cx))))))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("全局快捷键").child(div().text_xs().text_color(p.muted).child("切换后重启生效")))
                 .child(Button::new("shortcut-choice").small().label(if self.prefs.shortcut=="off"{"禁用"}else{self.prefs.shortcut.as_str()})
@@ -96,6 +119,7 @@ impl UploadDesk {
                 .item(action(weak.clone(),"选择已加载（最多150项）",false,|v,_,cx|{v.resource.selected_ids=v.resource.assets.iter().take(150).map(|a|a.id).collect();cx.notify();})));
         let weak=cx.weak_entity();
         let mode=if !self.resource.grid_view{3}else if self.resource.masonry{2}else if self.resource.justified{1}else{0};
+        let comfortable=self.prefs.comfortable;
         let layout=Button::new("layout-menu").ghost().small().icon(IconName::LayoutDashboard).label(match mode{1=>"等高",2=>"瀑布流",3=>"列表",_=>"网格"})
             .dropdown_menu(move|m,_,_|m
                 .item(action(weak.clone(),"等宽网格",mode==0,|v,_,cx|v.set_layout(0,cx)))
@@ -103,7 +127,10 @@ impl UploadDesk {
                 .item(action(weak.clone(),"瀑布流",mode==2,|v,_,cx|v.set_layout(2,cx)))
                 .item(action(weak.clone(),"列表",mode==3,|v,_,cx|v.set_layout(3,cx)))
                 .separator()
-                .item(action(weak.clone(),"显示 / 隐藏详情",false,|v,_,cx|{v.immersive=false;v.inspector_open=!v.inspector_open;cx.notify();})));
+                .item(action(weak.clone(),"显示 / 隐藏详情",false,|v,_,cx|{v.immersive=false;v.inspector_open=!v.inspector_open;cx.notify();}))
+                .separator()
+                .item(action(weak.clone(),"舒适模式",comfortable,|v,_,cx|v.set_comfortable(true,cx)))
+                .item(action(weak.clone(),"紧凑模式",!comfortable,|v,_,cx|v.set_comfortable(false,cx))));
         let controls=div().flex().items_center().gap_1()
             .child(div().debug_selector(||"filter-trigger".into()).child(filter)).child(div().debug_selector(||"layout-trigger".into()).child(layout))
             .child(Button::new("tile-smaller").small().ghost().icon(IconName::Minus).tooltip("缩小图片").disabled(self.resource.tile_size<=96.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
@@ -113,7 +140,7 @@ impl UploadDesk {
             .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
             .child(Button::new("choose-main").small().primary().icon(IconName::Plus).label("上传").tooltip("选择文件").disabled(self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))));
         let title=if self.resource.favorites_only{"收藏"}else{match self.resource.category{"image"=>"图片","video"=>"视频","attachment"=>"附件",_=>"全部资源"}};
-        div().id("drop-zone").flex().flex_col().gap_2().pb_2()
+        div().id("drop-zone").flex().flex_col().gap(px(self.spacing().section)).pb_2()
             .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
             .child(div().flex().items_center().gap_3()
                 .child(div().flex_1().min_w(px(0.)).child(div().text_size(px(design::TITLE_SIZE)).font_semibold().child(title))

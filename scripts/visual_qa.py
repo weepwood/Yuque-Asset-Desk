@@ -79,6 +79,9 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     for path in data.glob("*.png"):
         path.unlink()
     capture("album-offline-dark.png")
+    capture("compact-dark.png",YUQUE_QA_PAGE="compact")
+    capture("compact-light.png",YUQUE_QA_PAGE="compact",YUQUE_QA_LIGHT="1")
+    capture("compact-masonry.png",YUQUE_QA_PAGE="compact-masonry")
     capture("resources-light.png",YUQUE_QA_LIGHT="1")
     capture("resources-narrow.png",YUQUE_QA_NARROW="1")
     capture("album-immersive.png",YUQUE_QA_PAGE="immersive")
@@ -102,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     assert (out/"empty-dark.png").read_bytes() != (out/"resources-dark.png").read_bytes(), "populated frame did not change"
     with sqlite3.connect(data/"assets.db") as conn:
         conn.execute("INSERT INTO desk_preferences(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
-            (json.dumps({"dark":False,"layout":"masonry","tile":196,"oldest":True,"favorites":True,"dates":False,"width":920,"height":680,"shortcut":"I"}),))
+            (json.dumps({"dark":False,"layout":"masonry","tile":196,"oldest":True,"favorites":True,"dates":False,"width":920,"height":680,"shortcut":"I","comfortable":False}),))
     capture("persisted-preferences.png")
     with (out/"persisted-preferences.png").open("rb") as f:
         header=f.read(24)
