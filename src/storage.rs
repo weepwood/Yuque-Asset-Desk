@@ -66,7 +66,19 @@ impl Storage {
                  tag TEXT NOT NULL, PRIMARY KEY(asset_id, tag)
              );"
         )?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS desk_migrations (name TEXT PRIMARY KEY);
+            BEGIN IMMEDIATE;
+            UPDATE upload_jobs SET state='unknown' WHERE provider='yuque' AND state='failed'
+                AND NOT EXISTS (SELECT 1 FROM desk_migrations WHERE name='safe-job-recovery-v1');
+            INSERT OR IGNORE INTO desk_migrations(name) VALUES('safe-job-recovery-v1');
+            UPDATE upload_jobs SET state='unknown',error='上次请求结果未知，请先核实远端' WHERE provider='yuque' AND state='running';
+            UPDATE upload_jobs SET state='paused' WHERE provider='demo' AND state='running';
+            COMMIT;")?;
         Ok(storage)
+    }
+
+    pub fn data_dir(&self) -> &std::path::Path {
+        self.path.parent().unwrap_or_else(|| std::path::Path::new("."))
     }
 
     fn open(&self) -> Result<Connection> {
@@ -94,10 +106,15 @@ impl Storage {
         self.page_category(limit, query, if image_only { "image" } else { "" }, scope, cursor, oldest)
     }
 
+    #[cfg(test)]
     pub fn page_category(
         &self, limit: usize, query: &str, category: &str,
         scope: Option<(&str, &str)>, cursor: Option<i64>, oldest: bool,
     ) -> Result<(Vec<Asset>, bool, i64)> {
+        self.page_tagged(limit,query,category,scope,cursor,oldest,None)
+    }
+
+    pub fn page_tagged(&self, limit:usize, query:&str, category:&str, scope:Option<(&str,&str)>, cursor:Option<i64>, oldest:bool, tag:Option<&str>) -> Result<(Vec<Asset>,bool,i64)> {
         let conn = self.open()?;
         let (provider, owner) = match scope {
             Some((provider, owner)) => (Some(provider), Some(owner)),
@@ -123,12 +140,14 @@ impl Storage {
              WHERE (?1 = '' OR instr(lower(name), lower(?1)) > 0
                  OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id = assets.id AND instr(lower(tag), lower(?1)) > 0))
                AND (?2 = '' OR category = ?2)
+               AND (?7 IS NULL OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id=assets.id
+                   AND (tag=?7 OR substr(tag,1,length(?7)+1)=?7||'/')))
                {scope_filter} {cursor_filter}
              ORDER BY id {order} LIMIT ?6"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![query, category,
-            provider, owner, cursor, (limit + 1) as i64], map_row)?;
+            provider, owner, cursor, (limit + 1) as i64, tag], map_row)?;
         let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = items.len() > limit;
         items.truncate(limit);
@@ -162,12 +181,41 @@ impl Storage {
     pub fn set_tags(&self, id: i64, text: &str) -> Result<()> {
         let tags: std::collections::BTreeSet<_> = text.split([',', '，'])
             .map(str::trim).filter(|s| !s.is_empty()).collect();
-        anyhow::ensure!(tags.len() <= 20 && tags.iter().all(|s| s.chars().count() <= 40), "最多 20 个标签，每个不超过 40 字");
+        anyhow::ensure!(tags.len() <= 20 && tags.iter().all(|s| s.chars().count() <= 40 && s.split('/').all(|part|!part.trim().is_empty())), "最多 20 个标签，每个不超过 40 字");
         let mut conn = self.open()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM asset_tags WHERE asset_id=?1", [id])?;
         for tag in tags {
             tx.execute("INSERT INTO asset_tags(asset_id,tag) VALUES(?1,?2)", params![id, tag])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn tag_catalog(&self, scope:Option<(&str,&str)>) -> Result<Vec<String>> {
+        let conn=self.open()?;
+        let (provider,owner)=scope.map_or((None,None),|(p,o)|(Some(p),Some(o)));
+        let mut stmt=conn.prepare("SELECT DISTINCT t.tag FROM asset_tags t JOIN assets a ON a.id=t.asset_id
+            WHERE (?1 IS NULL OR (a.provider=?1 AND a.owner_id=?2)) ORDER BY t.tag LIMIT 500")?;
+        let rows=stmt.query_map(params![provider,owner],|r|r.get::<_,String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn batch_tags(&self, ids:&[i64], scope:Option<(&str,&str)>, text:&str, remove:bool) -> Result<()> {
+        let tags:std::collections::BTreeSet<_>=text.split([',','，']).map(str::trim).filter(|s|!s.is_empty()).collect();
+        anyhow::ensure!(!ids.is_empty() && ids.len()<=150 && !tags.is_empty() && tags.len()<=20 && tags.iter().all(|t|t.chars().count()<=40 && t.split('/').all(|s|!s.trim().is_empty())), "标签或选中资源不符合限制");
+        let mut conn=self.open()?;
+        let tx=conn.transaction()?;
+        let (provider,owner)=scope.map_or((None,None),|(p,o)|(Some(p),Some(o)));
+        for id in ids {
+            let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND (?2 IS NULL OR (provider=?2 AND owner_id=?3)))",params![id,provider,owner],|r|r.get(0))?;
+            anyhow::ensure!(exists,"资源已变化或不属于当前账号");
+            for tag in &tags {
+                if remove { tx.execute("DELETE FROM asset_tags WHERE asset_id=?1 AND tag=?2",params![id,tag])?; }
+                else { tx.execute("INSERT OR IGNORE INTO asset_tags(asset_id,tag) VALUES(?1,?2)",params![id,tag])?; }
+            }
+            let n:i64=tx.query_row("SELECT count(*) FROM asset_tags WHERE asset_id=?1",[id],|r|r.get(0))?;
+            anyhow::ensure!(n<=20,"每项资源最多 20 个标签");
         }
         tx.commit()?;
         Ok(())
@@ -196,6 +244,8 @@ impl Storage {
         let mut jobs = Vec::new();
         for path in files {
             let text = path.to_str().context("任务路径不是有效 UTF-8")?;
+            let unresolved:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND path=?3 AND state IN ('unknown','running'))",params![provider,owner,text],|r|r.get(0))?;
+            anyhow::ensure!(!unresolved,"同一路径存在待核实任务，请先到任务中心处理");
             tx.execute("INSERT INTO upload_jobs(provider,owner_id,path) VALUES(?1,?2,?3)",
                 params![provider, owner, text])?;
             jobs.push((tx.last_insert_rowid(), path.clone()));
@@ -219,14 +269,14 @@ impl Storage {
     pub fn retry_job(&self, provider: &str, owner: &str, id: i64) -> Result<Option<(i64, PathBuf)>> {
         let conn = self.open()?;
         Ok(conn.query_row("SELECT id,path FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND id=?3
-            AND state IN ('pending','paused','failed','running')", params![provider, owner, id],
+            AND state IN ('pending','paused','failed')", params![provider, owner, id],
             |r| Ok((r.get(0)?, PathBuf::from(r.get::<_,String>(1)?)))).optional()?)
     }
 
     pub fn recoverable(&self, provider: &str, owner: &str) -> Result<Vec<(i64, PathBuf)>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare("SELECT id,path FROM upload_jobs WHERE provider=?1 AND owner_id=?2
-            AND state IN ('pending','paused','failed','running') ORDER BY id")?;
+            AND state IN ('pending','paused','failed') ORDER BY id")?;
         let rows = stmt.query_map(params![provider, owner], |r| {
             Ok((r.get(0)?, PathBuf::from(r.get::<_, String>(1)?)))
         })?;
@@ -234,9 +284,28 @@ impl Storage {
     }
 
     pub fn job_state(&self, id: i64, state: &str, error: &str) -> Result<()> {
-        self.open()?.execute("UPDATE upload_jobs SET state=?2,error=?3 WHERE id=?1",
-            params![id, state, error])?;
+        let changed = self.open()?.execute("UPDATE upload_jobs SET state=?2,error=?3 WHERE id=?1 AND (
+            (state IN ('pending','paused','failed') AND ?2 IN ('running','paused','cancelled')) OR
+            (state='running' AND ?2 IN ('done','failed','unknown','cancelled'))
+        )", params![id, state, error])?;
+        anyhow::ensure!(changed == 1, "任务状态转换不允许");
         Ok(())
+    }
+
+    pub fn acknowledge_unknown(&self, provider:&str, owner:&str, id:i64) -> Result<()> {
+        let changed = self.open()?.execute("UPDATE upload_jobs SET state='failed',error='用户已核实远端，允许手动重试'
+            WHERE provider=?1 AND owner_id=?2 AND id=?3 AND state IN ('unknown','running')", params![provider,owner,id])?;
+        anyhow::ensure!(changed==1,"任务不属于当前账号或状态已变化");
+        Ok(())
+    }
+
+    pub fn preview_sources(&self,asset:&Asset) -> Result<Vec<PathBuf>> {
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT path FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND state='done'
+            AND (substr(path,-length(?3)-1)='/'||?3 OR substr(path,-length(?3)-1)=char(92)||?3 OR path=?3)
+            ORDER BY id DESC LIMIT 4")?;
+        let rows=stmt.query_map(params![asset.provider,asset.owner_id,asset.name],|r|Ok(PathBuf::from(r.get::<_,String>(0)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn find(&self, provider: &str, owner_id: &str, digest: &str) -> Result<Option<Asset>> {
@@ -369,13 +438,21 @@ mod tests {
         let path = base.join("assets.db");
         let db = Storage::new(path.clone()).unwrap();
         let jobs = db.enqueue("yuque", "1", &[PathBuf::from("a.png"), PathBuf::from("b.png")]).unwrap();
+        assert!(db.job_state(jobs[0].0, "done", "").is_err());
+        db.job_state(jobs[0].0, "running", "").unwrap();
         db.job_state(jobs[0].0, "done", "").unwrap();
         db.job_state(jobs[1].0, "running", "").unwrap();
         db.save_account("1").unwrap();
         drop(db);
         let db = Storage::new(path).unwrap();
-        assert_eq!(db.recoverable("yuque", "1").unwrap(), vec![jobs[1].clone()]);
+        assert!(db.recoverable("yuque", "1").unwrap().is_empty());
         assert!(db.recoverable("yuque", "2").unwrap().is_empty());
+        assert_eq!(db.jobs("yuque", "1", None).unwrap()[0].state, "unknown");
+        assert!(db.retry_job("yuque", "1", jobs[1].0).unwrap().is_none());
+        assert!(db.enqueue("yuque","1",&[PathBuf::from("b.png")]).is_err());
+        assert!(db.acknowledge_unknown("yuque","2",jobs[1].0).is_err());
+        db.acknowledge_unknown("yuque","1",jobs[1].0).unwrap();
+        db.job_state(jobs[1].0, "running", "").unwrap();
         db.job_state(jobs[1].0, "failed", "fixture failure").unwrap();
         assert_eq!(db.jobs("yuque", "1", None).unwrap()[0].error, "fixture failure");
         assert!(db.jobs("yuque", "2", None).unwrap().is_empty());
@@ -400,6 +477,12 @@ mod tests {
         }).unwrap().id).collect();
         db.set_tags(ids[1], "设计, 摄影，设计").unwrap();
         assert_eq!(db.tags(ids[1]).unwrap().len(), 2);
+        db.batch_tags(&ids[..2],Some(("demo","local")),"设计/UI",false).unwrap();
+        assert_eq!(db.page_tagged(10,"","",Some(("demo","local")),None,false,Some("设计")).unwrap().0.len(),2);
+        assert!(db.batch_tags(&ids[..2],Some(("yuque","1")),"other",false).is_err());
+        assert!(db.tag_catalog(Some(("yuque","1"))).unwrap().is_empty());
+        db.batch_tags(&ids[..2],Some(("demo","local")),"设计/UI",true).unwrap();
+        assert_eq!(db.tag_catalog(None).unwrap(),vec!["摄影".to_string(),"设计".to_string()]);
         assert!(db.page_category(10, "", "video", None, None, false).unwrap().0.is_empty());
         assert_eq!(db.page_category(10, "", "image", None, None, false).unwrap().0.len(), 3);
         assert_eq!(db.page_sorted(10, "摄影", false, None, None, false).unwrap().0[0].id, ids[1]);

@@ -5,7 +5,7 @@ mod view;
 
 use anyhow::{Context as AnyhowContext, Result};
 use crate::config::{Config, Mode, YuqueCredentials};
-use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::component::theme::{Theme, ThemeMode, ActiveTheme};
 use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
 use directories::ProjectDirs;
 use gpui_kit::component::{
@@ -43,28 +43,8 @@ fn file_size(bytes: i64) -> String {
 
 const PAGE_SIZE: usize = 50;
 
-pub(crate) struct UploadDesk {
+struct AccountState {
     config: Config,
-    storage: Storage,
-    assets: Vec<Asset>,
-    search: String,
-    dark: bool,
-    grid_view: bool,
-    selected_asset: Option<Asset>,
-    oldest: bool,
-    selected_ids: std::collections::HashSet<i64>,
-    tag_input: Entity<InputState>,
-    thumbnail_path: Option<PathBuf>,
-    cached_thumbnails: std::collections::HashMap<i64, PathBuf>,
-    thumbnails_task: Option<Task<()>>,
-    preview_task: Option<Task<()>>,
-    preview_loading: bool,
-    large_preview_path: Option<PathBuf>,
-    large_preview_open: bool,
-    cache_busy: bool,
-    cache_task: Option<Task<()>>,
-    preview_error: Option<String>,
-    account_panel: bool,
     account_id: Entity<InputState>,
     account_csrf: Entity<InputState>,
     account_cookie: Entity<InputState>,
@@ -72,19 +52,11 @@ pub(crate) struct UploadDesk {
     session_status: String,
     saved_accounts: Vec<String>,
     account_task: Option<Task<()>>,
+}
+
+struct QueueState {
     queue_control: Arc<AtomicU8>,
     recovery_count: usize,
-    search_input: Entity<InputState>,
-    _subscriptions: Vec<Subscription>,
-    category: &'static str,
-    all_accounts: bool,
-    page_cursors: Vec<Option<i64>>,
-    has_more: bool,
-    loading_history: bool,
-    history_error: Option<String>,
-    history_generation: u64,
-    history_task: Option<Task<()>>,
-    jobs_page: bool,
     jobs: Vec<Job>,
     job_cursors: Vec<Option<i64>>,
     jobs_more: bool,
@@ -95,16 +67,62 @@ pub(crate) struct UploadDesk {
     transfer: Arc<uploader::TransferProgress>,
     transfer_task: Option<Task<()>>,
     active_job: Option<i64>,
-    inspector_open: bool,
     busy: bool,
     queue_count: usize,
     queue_total: usize,
     succeeded: usize,
     duplicates: usize,
     failed: Vec<(PathBuf, String)>,
-    total_count: i64,
-    status: String,
     upload_task: Option<Task<()>>,
+}
+
+struct ResourceState {
+    assets: Vec<Asset>,
+    search: String,
+    grid_view: bool,
+    selected_asset: Option<Asset>,
+    oldest: bool,
+    selected_ids: std::collections::HashSet<i64>,
+    tag_input: Entity<InputState>,
+    batch_tag_input: Entity<InputState>,
+    tag_filter: Option<String>,
+    tag_catalog: Vec<String>,
+    tags_expanded: bool,
+    zoom: f32,
+    pan: Point<Pixels>,
+    drag_at: Option<Point<Pixels>>,
+    thumbnail_path: Option<PathBuf>,
+    cached_thumbnails: std::collections::HashMap<i64, PathBuf>,
+    thumbnails_task: Option<Task<()>>,
+    preview_task: Option<Task<()>>,
+    preview_loading: bool,
+    large_preview_path: Option<PathBuf>,
+    large_preview_open: bool,
+    preview_error: Option<String>,
+    search_input: Entity<InputState>,
+    category: &'static str,
+    all_accounts: bool,
+    page_cursors: Vec<Option<i64>>,
+    has_more: bool,
+    loading_history: bool,
+    history_error: Option<String>,
+    history_generation: u64,
+    history_task: Option<Task<()>>,
+    total_count: i64,
+}
+
+pub(crate) struct UploadDesk {
+    resource: ResourceState,
+    queue: QueueState,
+    account: AccountState,
+    storage: Storage,
+    dark: bool,
+    account_panel: bool,
+    _subscriptions: Vec<Subscription>,
+    jobs_page: bool,
+    inspector_open: bool,
+    status: String,
+
 }
 
 impl UploadDesk {
@@ -115,7 +133,7 @@ impl UploadDesk {
             window,
             |this, input, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.search = input.read(cx).value().to_string();
+                    this.resource.search = input.read(cx).value().to_string();
                     this.reset_history(cx);
                     cx.notify();
                 }
@@ -129,73 +147,98 @@ impl UploadDesk {
         let saved_accounts = storage.accounts().unwrap_or_default();
         let recovery_count = storage.recoverable(config.provider(), config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
         let mut view = Self {
-            dark: true,
-            grid_view: false,
-            selected_asset: None,
-            oldest: false,
-            selected_ids: Default::default(),
-            tag_input: cx.new(|cx| InputState::new(window, cx).placeholder("标签，用逗号分隔")),
-            thumbnail_path: None,
-            cached_thumbnails: Default::default(),
-            thumbnails_task: None,
-            preview_task: None,
-            preview_loading: false,
-            large_preview_path: None,
-            large_preview_open: false,
-            cache_busy: false,
-            cache_task: None,
-            preview_error: None,
+            resource: ResourceState {
+                assets: Vec::new(),
+                search: String::new(),
+                grid_view: true,
+                selected_asset: None,
+                oldest: false,
+                selected_ids: Default::default(),
+                tag_input: cx.new(|cx| InputState::new(window, cx).placeholder("标签，用逗号分隔")),
+                batch_tag_input: cx.new(|cx| InputState::new(window,cx).placeholder("批量标签，如 设计/UI")),
+                tag_filter: None,
+                tag_catalog: Vec::new(),
+                tags_expanded: false,
+                zoom: 1.,
+                pan: point(px(0.),px(0.)),
+                drag_at: None,
+                thumbnail_path: None,
+                cached_thumbnails: Default::default(),
+                thumbnails_task: None,
+                preview_task: None,
+                preview_loading: false,
+                large_preview_path: None,
+                large_preview_open: false,
+                preview_error: None,
+                search_input,
+                category: "",
+                all_accounts: false,
+                page_cursors: vec![None],
+                has_more: false,
+                loading_history: false,
+                history_error: None,
+                history_generation: 0,
+                history_task: None,
+                total_count: 0,
+            },
+            queue: QueueState {
+                queue_control: Arc::new(AtomicU8::new(0)),
+                recovery_count,
+                jobs: Vec::new(),
+                job_cursors: vec![None],
+                jobs_more: false,
+                jobs_loading: false,
+                jobs_task: None,
+                jobs_generation: 0,
+                jobs_error: None,
+                transfer: Arc::new(uploader::TransferProgress::default()),
+                transfer_task: None,
+                active_job: None,
+                busy: false,
+                queue_count: 0,
+                queue_total: 0,
+                succeeded: 0,
+                duplicates: 0,
+                failed: Vec::new(),
+                upload_task: None,
+            },
+            account: AccountState {
+                config,
+                account_id: cx.new(|cx| InputState::new(window, cx).placeholder("语雀数字用户 ID")),
+                account_csrf: cx.new(|cx| InputState::new(window, cx).placeholder("CSRF Token").masked(true)),
+                account_cookie: cx.new(|cx| InputState::new(window, cx).placeholder("Cookie").masked(true)),
+                account_busy: false,
+                session_status: "尚未验证会话".into(),
+                saved_accounts,
+                account_task: None,
+            },
+            dark: cx.theme().mode == ThemeMode::Dark,
             account_panel: false,
-            account_id: cx.new(|cx| InputState::new(window, cx).placeholder("语雀数字用户 ID")),
-            account_csrf: cx.new(|cx| InputState::new(window, cx).placeholder("CSRF Token").masked(true)),
-            account_cookie: cx.new(|cx| InputState::new(window, cx).placeholder("Cookie").masked(true)),
-            account_busy: false,
-            session_status: "尚未验证会话".into(),
-            saved_accounts,
-            account_task: None,
-            queue_control: Arc::new(AtomicU8::new(0)),
-            recovery_count,
-            config,
             storage,
-            assets: Vec::new(),
-            search: String::new(),
-            search_input,
             _subscriptions: vec![subscription],
-            category: "",
-            all_accounts: false,
-            page_cursors: vec![None],
-            has_more: false,
-            loading_history: false,
-            history_error: None,
-            history_generation: 0,
-            history_task: None,
             jobs_page: false,
-            jobs: Vec::new(),
-            job_cursors: vec![None],
-            jobs_more: false,
-            jobs_loading: false,
-            jobs_task: None,
-            jobs_generation: 0,
-            jobs_error: None,
-            transfer: Arc::new(uploader::TransferProgress::default()),
-            transfer_task: None,
-            active_job: None,
-            inspector_open: true,
-            busy: false,
-            queue_count: 0,
-            queue_total: 0,
-            succeeded: 0,
-            duplicates: 0,
-            failed: Vec::new(),
-            total_count: 0,
+            inspector_open: false,
             status,
-            upload_task: None,
+
         };
-        view.reload(cx);
-        if std::env::var("YUQUE_KEYCHAIN_SMOKE").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && view.config.mode == Mode::Demo {
+        cx.defer_in(window, |view, _, cx| {
+            #[cfg(feature="qa")]
+            if view.account.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && std::env::var_os("YUQUE_QA_CAPTURE").is_some() {
+                match std::env::var("YUQUE_QA_PAGE").as_deref() {
+                    Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
+                    Ok("tags")=>{view.resource.tags_expanded=true;}
+                    _=>{}
+                }
+            }
+            view.reload(cx);
+        });
+        if std::env::var("YUQUE_KEYCHAIN_SMOKE").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && view.account.config.mode == Mode::Demo {
             view.keychain_smoke(cx);
         }
         view
     }
 
 }
+
+#[cfg(all(test,feature="qa"))]
+mod interaction_tests;

@@ -26,3 +26,11 @@
 - 会话检查必须由用户触发且验证账号 ID；不记录 Cookie、Token 或响应体；未经授权不发送实际上传。
 - 仅在独立数据目录、Demo 模式使用 YUQUE_KEYCHAIN_SMOKE=1 测试系统凭据库，不读写真实账号凭据。
 - 预览缓存清理仅作用于派生图片；不得删除 clipboard 源文件、SQLite 资源或任务。
+
+## 离线相册与任务恢复约束
+- 相册默认为响应式平铺；右侧详情按需展开。复制链接只读取 SQLite 原始 URL，不读取图片、不请求语雀。
+- 上传成功/复用记录后，由真实本地来源生成最长边 160px、JPEG 质量 45 的永久微缩图，目录为数据根目录 album-previews；provider/owner_id/sha256 隔离，不按 URL 变化失效，不做 LRU 淘汰。
+- 旧历史可从旧版预览缓存、Demo 原文件或当前资源账号下已完成任务的同名本地源恢复；原文件必须校验 SHA-256。无来源时保留占位和复制链接，禁止自动下载远端图片。
+- 不主动删除既有 clipboard 文件、旧预览或用户原文件；相册微缩图属于持久化数据而非临时缓存。明确用户操作才可打开外链浏览器。
+- 上传请求禁用自动重试；结果未知任务排除批量恢复，需人工核实；限速 YUQUE_UPLOAD_KIB_PER_SEC，取消仅为协作式中止。
+- QA：cargo test --locked --features qa；macOS 本地 cargo build --locked --features qa 后 python3 scripts/visual_qa.py。QA 数据必须隔离，无真实账号或网络上传。

@@ -1,31 +1,57 @@
 use super::*;
-use gpui_kit::component::IconName;
+use gpui_kit::component::{IconName, Sizable};
 
 impl UploadDesk {
     pub(super) fn color(&self, dark: u32, light: u32) -> Rgba {
         rgb(if self.dark { dark } else { light })
     }
 
+    fn tag_tree(&self,cx:&mut Context<Self>) -> impl IntoElement {
+        let mut nodes=std::collections::BTreeSet::new();
+        for tag in &self.resource.tag_catalog {
+            let mut path=String::new();
+            for part in tag.split('/') {
+                if !path.is_empty(){path.push('/');}
+                path.push_str(part);
+                nodes.insert(path.clone());
+            }
+        }
+        let mut tree=div().flex().flex_col().gap_1()
+            .child(Button::new("tags-toggle").ghost().small().label(if self.resource.tags_expanded {"▾ 标签分类"} else {"▸ 标签分类"})
+                .on_click(cx.listener(|v,_,_,cx|{v.resource.tags_expanded=!v.resource.tags_expanded;cx.notify();})));
+        if self.resource.tags_expanded {
+            tree=tree.child(Button::new("tag-all").ghost().small().label("全部标签").selected(self.resource.tag_filter.is_none())
+                .on_click(cx.listener(|v,_,_,cx|{v.resource.tag_filter=None;v.reset_history(cx);})));
+            for (i,path) in nodes.into_iter().enumerate() {
+                let depth=path.matches('/').count().min(5);
+                let title=path.rsplit('/').next().unwrap_or(&path).to_string();
+                let selected=self.resource.tag_filter.as_ref()==Some(&path);
+                tree=tree.child(div().pl(px(depth as f32*8.)).child(Button::new(("tag-node",i)).ghost().small().label(title).selected(selected)
+                    .on_click(cx.listener(move |v,_,_,cx|{v.jobs_page=false;v.account_panel=false;v.inspector_open=false;v.resource.tag_filter=Some(path.clone());v.reset_history(cx);}))));
+            }
+        }
+        tree
+    }
+
     pub(super) fn status_panel(&self) -> impl IntoElement {
-        div().flex().flex_col().gap_2().rounded_lg().p_3()
-            .bg(self.color(0x25272a, 0xe8eaed))
-            .child("当前上传目标")
-            .child(format!("{} / {}", self.config.provider(), self.config.owner_id()))
-            .child(format!("待处理：{}", self.queue_count))
+        div().flex().flex_col().gap_1().p_2().rounded_md().text_xs()
+            .bg(self.color(0x25272a,0xe1e3e6))
+            .child(div().font_semibold().child(if self.account.config.mode==Mode::Demo {"本地演示"} else {"语雀账号"}))
+            .child(format!("{} · 待处理 {}",self.account.config.owner_id(),self.queue.queue_count))
     }
 
     fn task_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div().id("jobs-list").flex_1().min_h(px(0.)).flex().flex_col().gap_2();
-        for job in &self.jobs {
+        for job in &self.queue.jobs {
             let id = job.id;
-            let active = self.active_job == Some(id);
+            let active = self.queue.active_job == Some(id);
             let state = if active { "处理中" } else { match job.state.as_str() {
                 "done" => "完成", "failed" => "失败", "pending" => "待处理",
-                "paused" => "暂停", "cancelled" => "取消", "running" => "中断／待核实", _ => "未知",
+                "paused" => "暂停", "cancelled" => "取消", "running" | "unknown" => "结果待核实", _ => "未知",
             }};
-            let retry = matches!(job.state.as_str(), "pending" | "paused" | "failed" | "running");
-            let total = self.transfer.total.load(Ordering::Relaxed);
-            let bytes = self.transfer.bytes.load(Ordering::Relaxed).min(total);
+            let retry = matches!(job.state.as_str(), "pending" | "paused" | "failed");
+            let total = self.queue.transfer.total.load(Ordering::Relaxed);
+            let bytes = self.queue.transfer.bytes.load(Ordering::Relaxed).min(total);
             let mut row = div().flex().flex_col().gap_2().p_3().rounded_lg()
                 .border_1().border_color(self.color(0x34363a,0xdfe2e6))
                 .bg(self.color(0x242629,0xffffff))
@@ -33,8 +59,11 @@ impl UploadDesk {
                     .child(div().flex_1().min_w(px(0.)).font_semibold().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
                     .child(div().text_sm().child(state))
                     .when(retry, |d| d.child(Button::new(("retry-job",id as usize))
-                        .label("重试（先核实远端）").disabled(self.busy || self.account_busy)
-                        .on_click(cx.listener(move |view, _, _, cx| view.retry_one(id,cx))))));
+                        .label("重试（先核实远端）").disabled(self.queue.busy || self.account.account_busy)
+                        .on_click(cx.listener(move |view, _, _, cx| view.retry_one(id,cx)))))
+                    .when(matches!(job.state.as_str(),"unknown"|"running") && !active, |d| d.child(Button::new(("ack-job",id as usize))
+                        .label("已确认远端无文件").disabled(self.queue.busy || self.account.account_busy)
+                        .on_click(cx.listener(move |v,_,_,cx| v.acknowledge_job(id,cx))))));
             if active {
                 row = row.child(if total == 0 { "检查文件／去重中".into() }
                     else { format!("已读取请求体 {} / {}，不代表服务端已确认",file_size(bytes as i64),file_size(total as i64)) });
@@ -50,22 +79,25 @@ impl UploadDesk {
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().text_lg().font_semibold().child("上传任务"))
                 .child(Button::new("refresh-jobs").label("刷新").on_click(cx.listener(|v,_,_,cx| v.refresh_jobs(cx))))
-                .child(Button::new("resume-jobs").label("恢复任务").disabled(self.busy || self.account_busy || self.recovery_count == 0)
+                .child(Button::new("resume-jobs").label("恢复任务").disabled(self.queue.busy || self.account.account_busy || self.queue.recovery_count == 0)
                     .on_click(cx.listener(|v,_,_,cx| v.resume_jobs(cx)))))
-            .child(div().text_sm().child(format!("当前账号：{} / {} · 未完成 {}",self.config.provider(),self.config.owner_id(),self.recovery_count)))
-            .when(self.busy, |d| d.child(div().flex().gap_2()
-                .child(Button::new("jobs-pause").label("文件结束后暂停").on_click(cx.listener(|v,_,_,cx| { let _ = v.queue_control.compare_exchange(0,1,Ordering::Relaxed,Ordering::Relaxed); cx.notify(); })))
-                .child(Button::new("jobs-cancel").label("取消剩余").on_click(cx.listener(|v,_,_,cx| { v.queue_control.store(2,Ordering::Relaxed); cx.notify(); })))))
-            .when(self.jobs_loading, |d| d.child("正在读取任务…"))
-            .when(self.jobs.is_empty() && !self.jobs_loading && self.jobs_error.is_none(), |d| d.child("暂无任务记录"))
-            .when(self.jobs_error.is_some(), |d| d.child(self.jobs_error.clone().unwrap_or_default()))
+            .child(div().text_sm().child(format!("当前账号：{} / {} · 未完成 {}",self.account.config.provider(),self.account.config.owner_id(),self.queue.recovery_count)))
+            .when(self.queue.busy, |d| d.child(div().flex().gap_2()
+                .child(Button::new("jobs-pause").label("文件结束后暂停").on_click(cx.listener(|v,_,_,cx| { let _ = v.queue.queue_control.compare_exchange(0,1,Ordering::Relaxed,Ordering::Relaxed); cx.notify(); })))
+                .child(Button::new("jobs-cancel").label("取消剩余").on_click(cx.listener(|v,_,_,cx| { v.queue.queue_control.store(2,Ordering::Relaxed); cx.notify(); })))
+                .child(Button::new("cancel-active").label("中止当前读取")
+                    .disabled(self.queue.active_job.is_none())
+                    .on_click(cx.listener(|v,_,_,cx| {v.queue.queue_control.store(1,Ordering::Relaxed);v.queue.transfer.cancel.store(true,Ordering::Relaxed);v.status="已请求中止，远端结果可能未知".into();cx.notify();})))))
+            .when(self.queue.jobs_loading, |d| d.child("正在读取任务…"))
+            .when(self.queue.jobs.is_empty() && !self.queue.jobs_loading && self.queue.jobs_error.is_none(), |d| d.child("暂无任务记录"))
+            .when(self.queue.jobs_error.is_some(), |d| d.child(self.queue.jobs_error.clone().unwrap_or_default()))
             .child(list.overflow_y_scrollbar())
             .child(div().flex().items_center().gap_2()
-                .child(Button::new("jobs-prev").label("上一页").disabled(self.jobs_loading || self.job_cursors.len() <= 1)
-                    .on_click(cx.listener(|v,_,_,cx| { if v.job_cursors.len()>1 {v.job_cursors.pop(); v.jobs.clear(); v.jobs_more=false; v.refresh_jobs(cx); cx.notify();} })))
-                .child(format!("第 {} 页", self.job_cursors.len()))
-                .child(Button::new("jobs-next").label("下一页").disabled(self.jobs_loading || !self.jobs_more)
-                    .on_click(cx.listener(|v,_,_,cx| { if v.jobs_more { if let Some(last)=v.jobs.last() {v.job_cursors.push(Some(last.id)); v.jobs.clear(); v.jobs_more=false; v.refresh_jobs(cx); cx.notify();} } }))))
+                .child(Button::new("jobs-prev").label("上一页").disabled(self.queue.jobs_loading || self.queue.job_cursors.len() <= 1)
+                    .on_click(cx.listener(|v,_,_,cx| { if v.queue.job_cursors.len()>1 {v.queue.job_cursors.pop(); v.queue.jobs.clear(); v.queue.jobs_more=false; v.refresh_jobs(cx); cx.notify();} })))
+                .child(format!("第 {} 页", self.queue.job_cursors.len()))
+                .child(Button::new("jobs-next").label("下一页").disabled(self.queue.jobs_loading || !self.queue.jobs_more)
+                    .on_click(cx.listener(|v,_,_,cx| { if v.queue.jobs_more { if let Some(last)=v.queue.jobs.last() {v.queue.job_cursors.push(Some(last.id)); v.queue.jobs.clear(); v.queue.jobs_more=false; v.refresh_jobs(cx); cx.notify();} } }))))
             .child(div().text_sm().child(self.status.clone()))
     }
 
@@ -76,32 +108,32 @@ impl UploadDesk {
         if self.account_panel {
             panel = panel.child(div().font_semibold().child("账号管理"))
                 .child(div().text_sm().child("仅保存到系统密钥库。凭据格式有效不代表已登录。"))
-                .child(div().text_sm().child(self.session_status.clone()))
-                .when(self.config.mode == Mode::Yuque && self.config.creds.is_some(), |d| d.child(
-                    Button::new("check-session").label("检查会话（只读）").disabled(self.account_busy || self.busy)
+                .child(div().text_sm().child(self.account.session_status.clone()))
+                .when(self.account.config.mode == Mode::Yuque && self.account.config.creds.is_some(), |d| d.child(
+                    Button::new("check-session").label("检查会话（只读）").disabled(self.account.account_busy || self.queue.busy)
                         .on_click(cx.listener(|view,_,_,cx| view.check_session(cx)))))
-                .child(Input::new(&self.account_id).disabled(self.account_busy || self.busy))
-                .child(Input::new(&self.account_csrf).disabled(self.account_busy || self.busy))
-                .child(Input::new(&self.account_cookie).disabled(self.account_busy || self.busy))
+                .child(Input::new(&self.account.account_id).disabled(self.account.account_busy || self.queue.busy))
+                .child(Input::new(&self.account.account_csrf).disabled(self.account.account_busy || self.queue.busy))
+                .child(Input::new(&self.account.account_cookie).disabled(self.account.account_busy || self.queue.busy))
                 .child(Button::new("save-account").primary().label("保存并切换")
-                    .disabled(self.account_busy || self.busy)
+                    .disabled(self.account.account_busy || self.queue.busy)
                     .on_click(cx.listener(|view, _, window, cx| view.save_credentials(window, cx))))
                 .child(Button::new("demo-account").label("本地演示")
-                    .disabled(self.account_busy || self.busy)
+                    .disabled(self.account.account_busy || self.queue.busy)
                     .on_click(cx.listener(|view, _, _, cx| view.activate_account(None, cx))))
-                .when(self.config.mode == Mode::Yuque, |d| d.child(
+                .when(self.account.config.mode == Mode::Yuque, |d| d.child(
                     Button::new("forget-account").label("删除当前保存凭据")
-                        .disabled(self.account_busy || self.busy)
+                        .disabled(self.account.account_busy || self.queue.busy)
                         .on_click(cx.listener(|view, _, _, cx| view.forget_account(cx)))))
                 .child(div().font_semibold().child("已保存账号"));
-            for owner in &self.saved_accounts {
+            for owner in &self.account.saved_accounts {
                 let id = owner.clone();
                 panel = panel.child(Button::new(SharedString::from(format!("account-{owner}")))
                     .label(format!("账号 {owner}"))
-                    .disabled(self.account_busy || self.busy)
+                    .disabled(self.account.account_busy || self.queue.busy)
                     .on_click(cx.listener(move |view, _, _, cx| view.load_credentials(id.clone(), cx))));
             }
-        } else if let Some(asset) = &self.selected_asset {
+        } else if let Some(asset) = &self.resource.selected_asset {
             let url_asset = asset.clone();
             let md_asset = asset.clone();
             panel = panel.child(div().font_semibold().child("资源详情"))
@@ -114,13 +146,15 @@ impl UploadDesk {
                 .child(div().text_sm().truncate().child(asset.url.clone()))
                 .child(Button::new("detail-url").primary().label("复制 URL")
                     .on_click(cx.listener(move |view, _, _, cx| view.copy_asset(&url_asset, false, cx))))
+                .child(Button::new("detail-open").small().label(if asset.provider=="demo" {"打开本地文件"} else {"浏览器打开链接"})
+                    .on_click(cx.listener(|v,_,_,cx|v.open_selected_resource(cx))))
                 .child(Button::new("detail-md").label("复制 Markdown")
                     .on_click(cx.listener(move |view, _, _, cx| view.copy_asset(&md_asset, true, cx))));
-            panel = panel.child(Input::new(&self.tag_input))
+            panel = panel.child(Input::new(&self.resource.tag_input))
                 .child(Button::new("save-tags").label("保存标签")
                     .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(asset) = &view.selected_asset {
-                            let text = view.tag_input.read(cx).value().to_string();
+                        if let Some(asset) = &view.resource.selected_asset {
+                            let text = view.resource.tag_input.read(cx).value().to_string();
                             view.status = match view.storage.set_tags(asset.id, &text) {
                                 Ok(()) => "标签已保存".into(), Err(e) => e.to_string(),
                             };
@@ -129,17 +163,17 @@ impl UploadDesk {
                         cx.notify();
                     })));
             if asset.category == "image" {
-                panel = panel.child(Button::new("large-preview").label("查看大图")
-                    .disabled(self.preview_loading || self.cache_busy)
+                panel = panel.child(Button::new("large-preview").label("放大本地缩略图")
+                    .disabled(self.resource.preview_loading)
                     .on_click(cx.listener(|v,_,_,cx| v.open_large_preview(cx))));
-                if let Some(path) = &self.thumbnail_path {
+                if let Some(path) = &self.resource.thumbnail_path {
                     panel = panel.child(img(path.clone()).w_full().h(px(160.)).object_fit(ObjectFit::Contain));
                 } else {
                     panel = panel.child(Button::new("preview-image")
-                        .label(if self.preview_loading { "正在生成缩略图…" } else { "加载图片预览" })
-                        .disabled(self.preview_loading)
+                        .label(if self.resource.preview_loading { "读取缩略图…" } else { "读取本地缩略图" })
+                        .disabled(self.resource.preview_loading)
                         .on_click(cx.listener(|view, _, _, cx| view.load_preview(cx))));
-                    if let Some(error) = &self.preview_error { panel = panel.child(div().text_sm().child(error.clone())); }
+                    if let Some(error) = &self.resource.preview_error { panel = panel.child(div().text_sm().child(error.clone())); }
                 }
             }
         } else {
@@ -155,14 +189,18 @@ impl Render for UploadDesk {
         // Event-driven, short transition. Respects the OS reduced-motion preference.
         let feedback_opacity = gpui_kit::base::transition(
             ("upload-feedback", "opacity"),
-            if self.busy { 1.0f32 } else { 0.82f32 },
+            if self.queue.busy { 1.0f32 } else { 0.82f32 },
             gpui_kit::base::Transition::new(std::time::Duration::from_millis(160)),
             window,
             cx,
         );
         let narrow = window.viewport_size().width < px(1000.);
+        let available = f32::from(window.viewport_size().width) - if narrow {150.} else {184.} - if !narrow && self.inspector_open {260.} else {0.} - 40.;
+        let columns = ((available + 8.) / 158.).floor().clamp(2.,12.);
+        let tile_width = ((available - (columns-1.)*8.)/columns).clamp(96.,220.);
+        let tile_image_height = tile_width * 0.92;
         // Filtering happens in SQLite before LIMIT, so older matching files are searchable.
-        let visible: Vec<Asset> = self.assets.clone();
+        let visible: Vec<Asset> = self.resource.assets.clone();
         let rows: Vec<AnyElement> = visible
             .into_iter()
             .map(|asset| {
@@ -170,32 +208,34 @@ impl Render for UploadDesk {
                 let url_asset = asset.clone();
                 let markdown_asset = asset.clone();
                 let detail_asset = asset.clone();
-                let selected = self.selected_asset.as_ref().is_some_and(|a| a.id == asset.id);
-                let checked = self.selected_ids.contains(&asset.id);
+                let selected = self.resource.selected_asset.as_ref().is_some_and(|a| a.id == asset.id);
+                let checked = self.resource.selected_ids.contains(&asset.id);
                 let asset_id = asset.id;
-                if self.grid_view {
-                    let thumbnail = self.cached_thumbnails.get(&asset.id).cloned();
-                    return div().flex().flex_col().gap_2().p_3().w(px(176.)).h(px(200.))
-                        .rounded_lg().border_1().border_color(self.color(0x34363a, 0xdfe2e6))
-                        .bg(self.color(0x25272a, 0xffffff))
-                        .child({
-                            let d = div().h(px(90.)).flex().items_center().justify_center()
-                                .bg(self.color(0x303338, 0xeef0f3)).rounded_md();
-                            match thumbnail {
-                                Some(path) => d.child(img(path).w_full().h_full().object_fit(ObjectFit::Contain)),
-                                None => d.child(if asset.category == "image" { "IMG" } else { "FILE" }),
-                            }
-                        })
-                        .child(Button::new(("grid-select", index)).selected(checked)
-                            .label(if checked { "已选" } else { "选择" })
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                if !view.selected_ids.remove(&asset_id) { view.selected_ids.insert(asset_id); } cx.notify();
-                            })))
-                        .child(div().text_sm().truncate().child(asset.name.clone()))
-                        .child(Button::new(("grid-detail", index)).selected(selected).label("查看详情")
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.select_asset(detail_asset.clone(), window, cx);
-                            })))
+                if self.resource.grid_view {
+                    let thumbnail = self.resource.cached_thumbnails.get(&asset.id).cloned();
+                    return div().id(("album-tile",index)).flex().flex_col().gap_1()
+                        .w(px(tile_width)).flex_shrink_0().p_1().rounded_md()
+                        .border_1().border_color(if checked || selected {rgb(0x528bd8)} else {self.color(0x34363a,0xdfe2e6)})
+                        .bg(self.color(0x202226,0xffffff))
+                        .hover(|s|s.bg(self.color(0x2d3035,0xe8edf4)))
+                        .child(div().id(("album-image",index)).relative().h(px(tile_image_height)).w_full().overflow_hidden()
+                            .rounded_md().bg(self.color(0x303338,0xeef0f3)).flex().items_center().justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |v,_,window,cx|v.select_asset(detail_asset.clone(),window,cx)))
+                            .child(match thumbnail {
+                                Some(path)=>img(path).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+                                None=>div().flex().flex_col().items_center().gap_1()
+                                    .text_color(self.color(0xa6a9b0,0x646a73))
+                                    .child(IconName::File)
+                                    .child(div().text_xs().child(if asset.category=="image" {"无本地缩略图"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
+                            }))
+                        .child(div().text_xs().font_medium().truncate().px_1().child(asset.name.clone()))
+                        .child(div().flex().items_center().justify_between().gap_1()
+                            .child(Button::new(("grid-select",index)).ghost().xsmall().selected(checked)
+                                .label(if checked {"已选"} else {"选择"})
+                                .on_click(cx.listener(move |v,_,_,cx|{if !v.resource.selected_ids.remove(&asset_id){v.resource.selected_ids.insert(asset_id);}cx.notify();})))
+                            .child(Button::new(("grid-copy",index)).xsmall().label("复制链接")
+                                .on_click(cx.listener(move |v,_,_,cx|v.copy_asset(&url_asset,false,cx)))))
                         .into_any_element();
                 }
                 div()
@@ -203,8 +243,8 @@ impl Render for UploadDesk {
                     .items_center()
                     .justify_between()
                     .gap_3()
-                    .p_3()
-                    .rounded_lg()
+                    .p_2()
+                    .rounded_md()
                     .bg(self.color(0x242629, 0xffffff))
                     .hover(|style| style.bg(self.color(0x303338, 0xeef0f3)))
                     .child(
@@ -215,28 +255,29 @@ impl Render for UploadDesk {
                             .flex_1()
                             .child(div().font_semibold().text_sm().truncate().child(asset.name.clone()))
                             .child(div().text_sm().text_color(self.color(0xa6a9b0, 0x646a73)).truncate().child(format!(
-                                "{} · {} / {} · {}",
-                                file_size(asset.bytes), asset.provider, asset.owner_id, asset.created_at
+                                "{} · {} · {}",
+                                file_size(asset.bytes), if self.resource.all_accounts {format!("{} / {}",asset.provider,asset.owner_id)} else {asset.category.clone()},
+                                asset.created_at.get(..16).unwrap_or(&asset.created_at).replace("T"," ")
                             ))),
                     )
-                    .child(Button::new(("row-select", index)).selected(checked)
+                    .child(Button::new(("row-select", index)).small().selected(checked)
                         .label(if checked { "已选" } else { "选择" })
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            if !view.selected_ids.remove(&asset_id) { view.selected_ids.insert(asset_id); } cx.notify();
+                            if !view.resource.selected_ids.remove(&asset_id) { view.resource.selected_ids.insert(asset_id); } cx.notify();
                         })))
-                    .child(Button::new(("detail", index)).selected(selected).label("详情")
+                    .child(Button::new(("detail", index)).small().selected(selected).label("详情")
                         .on_click(cx.listener(move |view, _, window, cx| {
                             view.select_asset(detail_asset.clone(), window, cx);
                         })))
                     .when(!narrow, |d| d.child(
-                        Button::new(("url", index))
+                        Button::new(("url", index)).small()
                             .label("复制 URL")
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.copy_asset(&url_asset, false, cx);
                             })),
                     ))
                     .when(!narrow, |d| d.child(
-                        Button::new(("markdown", index))
+                        Button::new(("markdown", index)).small()
                             .label("Markdown")
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.copy_asset(&markdown_asset, true, cx);
@@ -247,21 +288,37 @@ impl Render for UploadDesk {
             .collect();
 
         // Never access SQLite from the hot render path.
-        let total = self.total_count;
-        let is_demo = self.config.mode == Mode::Demo;
-        if self.large_preview_open {
+        let total = self.resource.total_count;
+        let is_demo = self.account.config.mode == Mode::Demo;
+        if self.resource.large_preview_open {
             return div().size_full().flex().flex_col().p_4().gap_3()
                 .bg(self.color(0x17191b,0xf3f4f6)).text_color(self.color(0xebedf0,0x24272c))
                 .child(div().flex().items_center().gap_2()
-                    .child(Button::new("close-preview").label("返回资源").on_click(cx.listener(|v,_,_,cx| {v.large_preview_open=false; cx.notify();})))
-                    .child(div().font_semibold().child(self.selected_asset.as_ref().map(|a|a.name.clone()).unwrap_or_default())))
+                    .child(Button::new("close-preview").label("返回资源").on_click(cx.listener(|v,_,_,cx| {v.resource.large_preview_open=false; cx.notify();})))
+                    .child(div().flex_1().font_semibold().truncate().child(self.resource.selected_asset.as_ref().map(|a|a.name.clone()).unwrap_or_default()))
+                    .child(Button::new("zoom-out").label("−").on_click(cx.listener(|v,_,_,cx|v.zoom_by(-0.25,cx))))
+                    .child(format!("{:.0}%",self.resource.zoom*100.))
+                    .child(Button::new("zoom-in").label("+").on_click(cx.listener(|v,_,_,cx|v.zoom_by(0.25,cx))))
+                    .child(Button::new("zoom-reset").label("适应窗口").on_click(cx.listener(|v,_,_,cx|{v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));cx.notify();}))))
                 .child({
-                    let panel=div().flex_1().min_h(px(0.)).flex().items_center().justify_center();
-                    if let Some(path)=&self.large_preview_path { panel.child(img(path.clone()).size_full().object_fit(ObjectFit::Contain)) }
-                    else { panel.child(self.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
+                    let panel=div().id("preview-canvas").relative().flex_1().min_h(px(0.)).overflow_hidden().flex().items_center().justify_center()
+                        .on_mouse_down(MouseButton::Left,cx.listener(|v,e:&MouseDownEvent,_,_|{v.resource.drag_at=Some(e.position);}))
+                        .on_mouse_move(cx.listener(|v,e:&MouseMoveEvent,_,cx|{
+                            if e.dragging() && v.resource.zoom>1. {
+                                if let Some(prev)=v.resource.drag_at {let d=e.position-prev;
+                                    v.resource.pan=point((v.resource.pan.x+d.x).clamp(px(-1500.),px(1500.)),(v.resource.pan.y+d.y).clamp(px(-1500.),px(1500.)));cx.notify();}
+                                v.resource.drag_at=Some(e.position);
+                            }else{v.resource.drag_at=None;}
+                        }))
+                        .on_mouse_up(MouseButton::Left,cx.listener(|v,_,_,_|v.resource.drag_at=None));
+                    if let Some(path)=&self.resource.large_preview_path { panel.child(div().absolute().left(relative((1.-self.resource.zoom)/2.)).top(relative((1.-self.resource.zoom)/2.))
+                        .w(relative(self.resource.zoom)).h(relative(self.resource.zoom))
+                        .child(div().relative().left(self.resource.pan.x).top(self.resource.pan.y).size_full()
+                            .child(img(path.clone()).size_full().object_fit(ObjectFit::Contain)))) }
+                    else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
                 }).into_any_element();
         }
-        let show_inspector = self.inspector_open && (!narrow || self.account_panel || self.selected_asset.is_some());
+        let show_inspector = self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
         let show_center = !narrow || !show_inspector;
         div()
             .flex()
@@ -275,59 +332,52 @@ impl Render for UploadDesk {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_1()
                     .p_3()
+                    .border_r_1().border_color(self.color(0x303237,0xdde0e4))
                     .bg(self.color(0x1d1f22, 0xe9ebee))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_lg().font_bold().child("Yuque Asset Desk"))
-                            .child(div().text_sm().text_color(self.color(0xa6a9b0, 0x666c75)).child("轻量文件上传工作台")),
+                            .p_2().child(div().font_semibold().truncate().child(if narrow {"Yuque Desk"} else {"Yuque Asset Desk"}))
+                            .child(div().text_xs().text_color(self.color(0xa6a9b0, 0x666c75)).child("资源相册")),
                     )
                     .child(
-                        Button::new("upload-navigation")
-                            .selected(self.category.is_empty() && !self.jobs_page).icon(IconName::FolderOpen)
+                        Button::new("upload-navigation").ghost().small()
+                            .selected(self.resource.category.is_empty() && !self.jobs_page).icon(IconName::FolderOpen)
                             .label("上传工作台")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.jobs_page = false;
-                                view.category = ""; view.account_panel=false; view.inspector_open=false;
+                                view.resource.category = ""; view.account_panel=false; view.inspector_open=false;
                                 view.reset_history(cx);
                                 cx.notify();
                             })),
                     )
                     .child(
-                        Button::new("images-navigation")
-                            .selected(self.category == "image" && !self.jobs_page).icon(IconName::File)
+                        Button::new("images-navigation").ghost().small()
+                            .selected(self.resource.category == "image" && !self.jobs_page).icon(IconName::File)
                             .label("图片资源")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.jobs_page = false;
-                                view.category = "image"; view.account_panel=false; view.inspector_open=false;
+                                view.resource.category = "image"; view.resource.grid_view=true; view.account_panel=false; view.inspector_open=false;
                                 view.reset_history(cx);
                                 cx.notify();
                             })),
                     )
-                    .child(Button::new("video-nav").label("视频").icon(IconName::File).selected(self.category=="video" && !self.jobs_page)
-                        .on_click(cx.listener(|v,_,_,cx| {v.jobs_page=false; v.category="video"; v.account_panel=false; v.inspector_open=false; v.reset_history(cx); })))
-                    .child(Button::new("attachment-nav").label("附件").icon(IconName::File).selected(self.category=="attachment" && !self.jobs_page)
-                        .on_click(cx.listener(|v,_,_,cx| {v.jobs_page=false; v.category="attachment"; v.account_panel=false; v.inspector_open=false; v.reset_history(cx); })))
-                    .child(
-                        Button::new("choose-sidebar")
-                            .disabled(self.busy || self.account_busy)
-                            .label("选择本地文件")
-                            .on_click(cx.listener(|view, _, _, cx| view.select_files(cx))),
-                    )
-                    .child(Button::new("jobs-nav").selected(self.jobs_page).label("上传任务")
+                    .child(Button::new("video-nav").ghost().small().label("视频").icon(IconName::File).selected(self.resource.category=="video" && !self.jobs_page)
+                        .on_click(cx.listener(|v,_,_,cx| {v.jobs_page=false; v.resource.category="video"; v.account_panel=false; v.inspector_open=false; v.reset_history(cx); })))
+                    .child(Button::new("attachment-nav").ghost().small().label("附件").icon(IconName::File).selected(self.resource.category=="attachment" && !self.jobs_page)
+                        .on_click(cx.listener(|v,_,_,cx| {v.jobs_page=false; v.resource.category="attachment"; v.account_panel=false; v.inspector_open=false; v.reset_history(cx); })))
+                    .child(self.tag_tree(cx))
+                    .child(Button::new("jobs-nav").ghost().small().selected(self.jobs_page).label("上传任务")
                         .on_click(cx.listener(|view,_,_,cx| {view.jobs_page=true; view.account_panel=false; view.inspector_open=false; view.refresh_jobs(cx); cx.notify();})))
-                    .child(Button::new("account-nav").icon(IconName::Settings).selected(self.account_panel).label("账号管理")
+                    .child(Button::new("account-nav").ghost().small().icon(IconName::Settings).selected(self.account_panel).label("账号管理")
                         .on_click(cx.listener(|view, _, _, cx| { view.account_panel = true; view.inspector_open = true; cx.notify(); })))
-                    .child(Button::new("inspector-toggle").icon(IconName::PanelRight).label(if self.inspector_open {"隐藏详情"} else {"显示详情"})
+                    .child(Button::new("inspector-toggle").ghost().small().icon(IconName::PanelRight).label(if self.inspector_open {"隐藏详情"} else {"显示详情"})
                         .on_click(cx.listener(|v,_,_,cx| {v.inspector_open = !v.inspector_open; cx.notify();})))
-                    .child(Button::new("cache-clear").label(if self.cache_busy {"清理中…"} else {"清理预览缓存"})
-                        .disabled(self.cache_busy || self.preview_loading)
-                        .on_click(cx.listener(|v,_,_,cx| v.clear_image_cache(cx))))
-                    .child(Button::new("theme-toggle").icon(if self.dark {IconName::Sun} else {IconName::Moon}).label(if self.dark { "浅色主题" } else { "深色主题" })
+                    .child(Button::new("theme-toggle").ghost().small().icon(if self.dark {IconName::Sun} else {IconName::Moon}).label(if self.dark { "浅色主题" } else { "深色主题" })
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.dark = !view.dark;
                             Theme::change(if view.dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(window), cx);
@@ -350,113 +400,80 @@ impl Render for UploadDesk {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().text_lg().font_semibold().child("资源工作台")),
+                            .child(div().text_lg().font_semibold().child("资源相册")),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .p_3()
-                            .rounded_lg()
-                            .border_1().border_color(self.color(0x34363a, 0xdfe2e6))
-                            .bg(self.color(0x23262a, 0xffffff))
-                            .id("drop-zone")
-                            .child(div().font_semibold().child("拖放文件到此处"))
-                            .on_drop(cx.listener(|view, paths: &ExternalPaths, _, cx| view.start_upload(paths.paths().to_vec(), cx)))
-                            .child(Button::new("paste").label("粘贴剪贴板图片或文件")
-                                .disabled(self.busy || self.account_busy)
-                                .on_click(cx.listener(|view, _, _, cx| view.paste_files(cx))))
-                            .child(
-                                Button::new("choose-main")
-                                    .primary()
-                                    .disabled(self.busy || self.account_busy)
-                                    .label(if self.busy { "正在上传…" } else { "＋ 选择文件上传" })
-                                    .on_click(cx.listener(|view, _, _, cx| view.select_files(cx))),
-                            )
-                            .child(if is_demo {
-                                "演示模式只返回本地 file:// 链接，不能公开访问"
-                            } else {
-                                "语雀上传采用非公开网页接口，实际可用性需账号验证"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .p_4()
-                                    .rounded_lg()
-                                    .bg(self.color(0x222428, 0xffffff))
-                                    .child(format!("已记录资源   {total}")),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .p_4()
-                                    .rounded_lg()
-                                    .bg(self.color(0x222428, 0xffffff))
-                                    .child(format!("待处理任务   {}", self.queue_count)),
-                            ),
-                    )
+                    .child(div().id("drop-zone").flex().flex_col().gap_2().p_3().rounded_lg()
+                        .border_1().border_color(self.color(0x34363a,0xdfe2e6)).bg(self.color(0x23262a,0xffffff))
+                        .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
+                        .child(div().flex().flex_wrap().items_center().gap_2()
+                            .child(div().flex_1().min_w(px(130.)).child(div().font_semibold().child("导入资源"))
+                                .child(div().text_xs().text_color(self.color(0xa6a9b0,0x646a73)).child("拖放文件到这里")))
+                            .child(Button::new("paste").small().label("粘贴").disabled(self.queue.busy || self.account.account_busy)
+                                .on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
+                            .child(Button::new("choose-main").small().primary().disabled(self.queue.busy || self.account.account_busy)
+                                .label(if self.queue.busy {"处理中…"} else {"＋ 导入文件"})
+                                .on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))))
+                        .child(div().text_xs().text_color(self.color(0xa6a9b0,0x646a73)).child(if is_demo {"离线缩略图 · 本地演示"} else {"本地微缩图 · 复制原始链接无需联网"})))
+                    .child(div().flex().items_center().gap_3().text_xs().text_color(self.color(0xa6a9b0,0x646a73))
+                        .child(format!("{} 项资源",total)).child(format!("{} 项待处理任务",self.queue.queue_count)))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .justify_between()
                             .gap_3()
-                            .child(match self.category {"image"=>"图片资源","video"=>"视频资源","attachment"=>"附件资源",_=>"全部资源"})
+                            .child(match self.resource.category {"image"=>"图片资源","video"=>"视频资源","attachment"=>"附件资源",_=>"全部资源"})
                             .child(div().flex_1())
-                            .child(Button::new("grid-toggle").label(if self.grid_view { "列表" } else { "网格" })
-                                .on_click(cx.listener(|view, _, _, cx| { view.grid_view = !view.grid_view; view.refresh_thumbnails(cx); cx.notify(); })))
-                            .child(Button::new("account-scope")
-                                .label(if self.all_accounts { "全部账号" } else { "当前账号" })
+                            .child(Button::new("grid-toggle").small().label(if self.resource.grid_view { "列表" } else { "网格" })
+                                .on_click(cx.listener(|view, _, _, cx| { view.resource.grid_view = !view.resource.grid_view; view.refresh_thumbnails(cx); cx.notify(); })))
+                            .child(Button::new("account-scope").small()
+                                .label(if self.resource.all_accounts { "全部账号" } else { "当前账号" })
                                 .on_click(cx.listener(|view, _, _, cx| {
-                                    view.all_accounts = !view.all_accounts;
-                                    view.total_count = 0;
+                                    view.resource.all_accounts = !view.resource.all_accounts;
+                                    view.resource.tag_filter=None;
+                                    view.resource.tag_catalog.clear();
+                                    view.resource.total_count = 0;
                                     view.reset_history(cx);
                                 })))
-                            .child(
-                                Button::new("toggle-image-filter")
-                                    .label(if self.category.is_empty() { "仅看图片" } else { "显示全部" })
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.category = if view.category.is_empty() { "image" } else { "" };
-                                        view.reset_history(cx);
-                                        cx.notify();
-                                    })),
-                            ),
                     )
-                    .child(Input::new(&self.search_input))
-                    .child(div().flex().flex_wrap().gap_2().items_center()
-                        .child(Button::new("sort-time").label(if self.oldest { "最早优先" } else { "最新优先" })
-                            .on_click(cx.listener(|view, _, _, cx| { view.oldest = !view.oldest; view.reset_history(cx); })))
-                        .child(Button::new("select-page").label("选择本页")
-                            .on_click(cx.listener(|view, _, _, cx| { view.selected_ids = view.assets.iter().map(|a| a.id).collect(); cx.notify(); })))
-                        .child(Button::new("batch-copy").label(format!("复制已选 ({})", self.selected_ids.len()))
-                            .disabled(self.selected_ids.is_empty())
-                            .on_click(cx.listener(|view, _, _, cx| view.copy_selected(true,cx))))
-                        .child(Button::new("batch-url").label("复制 URL").disabled(self.selected_ids.is_empty())
-                            .on_click(cx.listener(|v,_,_,cx| v.copy_selected(false,cx))))
-                        .child(Button::new("clear-selection").label("取消选择").disabled(self.selected_ids.is_empty())
-                            .on_click(cx.listener(|v,_,_,cx| {v.selected_ids.clear();cx.notify();}))))
+                    .child(Input::new(&self.resource.search_input))
+                    .when(self.resource.tag_filter.is_some(),|d|d.child(div().flex().items_center().gap_2()
+                        .child(format!("标签：{}",self.resource.tag_filter.as_deref().unwrap_or_default()))
+                        .child(Button::new("clear-tag").small().label("清除").on_click(cx.listener(|v,_,_,cx|{v.resource.tag_filter=None;v.reset_history(cx);})))) )
+                    .when(!self.resource.selected_ids.is_empty(),|d|d.child(div().flex().gap_2().items_center()
+                        .child(div().flex_1().min_w(px(0.)).child(Input::new(&self.resource.batch_tag_input)))
+                        .child(Button::new("batch-add-tags").small().label("添加标签").on_click(cx.listener(|v,_,_,cx|v.apply_batch_tags(false,cx))))
+                        .child(Button::new("batch-remove-tags").small().label("移除标签").on_click(cx.listener(|v,_,_,cx|v.apply_batch_tags(true,cx))))))
+                    .child(div().flex().flex_wrap().gap_1().items_center()
+                        .child(Button::new("sort-time").small().label(if self.resource.oldest { "最早优先" } else { "最新优先" })
+                            .on_click(cx.listener(|view, _, _, cx| { view.resource.oldest = !view.resource.oldest; view.reset_history(cx); })))
+                        .child(Button::new("select-page").small().label("选择本页")
+                            .on_click(cx.listener(|view, _, _, cx| { view.resource.selected_ids = view.resource.assets.iter().map(|a| a.id).collect(); cx.notify(); })))
+                        .when(!self.resource.selected_ids.is_empty(),|d|d.child(Button::new("batch-copy").small().label(format!("复制已选 ({})", self.resource.selected_ids.len()))
+                            .disabled(self.resource.selected_ids.is_empty())
+                            .on_click(cx.listener(|view, _, _, cx| view.copy_selected(true,cx)))))
+                        .when(!self.resource.selected_ids.is_empty(),|d|d.child(Button::new("batch-url").small().label("复制 URL").disabled(self.resource.selected_ids.is_empty())
+                            .on_click(cx.listener(|v,_,_,cx| v.copy_selected(false,cx)))))
+                        .when(!self.resource.selected_ids.is_empty(),|d|d.child(Button::new("clear-selection").small().label("取消选择").disabled(self.resource.selected_ids.is_empty())
+                            .on_click(cx.listener(|v,_,_,cx| {v.resource.selected_ids.clear();cx.notify();})))))
                     .child(
                         div()
                             .id("asset-history")
                             .flex_1()
                             .min_h(px(0.))
                             .flex()
-                            .when(self.grid_view, |d| d.flex_wrap().items_start())
-                            .when(!self.grid_view, |d| d.flex_col())
+                            .flex_col()
                             .gap_2()
-                            .children(rows)
-                            .when(self.loading_history, |container| container.child("正在读取资源…"))
-                            .when(self.history_error.is_some(), |container| {
-                                container.child(format!("历史读取失败：{}", self.history_error.as_deref().unwrap_or("")))
+                            .child(div().w_full().flex_shrink_0().flex().gap_2()
+                                .when(self.resource.grid_view,|d|d.flex_wrap().items_start())
+                                .when(!self.resource.grid_view,|d|d.flex_col())
+                                .children(rows))
+                            .when(self.resource.loading_history, |container| container.child("正在读取资源…"))
+                            .when(self.resource.history_error.is_some(), |container| {
+                                container.child(format!("历史读取失败：{}", self.resource.history_error.as_deref().unwrap_or("")))
                             })
-                            .when(self.assets.is_empty() && !self.loading_history && self.history_error.is_none(), |container| {
-                                container.child(if self.search.is_empty() && self.category.is_empty() {
+                            .when(self.resource.assets.is_empty() && !self.resource.loading_history && self.resource.history_error.is_none(), |container| {
+                                container.child(if self.resource.search.is_empty() && self.resource.category.is_empty() {
                                     "暂无上传记录，选择图片或附件开始"
                                 } else {
                                     "没有找到符合条件的资源"
@@ -466,27 +483,27 @@ impl Render for UploadDesk {
                     )
                     .child(
                         div().flex().items_center().justify_between().gap_2()
-                            .child(format!("第 {} 页 · 当前 {} 条", self.page_cursors.len(), self.assets.len()))
-                            .when(self.history_error.is_some(), |container| container.child(
+                            .child(format!("第 {} 页 · 当前 {} 条", self.resource.page_cursors.len(), self.resource.assets.len()))
+                            .when(self.resource.history_error.is_some(), |container| container.child(
                                 Button::new("refresh-history").label("重新读取")
                                     .on_click(cx.listener(|view, _, _, cx| view.reload(cx)))
                             ))
-                            .child(Button::new("previous-page").label("上一页")
-                                .disabled(self.loading_history || self.page_cursors.len() <= 1)
+                            .child(Button::new("previous-page").small().label("上一页")
+                                .disabled(self.resource.loading_history || self.resource.page_cursors.len() <= 1)
                                 .on_click(cx.listener(|view, _, _, cx| {
-                                    if view.page_cursors.len() > 1 && !view.loading_history {
-                                        view.page_cursors.pop();
-                                        view.assets.clear();
+                                    if view.resource.page_cursors.len() > 1 && !view.resource.loading_history {
+                                        view.resource.page_cursors.pop();
+                                        view.resource.assets.clear();
                                         view.reload(cx);
                                     }
                                 })))
-                            .child(Button::new("next-page").label("下一页")
-                                .disabled(self.loading_history || !self.has_more)
+                            .child(Button::new("next-page").small().label("下一页")
+                                .disabled(self.resource.loading_history || !self.resource.has_more)
                                 .on_click(cx.listener(|view, _, _, cx| {
-                                    if view.has_more && !view.loading_history {
-                                        if let Some(last) = view.assets.last() {
-                                            view.page_cursors.push(Some(last.id));
-                                            view.assets.clear();
+                                    if view.resource.has_more && !view.resource.loading_history {
+                                        if let Some(last) = view.resource.assets.last() {
+                                            view.resource.page_cursors.push(Some(last.id));
+                                            view.resource.assets.clear();
                                             view.reload(cx);
                                         }
                                     }
