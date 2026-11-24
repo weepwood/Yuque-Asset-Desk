@@ -9,6 +9,9 @@ impl UploadDesk {
         self.resource.large_preview_path = None;
         self.resource.thumbnail_path = None;
         self.resource.cached_thumbnails.clear();
+        self.resource.ratios.clear();
+        self.resource.hover_asset=None;
+        self.resource.album_list.reset(0);
         self.resource.thumbnails_task = None;
         self.resource.preview_task = None;
         self.resource.preview_loading = false;
@@ -24,6 +27,8 @@ impl UploadDesk {
         let category = self.resource.category;
         let oldest = self.resource.oldest;
         let tag = self.resource.tag_filter.clone();
+        let favorites_only=self.resource.favorites_only;
+        let similar=self.resource.similar_to.clone();
         let scope = (!self.resource.all_accounts).then(|| (
             self.account.config.provider().to_string(), self.account.config.owner_id().to_string()
         ));
@@ -36,15 +41,37 @@ impl UploadDesk {
             if !query.is_empty() { cx.background_executor().timer(std::time::Duration::from_millis(100)).await; }
             let result = cx.background_spawn(async move {
                 let scope=scope.as_ref().map(|(provider,owner)|(provider.as_str(),owner.as_str()));
-                let page=storage.page_tagged(PAGE_SIZE,&query,category,scope,before,oldest,tag.as_deref())?;
+                let page=if let Some(asset)=similar {
+                    let path=preview::restore_local(&storage,&asset)?;
+                    let (hash,_)=preview::visual_hash(&path)?;
+                    storage.store_visual_hash(asset.id,hash)?;
+                    let mut cursor=None;
+                    loop {
+                        let (page,more,_)=storage.page_album(150,"","image",Some((&asset.provider,&asset.owner_id)),cursor,false,None,false)?;
+                        for candidate in &page {
+                            if storage.visual_hash(candidate.id)?.is_none(){
+                                let path=preview::cached_path(storage.data_dir(),candidate);
+                                if path.is_file(){if let Ok((hash,_))=preview::visual_hash(&path){storage.store_visual_hash(candidate.id,hash)?;}}
+                            }
+                        }
+                        if !more {break;}
+                        cursor=page.last().map(|a|a.id);
+                        if cursor.is_none(){break;}
+                    }
+                    let items=storage.similar_assets(&asset,hash)?;
+                    let total=items.len() as i64;
+                    (items,false,total)
+                }else{storage.page_album(PAGE_SIZE,&query,category,scope,before,oldest,tag.as_deref(),favorites_only)?};
                 let tags=storage.tag_catalog(scope)?;
-                Ok::<_,anyhow::Error>((page,tags))
+                let favorites=storage.favorite_ids(scope)?;
+                Ok::<_,anyhow::Error>((page,tags,favorites))
             }).await;
             _ = this.update(cx, |view, cx| {
                 if generation != view.resource.history_generation { return; }
                 view.resource.loading_history = false;
                 match result {
-                    Ok(((items, more, total), tags)) => {
+                    Ok(((items, more, total), tags,favorites)) => {
+                        view.resource.favorites=favorites;
                         view.resource.tag_catalog=tags;
                         view.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
                         view.resource.assets = items;
@@ -66,6 +93,7 @@ impl UploadDesk {
 
     pub(super) fn refresh_thumbnails(&mut self, cx: &mut Context<Self>) {
         self.resource.cached_thumbnails.clear();
+        self.resource.ratios.clear();
         let generation = self.resource.history_generation;
         let items = self.resource.assets.clone();
         let storage = self.storage.clone();
@@ -74,16 +102,51 @@ impl UploadDesk {
                 let id = asset.id;
                 let storage = storage.clone();
                 let path = cx.background_spawn(async move {
-                    preview::restore_local(&storage,&asset).ok()
+                    preview::index_local(&storage,&asset).ok()
                 }).await;
                 let result = this.update(cx, |view, cx| {
                     if generation != view.resource.history_generation { return false; }
-                    if let Some(path) = path { view.resource.cached_thumbnails.insert(id, path); cx.notify(); }
+                    if let Some((path,ratio)) = path { view.resource.cached_thumbnails.insert(id, path); view.resource.ratios.insert(id,ratio); cx.notify(); }
                     true
                 });
                 if !matches!(result, Ok(true)) { break; }
             }
         }));
+    }
+
+    pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
+        if self.backup_busy || self.queue.busy || self.account.account_busy{return;}
+        let Some(parent)=rfd::FileDialog::new().set_title("选择相册备份位置").pick_folder() else{return;};
+        self.backup_busy=true;
+        let storage=self.storage.clone();
+        self.status="正在备份链接数据库与本地微缩图…".into();
+        self.backup_task=Some(cx.spawn(async move |this,cx|{
+            let result=cx.background_spawn(async move{storage.export_album(&parent)}).await;
+            _=this.update(cx,|v,cx|{
+                v.backup_busy=false;
+                v.status=match result{Ok(path)=>format!("相册备份成功：{}",path.display()),Err(e)=>format!("备份失败：{e}")};
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(super) fn toggle_favorite(&mut self,asset:&Asset,cx:&mut Context<Self>) {
+        match self.storage.toggle_favorite(asset) {
+            Ok(true)=>{self.resource.favorites.insert(asset.id);self.status="已收藏".into();}
+            Ok(false)=>{self.resource.favorites.remove(&asset.id);self.status="已取消收藏".into();}
+            Err(e)=>{self.status=e.to_string();}
+        }
+        if self.resource.favorites_only {self.reload(cx);}
+        cx.notify();
+    }
+
+    pub(super) fn find_similar(&mut self,asset:Asset,cx:&mut Context<Self>) {
+        self.resource.similar_to=Some(asset);
+        self.resource.favorites_only=false;
+        self.resource.group_dates=false;
+        self.inspector_open=false;
+        self.reset_history(cx);
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {

@@ -97,6 +97,27 @@ pub fn thumbnail(root:&Path,asset:&Asset) -> Result<PathBuf> {
     anyhow::bail!("没有本地缩略图；仍可复制原始链接")
 }
 
+pub fn visual_hash(path:&Path) -> Result<(u64,f32)> {
+    let bytes=read_bounded(path)?;
+    let mut reader=image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits=image::Limits::default();
+    limits.max_image_width=Some(160);limits.max_image_height=Some(160);limits.max_alloc=Some(1024*1024);
+    reader.limits(limits);
+    let image=reader.decode()?;
+    let ratio=image.width() as f32/image.height().max(1) as f32;
+    let gray=image.resize_exact(9,8,image::imageops::FilterType::Triangle).to_luma8();
+    let mut hash=0u64;
+    for y in 0..8 {for x in 0..8 {hash=(hash<<1)|u64::from(gray.get_pixel(x,y)[0]>gray.get_pixel(x+1,y)[0]);}}
+    Ok((hash,ratio))
+}
+
+pub fn index_local(storage:&crate::storage::Storage,asset:&Asset) -> Result<(PathBuf,f32)> {
+    let path=restore_local(storage,asset)?;
+    let (hash,ratio)=visual_hash(&path)?;
+    if storage.visual_hash(asset.id)?.is_none(){storage.store_visual_hash(asset.id,hash)?;}
+    Ok((path,ratio))
+}
+
 pub fn restore_local(storage:&crate::storage::Storage,asset:&Asset) -> Result<PathBuf> {
     if let Ok(path)=thumbnail(storage.data_dir(),asset){return Ok(path);}
     for source in storage.preview_sources(asset)? {

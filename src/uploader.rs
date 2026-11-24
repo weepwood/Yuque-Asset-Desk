@@ -99,7 +99,7 @@ pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progre
                 existing.url = local;
             }
         }
-        if existing.category=="image" { let _=crate::preview::persist_source(storage.data_dir(),&existing,path); }
+        if existing.category=="image" { if crate::preview::persist_source(storage.data_dir(),&existing,path).is_ok(){let _=crate::preview::index_local(storage,&existing);} }
         return Ok(UploadResult { item: existing, duplicate: true });
     }
     let (url, filekey) = match cfg.mode {
@@ -116,7 +116,7 @@ pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progre
         provider: cfg.provider().to_string(), owner_id: cfg.owner_id().to_string(),
         url, filekey, sha256: digest,
     })?;
-    if item.category=="image" { let _=crate::preview::persist_source(storage.data_dir(),&item,path); }
+    if item.category=="image" { if crate::preview::persist_source(storage.data_dir(),&item,path).is_ok(){let _=crate::preview::index_local(storage,&item);} }
     Ok(UploadResult { item, duplicate: false })
 }
 

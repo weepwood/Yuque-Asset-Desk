@@ -41,3 +41,35 @@ fn native_clicks_switch_resource_and_task_views() {
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn album_native_scroll_and_density_controls() {
+    let root=std::env::temp_dir().join(format!("yuque-gallery-ui-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    for i in 0..150{
+        db.insert_or_get(&crate::storage::NewAsset{name:format!("fixture-{i}.txt"),bytes:10,category:"attachment".into(),provider:"demo".into(),owner_id:"local".into(),url:format!("file:///fixture-{i}.txt"),sha256:format!("fixture-{i}"),filekey:String::new()}).unwrap();
+    }
+    let app=TestAppContext::single();
+    app.update(gpui_kit::init);
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),
+        ..Default::default()
+    },cx,move|window,cx|cx.new(|cx|UploadDesk::new(window,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),150);
+    let before=app.read(|cx|desk.read(cx).resource.album_list.logical_scroll_top().item_ix);
+    ui.simulate_event(ScrollEvent{position:point(px(600.),px(550.)),delta:ScrollDelta::Pixels(point(px(0.),px(-1000.))),..Default::default()});
+    app.run_until_parked();
+    ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
+    assert!(app.read(|cx|desk.read(cx).resource.album_list.logical_scroll_top().item_ix)>before);
+    // The compact toolbar is independent of scroll position.
+    let bounds=ui.debug_bounds("album-density-increase").expect("density button layout");
+    ui.simulate_click(bounds.center(),Modifiers::default());
+    app.run_until_parked();
+    assert_eq!(app.read(|cx|desk.read(cx).resource.tile_size),164.);
+    drop(ui);drop(desk);drop(app);
+    let _=std::fs::remove_dir_all(root);
+}

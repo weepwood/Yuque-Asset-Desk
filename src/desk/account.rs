@@ -7,6 +7,9 @@ impl UploadDesk {
         self.account.config.creds = creds;
         self.account.session_status = "尚未验证会话".into();
         self.resource.all_accounts = false;
+        self.resource.similar_to=None;
+        self.resource.favorites_only=false;
+        self.resource.favorites.clear();
         self.resource.tag_filter=None;
         self.resource.tag_catalog.clear();
         self.resource.total_count = 0;

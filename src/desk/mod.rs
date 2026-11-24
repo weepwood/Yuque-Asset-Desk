@@ -1,4 +1,5 @@
 mod account;
+mod album;
 mod queue;
 mod resources;
 mod view;
@@ -41,7 +42,7 @@ fn file_size(bytes: i64) -> String {
     }
 }
 
-const PAGE_SIZE: usize = 50;
+const PAGE_SIZE: usize = 150;
 
 struct AccountState {
     config: Config,
@@ -80,6 +81,16 @@ struct ResourceState {
     assets: Vec<Asset>,
     search: String,
     grid_view: bool,
+    justified: bool,
+    tile_size: f32,
+    group_dates: bool,
+    favorites_only: bool,
+    favorites: std::collections::HashSet<i64>,
+    ratios: std::collections::HashMap<i64,f32>,
+    hover_asset: Option<i64>,
+    similar_to: Option<Asset>,
+    album_list: ListState,
+    layout_signature: u64,
     selected_asset: Option<Asset>,
     oldest: bool,
     selected_ids: std::collections::HashSet<i64>,
@@ -122,6 +133,8 @@ pub(crate) struct UploadDesk {
     jobs_page: bool,
     inspector_open: bool,
     status: String,
+    backup_busy: bool,
+    backup_task: Option<Task<()>>,
 
 }
 
@@ -134,6 +147,7 @@ impl UploadDesk {
             |this, input, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.resource.search = input.read(cx).value().to_string();
+                    this.resource.similar_to=None;
                     this.reset_history(cx);
                     cx.notify();
                 }
@@ -151,6 +165,16 @@ impl UploadDesk {
                 assets: Vec::new(),
                 search: String::new(),
                 grid_view: true,
+                justified: false,
+                tile_size: 148.,
+                group_dates: true,
+                favorites_only: false,
+                favorites: Default::default(),
+                ratios: Default::default(),
+                hover_asset: None,
+                similar_to: None,
+                album_list: ListState::new(0,ListAlignment::Top,px(350.)),
+                layout_signature: 0,
                 selected_asset: None,
                 oldest: false,
                 selected_ids: Default::default(),
@@ -219,6 +243,8 @@ impl UploadDesk {
             jobs_page: false,
             inspector_open: false,
             status,
+            backup_busy:false,
+            backup_task:None,
 
         };
         cx.defer_in(window, |view, _, cx| {
@@ -227,6 +253,9 @@ impl UploadDesk {
                 match std::env::var("YUQUE_QA_PAGE").as_deref() {
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
+                    Ok("justified")=>{view.resource.justified=true;}
+                    Ok("dense")=>{view.resource.tile_size=96.;}
+                    Ok("favorites")=>{view.resource.favorites_only=true;}
                     _=>{}
                 }
             }

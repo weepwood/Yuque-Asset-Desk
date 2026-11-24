@@ -29,7 +29,7 @@ impl UploadDesk {
     }
 
     pub(super) fn retry_one(&mut self, id: i64, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy { return; }
+        if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
         match self.storage.retry_job(self.account.config.provider(), self.account.config.owner_id(), id) {
             Ok(Some(job)) => self.run_jobs(vec![job], cx),
             Ok(None) => { self.status = "该任务已完成或不属于当前账号".into(); cx.notify(); }
@@ -38,7 +38,7 @@ impl UploadDesk {
     }
 
     pub(super) fn acknowledge_job(&mut self, id:i64,cx:&mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy {return;}
+        if self.backup_busy || self.queue.busy || self.account.account_busy {return;}
         match self.storage.acknowledge_unknown(self.account.config.provider(),self.account.config.owner_id(),id) {
             Ok(()) => {self.status="已记录核实结果；如需重新上传，请单独重试".into();
                 self.queue.recovery_count=self.storage.recoverable(self.account.config.provider(),self.account.config.owner_id()).map(|j|j.len()).unwrap_or(0);
@@ -49,7 +49,7 @@ impl UploadDesk {
     }
 
     pub(super) fn paste_files(&mut self, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy { return; }
+        if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
         let Some(item) = cx.read_from_clipboard() else { return; };
         let mut files = Vec::new();
         for entry in item.entries() {
@@ -83,7 +83,7 @@ impl UploadDesk {
     }
 
     pub(super) fn resume_jobs(&mut self, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy { return; }
+        if self.backup_busy || self.queue.busy || self.account.account_busy { return; }
         match self.storage.recoverable(self.account.config.provider(), self.account.config.owner_id()) {
             Ok(jobs) => self.run_jobs(jobs, cx),
             Err(error) => { self.status = format!("读取任务失败：{error}"); cx.notify(); }
@@ -91,7 +91,7 @@ impl UploadDesk {
     }
 
     pub(super) fn select_files(&mut self, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy {
+        if self.backup_busy || self.queue.busy || self.account.account_busy {
             self.status = "正在上传，请等待当前队列完成".to_string();
             cx.notify();
             return;

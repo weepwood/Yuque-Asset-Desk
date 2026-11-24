@@ -61,6 +61,13 @@ impl Storage {
              );
              CREATE INDEX IF NOT EXISTS idx_upload_jobs_scope ON upload_jobs(provider, owner_id, state, id);
              CREATE TABLE IF NOT EXISTS saved_accounts (owner_id TEXT PRIMARY KEY NOT NULL);
+             CREATE TABLE IF NOT EXISTS asset_favorites (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS asset_visual (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+                 hash INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS asset_tags (
                  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
                  tag TEXT NOT NULL, PRIMARY KEY(asset_id, tag)
@@ -114,7 +121,12 @@ impl Storage {
         self.page_tagged(limit,query,category,scope,cursor,oldest,None)
     }
 
+    #[cfg(test)]
     pub fn page_tagged(&self, limit:usize, query:&str, category:&str, scope:Option<(&str,&str)>, cursor:Option<i64>, oldest:bool, tag:Option<&str>) -> Result<(Vec<Asset>,bool,i64)> {
+        self.page_album(limit,query,category,scope,cursor,oldest,tag,false)
+    }
+
+    pub fn page_album(&self, limit:usize, query:&str, category:&str, scope:Option<(&str,&str)>, cursor:Option<i64>, oldest:bool, tag:Option<&str>, favorites:bool) -> Result<(Vec<Asset>,bool,i64)> {
         let conn = self.open()?;
         let (provider, owner) = match scope {
             Some((provider, owner)) => (Some(provider), Some(owner)),
@@ -142,12 +154,13 @@ impl Storage {
                AND (?2 = '' OR category = ?2)
                AND (?7 IS NULL OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id=assets.id
                    AND (tag=?7 OR substr(tag,1,length(?7)+1)=?7||'/')))
+               AND (?8=0 OR EXISTS(SELECT 1 FROM asset_favorites f WHERE f.asset_id=assets.id))
                {scope_filter} {cursor_filter}
              ORDER BY id {order} LIMIT ?6"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![query, category,
-            provider, owner, cursor, (limit + 1) as i64, tag], map_row)?;
+            provider, owner, cursor, (limit + 1) as i64, tag, favorites], map_row)?;
         let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = items.len() > limit;
         items.truncate(limit);
@@ -169,6 +182,91 @@ impl Storage {
     #[cfg(test)]
     pub fn count(&self) -> Result<i64> {
         Ok(self.page(1, "", false, None, None)?.2)
+    }
+
+    /// Export a consistent SQLite snapshot plus local derivatives only. Never
+    /// copies the OS credential vault or original clipboard/upload source files.
+    pub fn export_album(&self,parent:&std::path::Path) -> Result<PathBuf> {
+        let parent=parent.canonicalize()?;
+        let source=self.data_dir().canonicalize()?;
+        anyhow::ensure!(!parent.starts_with(&source),"请选择应用数据目录以外的备份位置");
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let target=parent.join(format!("YuqueAlbum-{stamp}"));
+        std::fs::create_dir(&target)?;
+        let result=(||->Result<()>{
+            let path=target.join("assets.db");
+            self.open()?.execute("VACUUM INTO ?1",[path.to_str().context("备份路径不是 UTF-8")?])?;
+            let check=Connection::open(&path)?;
+            let integrity:String=check.query_row("PRAGMA quick_check",[],|r|r.get(0))?;
+            anyhow::ensure!(integrity=="ok","备份数据库校验失败");
+            for folder in ["album-previews","thumbnails"] {
+                let from=source.join(folder);
+                if !from.is_dir(){continue;}
+                let dest=target.join(folder);
+                std::fs::create_dir(&dest)?;
+                for item in std::fs::read_dir(from)? {
+                    let item=item?;
+                    if !item.file_type()?.is_file(){continue;}
+                    let name=item.file_name();
+                    let Some(name_str)=name.to_str() else{continue;};
+                    let key=if folder=="album-previews"{name_str.strip_suffix(".jpg")}
+                        else{name_str.strip_suffix(".png").map(|s|s.strip_prefix("large-").unwrap_or(s))};
+                    if key.is_some_and(|s|s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())){
+                        std::fs::copy(item.path(),dest.join(name))?;
+                    }
+                }
+            }
+            std::fs::write(target.join("BACKUP.txt"),"Yuque Asset Desk album backup v1
+Includes SQLite links and thumbnails. No credentials or original upload files.
+Restore into a NEW data directory only; see README.
+")?;
+            Ok(())
+        })();
+        if let Err(e)=result {
+            let _=std::fs::remove_dir_all(&target);
+            return Err(e);
+        }
+        Ok(target)
+    }
+
+    pub fn favorite_ids(&self,scope:Option<(&str,&str)>) -> Result<std::collections::HashSet<i64>> {
+        let conn=self.open()?;
+        let (provider,owner)=scope.map_or((None,None),|(p,o)|(Some(p),Some(o)));
+        let mut stmt=conn.prepare("SELECT f.asset_id FROM asset_favorites f JOIN assets a ON a.id=f.asset_id WHERE (?1 IS NULL OR (a.provider=?1 AND a.owner_id=?2))")?;
+        let rows=stmt.query_map(params![provider,owner],|r|r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn toggle_favorite(&self,asset:&Asset) -> Result<bool> {
+        let mut conn=self.open()?;
+        let tx=conn.transaction()?;
+        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND provider=?2 AND owner_id=?3)",params![asset.id,asset.provider,asset.owner_id],|r|r.get(0))?;
+        anyhow::ensure!(exists,"资源已变化");
+        let removed=tx.execute("DELETE FROM asset_favorites WHERE asset_id=?1",[asset.id])?;
+        if removed==0 {tx.execute("INSERT INTO asset_favorites(asset_id) VALUES(?1)",[asset.id])?;}
+        tx.commit()?;
+        Ok(removed==0)
+    }
+
+    pub fn visual_hash(&self,id:i64) -> Result<Option<u64>> {
+        Ok(self.open()?.query_row("SELECT hash FROM asset_visual WHERE asset_id=?1",[id],|r|r.get::<_,i64>(0)).optional()?.map(|v|v as u64))
+    }
+
+    pub fn store_visual_hash(&self,id:i64,hash:u64) -> Result<()> {
+        self.open()?.execute("INSERT OR IGNORE INTO asset_visual(asset_id,hash) VALUES(?1,?2)",params![id,hash as i64])?;
+        Ok(())
+    }
+
+    pub fn similar_assets(&self,asset:&Asset,hash:u64) -> Result<Vec<Asset>> {
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at,v.hash
+            FROM assets a JOIN asset_visual v ON a.id=v.asset_id WHERE a.provider=?1 AND a.owner_id=?2 AND a.id<>?3 AND a.category='image'")?;
+        let rows=stmt.query_map(params![asset.provider,asset.owner_id,asset.id],|r|Ok((map_row(r)?,r.get::<_,i64>(10)? as u64)))?;
+        let mut matches=Vec::new();
+        for row in rows {let (a,h)=row?;let distance=(hash^h).count_ones();if distance<=10 {matches.push((distance,a));}}
+        matches.sort_by_key(|(distance,a)|(*distance,std::cmp::Reverse(a.id)));
+        matches.truncate(150);
+        Ok(matches.into_iter().map(|(_,a)|a).collect())
     }
 
     pub fn tags(&self, id: i64) -> Result<Vec<String>> {
@@ -360,6 +458,53 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn album_favorites_similarity_backup_and_large_pagination() {
+        let root=std::env::temp_dir().join(format!("yuque-album-storage-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("data/assets.db")).unwrap();
+        let mut conn=db.open().unwrap();
+        let tx=conn.transaction().unwrap();
+        for i in 0..10000 {
+            tx.execute("INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256) VALUES(?1,10,'image','yuque','1','https://example.invalid/x',?1)",[format!("image-{i}")]).unwrap();
+        }
+        tx.execute("INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256) VALUES('other',10,'image','yuque','2','https://example.invalid/x','other')",[]).unwrap();
+        tx.commit().unwrap();
+        let mut before=None;
+        let mut count=0;
+        let mut first=None;
+        let mut second=None;
+        loop {
+            let (items,more,total)=db.page_album(150,"","image",Some(("yuque","1")),before,false,None,false).unwrap();
+            assert_eq!(total,10000);
+            if first.is_none(){first=Some(items[0].clone());second=Some(items[1].clone());}
+            for item in &items{assert!(before.is_none_or(|v|item.id<v));before=Some(item.id);}
+            count+=items.len();
+            if !more{break;}
+        }
+        assert_eq!(count,10000);
+        let a=first.unwrap();let b=second.unwrap();
+        assert!(db.toggle_favorite(&a).unwrap());
+        assert!(db.favorite_ids(Some(("yuque","2"))).unwrap().is_empty());
+        assert_eq!(db.page_album(150,"","",Some(("yuque","1")),None,false,None,true).unwrap().0[0].id,a.id);
+        db.store_visual_hash(a.id,0).unwrap();db.store_visual_hash(b.id,1).unwrap();db.store_visual_hash(10001,0).unwrap();
+        assert_eq!(db.similar_assets(&a,0).unwrap().iter().map(|a|a.id).collect::<Vec<_>>(),vec![b.id]);
+        let preview=db.data_dir().join("album-previews");
+        std::fs::create_dir_all(&preview).unwrap();
+        let name=format!("{}.jpg","a".repeat(64));
+        std::fs::write(preview.join(&name),b"fixture").unwrap();
+        std::fs::write(db.data_dir().join("secret.txt"),b"do not copy").unwrap();
+        assert!(db.export_album(db.data_dir()).is_err());
+        let backup=db.export_album(&root).unwrap();
+        assert!(backup.join("album-previews").join(name).is_file());
+        assert!(!backup.join("secret.txt").exists());
+        let restored=Storage::new(backup.join("assets.db")).unwrap();
+        assert!(restored.favorite_ids(Some(("yuque","1"))).unwrap().contains(&a.id));
+        assert_eq!(restored.similar_assets(&a,0).unwrap().len(),1);
+        assert!(!db.toggle_favorite(&a).unwrap());
+        drop(restored);drop(conn);drop(db);
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn sqlite_deduplicates_by_provider_and_owner() {
         let base = std::env::temp_dir().join(format!("yuque-desk-test-{}-{}", std::process::id(), rand_seed()));

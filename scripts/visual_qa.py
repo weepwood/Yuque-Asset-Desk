@@ -14,7 +14,7 @@ out.mkdir(parents=True, exist_ok=True)
 binary = root / "target" / "debug" / ("yuque-asset-desk.exe" if os.name == "nt" else "yuque-asset-desk")
 def fixture_png(index):
     """Deterministic RGB test pattern; not user image content."""
-    w,h=320,240
+    w,h=[(320,240),(210,320),(440,180),(320,320)][index%4]
     colors=[(40,88,150),(130,84,112),(52,120,95),(180,123,62),(76,90,140),(125,80,45)]
     base=colors[index%len(colors)]
     def pixel(x,y):
@@ -49,6 +49,8 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
             conn.execute("INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256) VALUES(?,?,?,?,?,?,?)", (name,path.stat().st_size,category,"demo","local",path.as_uri(),hashlib.sha256(path.read_bytes()).hexdigest()))
             if i<3:
                 conn.execute("INSERT INTO asset_tags VALUES(?,?)",(i+1,"设计/UI" if i<2 else "设计/文档"))
+        conn.execute("UPDATE assets SET created_at='2026-11-23T08:00:00Z' WHERE id<=6")
+        conn.execute("INSERT INTO asset_favorites(asset_id) VALUES(1),(8)")
         for i,state in enumerate(["done","failed","pending","paused","unknown"]):
             conn.execute("INSERT INTO upload_jobs(provider,owner_id,path,state,error) VALUES(?,?,?,?,?)",
                 ("demo","local",str(data/f"fixture-task-{i}.png"),state,"演示错误：文件不可读取" if state=="failed" else "演示状态：需核实远端" if state=="unknown" else ""))
@@ -60,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("album-offline-dark.png")
     capture("resources-light.png",YUQUE_QA_LIGHT="1")
     capture("resources-narrow.png",YUQUE_QA_NARROW="1")
+    capture("album-justified.png",YUQUE_QA_PAGE="justified")
+    capture("album-dense.png",YUQUE_QA_PAGE="dense",YUQUE_QA_NARROW="1")
+    capture("album-favorites.png",YUQUE_QA_PAGE="favorites",YUQUE_QA_LIGHT="1")
     capture("tasks-dark.png",YUQUE_QA_PAGE="tasks")
     capture("tags-light.png",YUQUE_QA_LIGHT="1",YUQUE_QA_PAGE="tags")
     assert (out/"empty-dark.png").read_bytes() != (out/"resources-dark.png").read_bytes(), "populated frame did not change"

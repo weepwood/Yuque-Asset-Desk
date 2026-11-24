@@ -34,3 +34,9 @@
 - 不主动删除既有 clipboard 文件、旧预览或用户原文件；相册微缩图属于持久化数据而非临时缓存。明确用户操作才可打开外链浏览器。
 - 上传请求禁用自动重试；结果未知任务排除批量恢复，需人工核实；限速 YUQUE_UPLOAD_KIB_PER_SEC，取消仅为协作式中止。
 - QA：cargo test --locked --features qa；macOS 本地 cargo build --locked --features qa 后 python3 scripts/visual_qa.py。QA 数据必须隔离，无真实账号或网络上传。
+
+## 相册深化与备份约束
+- 相册使用 GPUI ListState 按行虚拟化，每页 150 项 SQLite 游标查询；等宽和等高拼图布局算法位于 src/desk/album.rs。尺寸 96–240px，日期按数据库 UTC 字段分组。
+- 收藏与感知哈希均为增量表，按资源 ID 关联；相似检索只在所选资源同账号内匹配本地 dHash，不下载远端原图；历史微缩图按需索引。
+- 相册备份是全部账号的 SQLite 一致性快照和派生预览，不含系统密钥库或原始上传/剪贴板文件；必须导出到数据目录以外的新文件夹，禁止覆盖当前数据库。恢复使用新的 YUQUE_DATA_DIR，先确认数据再切换；不自动重传任务。
+- 界面变化使用 scripts/visual_qa.py 验证；QA 原生滚轮和点击测试优先使用 debug_selector 获取实际布局边界，禁止为了测试放宽业务约束。
