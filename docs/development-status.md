@@ -87,3 +87,10 @@
 - 本地候选与远端 CI 进度需以 git/gh 实际状态为准；正式 Release 需三个架构全部通过并校验资产后执行。暂无开发者签名/公证证书，不声称 macOS 可无 Gatekeeper 提示安装。
 - 候选 2eed0fd 的 CI 45430828149 Windows job 138575344377 在 Static checks 失败：原始日志确认 Python 默认 charmap 解码中文源文件报 UnicodeDecodeError；静态检查/版本读取改为显式 UTF-8。需检查新提交的全部三平台结果，不使用旧候选产物。
 - 指定候选 5c96a9a 的 CI 45431125297，Windows job 138576380836 静态检查通过，24 项测试中 23 通过、1 失败；原始日志证实文件 URL 往返去除 Windows 扩展长度路径前缀，测试直接比较普通路径与 canonicalize 路径失败。仅修复测试路径规范化，追加真实文件读取及 SHA-256 断言，保留原业务行为。新候选仍须三平台完整 CI。冻结新增功能。
+
+## v0.4.0 正式发布（2026-11-25）
+- 用户明确将发布范围缩减为 Windows x64 与 macOS ARM64。CI 45432243907 两目标完整成功，Windows 路径兼容性修复已通过。Intel 不作为发布门槛。
+- 正式 Tag v0.4.0 -> 6f485d8b01386774fa395662838e23f756430f35，Release https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.4.0，非草稿、非预发行。
+- CI 原始 ZIP 下载后独立验证 SHA256、CRC、路径安全、架构；macOS Info.plist 版本及 ad-hoc 签名通过。实际启动 ARM64 CI 包，窗口 1160x828，隔离数据库、托盘及快捷键注册成功；有 sandbox_extension 非致命权限警告。Windows 不进行真机启动，系统通知/实际快捷键/真实上传未验收。
+- ARM64 ZIP 7854534 bytes，SHA256 75d012724d6b53b639043bb597e4cd28f4e743b9967c0c4e039a3e9cb6219077；Windows ZIP 8917151 bytes，SHA256 93eae86d299cf82ee7c6af35fe09fc13afa355e34fe6c1c0ae57110b43791a90。
+- 发布后核对全部四项资产的名称、状态、大小与 GitHub SHA256 digest，全部一致。详细本地审计目录 dist/release-audit/45432243907-two-platforms。保持发布 Tag 指向构建源码，后续文档提交不改变发布二进制。

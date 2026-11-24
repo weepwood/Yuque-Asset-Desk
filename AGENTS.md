@@ -63,3 +63,8 @@
 ## v0.4.0 跨平台发布复验
 - Windows 文件 URL 的路径往返可能去除扩展长度路径前缀；比较路径时两侧均 canonicalize，并实际读取文件及核对 SHA-256，禁止通过跳过测试掩盖平台差异。
 - 下载发布产物时只接受最终候选 CI 的三个明确目标 artifact；先比对 CI 原始 SHA256 文件，再检查 ZIP、二进制架构及应用签名，避免 verify-only 重新生成校验文件掩盖损坏。
+
+## v0.4.0 正式发布（2026-11-25）
+- 根据用户最终确认，V0.4.0 仅发布 Windows x64 与 macOS ARM64 两个 ZIP 及各自 SHA256 文件，Intel Mac 不纳入本次发布门槛。未修改既有 CI 矩阵。
+- 正式 Tag v0.4.0 固定于已验收源码 6f485d8，CI 45432243907 两个目标 job 均 success。下载 CI 原始产物独立验证 SHA256、ZIP、架构、macOS 签名，再以 GitHub 返回的资产 digest 核实全部四个资产。不得移动 Tag 或混用其他提交产物。
+- macOS ARM64 CI 应用实际隔离启动通过，Windows 仅 CI 与归档/PE 架构验证；不宣称 Windows 真机启动、Apple 公证、系统通知送达或真实语雀上传已验收。

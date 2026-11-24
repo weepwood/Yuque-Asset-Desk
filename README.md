@@ -2,7 +2,7 @@
 
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
-> **当前版本：v0.4.0 发布候选。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
+> **当前版本：[v0.4.0 正式发布](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.4.0)。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
 
 ## 技术架构
 
@@ -141,3 +141,6 @@ python3 scripts/desktop_qa.py
 YUQUE_VISUAL_PROFILE=release python3 scripts/visual_qa.py
 ```
 报告区分 CPU 绘制耗时、原生帧回调、整机 GPU 样本。原生回调未到达会超时记录，不能将 CPU 耗时或回调频率当作屏幕真实呈现 FPS。
+
+### v0.4.0 下载
+正式发布仅提供 Windows x64 便携 ZIP 与 macOS ARM64 应用 ZIP，均附 SHA256。macOS 为 ad-hoc 签名、未公证；Windows 未签名。详见 [Release](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.4.0)。
