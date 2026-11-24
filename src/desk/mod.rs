@@ -9,6 +9,10 @@ pub(crate) mod preferences;
 mod queue;
 mod resources;
 mod view;
+mod shell;
+mod selection;
+mod inspector_model;
+use shell::{Page,Command};
 
 use anyhow::{Context as AnyhowContext, Result};
 use crate::config::{Config, Mode, YuqueCredentials};
@@ -117,7 +121,6 @@ struct ResourceState {
     selected_asset: Option<Asset>,
     oldest: bool,
     selected_ids: std::collections::HashSet<i64>,
-    tag_input: Entity<InputState>,
     batch_tag_input: Entity<InputState>,
     tag_filter: Option<String>,
     tag_catalog: Vec<String>,
@@ -139,7 +142,9 @@ struct ResourceState {
     preview_loading: bool,
     large_preview_path: Option<PathBuf>,
     large_preview_open: bool,
-    tile_click_task:Option<Task<()>>,
+    selection_anchor:Option<i64>,
+    batch_tag_open:bool,
+    gallery_focus:FocusHandle,
     preview_focus:FocusHandle,
     zoom_channel:usize,
     displayed_zoom:f32,
@@ -158,13 +163,13 @@ struct ResourceState {
 
 pub(crate) struct UploadDesk {
     resource: ResourceState,
+    inspector_model:Entity<inspector_model::InspectorModel>,
     queue: QueueState,
     account: AccountState,
     storage: Storage,
     dark: bool,
-    account_panel: bool,
+    page: Page,
     _subscriptions: Vec<Subscription>,
-    jobs_page: bool,
     inspector_open: bool,
     immersive:bool,
     sidebar_collapsed:bool,
@@ -179,8 +184,6 @@ pub(crate) struct UploadDesk {
     backup_task: Option<Task<()>>,
     update_state:crate::update::State,
     update_task:Option<Task<()>>,
-    account_page:bool,
-    data_page:bool,
     data_usage:Option<crate::data_management::Usage>,
     data_scan_busy:bool,
     data_task:Option<Task<()>>,
@@ -204,7 +207,7 @@ impl UploadDesk {
         }));
     }
     fn isolated_qa(&self)->bool{
-        cfg!(feature="qa")&&self.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some())
+        cfg!(feature="qa")&&self.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some()||std::env::var_os("YUQUE_QA_PATH").is_some())
     }
     pub(crate) fn flush_preferences(&self){if !self.resetting && !self.isolated_qa(){let _=self.storage.save_preferences(&self.prefs.encode());}}
     #[cfg(feature="qa")]
@@ -213,6 +216,10 @@ impl UploadDesk {
     }
     pub(crate) fn shortcut(&self)->&str{&self.prefs.shortcut}
 
+    #[cfg(feature="qa")]
+    pub(crate) fn qa_path_state(&self)->(usize,Option<i64>,bool,bool){
+        (self.resource.selected_ids.len(),self.resource.selected_asset.as_ref().map(|a|a.id),self.resource.large_preview_open,self.inspector_open)
+    }
     pub(crate) fn desktop_status(&mut self,enabled:bool,status:String,cx:&mut Context<Self>){
         self.desktop_enabled=enabled;self.status=status;cx.notify();
     }
@@ -264,7 +271,10 @@ impl UploadDesk {
             v.prefs.width=f32::from(size.width).clamp(720.,3840.);v.prefs.height=f32::from(size.height).clamp(600.,2160.);
             v.persist_preferences(cx);
         });
+        let inspector_model=cx.new(|cx|inspector_model::InspectorModel::new(window,cx));
+        let inspector_subscription=cx.observe(&inspector_model,|_,_,cx|cx.notify());
         let mut view = Self {
+            inspector_model,
             resource: ResourceState {
                 assets: Vec::new(),
                 search: String::new(),
@@ -297,7 +307,6 @@ impl UploadDesk {
                 selected_asset: None,
                 oldest:prefs.oldest,
                 selected_ids: Default::default(),
-                tag_input: cx.new(|cx| InputState::new(window, cx).placeholder("标签，用逗号分隔")),
                 batch_tag_input: cx.new(|cx| InputState::new(window,cx).placeholder("批量标签，如 设计/UI")),
                 tag_filter: None,
                 tag_catalog: Vec::new(),
@@ -313,7 +322,7 @@ impl UploadDesk {
                 preview_loading: false,
                 large_preview_path: None,
                 large_preview_open: false,
-                tile_click_task:None,preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
+                selection_anchor:None,batch_tag_open:false,gallery_focus:cx.focus_handle().tab_stop(true),preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
                 preview_error: None,
                 search_input,
                 category: "",
@@ -359,10 +368,9 @@ impl UploadDesk {
                 account_task: None,
             },
             dark: cx.theme().mode == ThemeMode::Dark,
-            account_panel: false,
+            page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription],
-            jobs_page: false,
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription],
             inspector_open: false,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
@@ -375,7 +383,7 @@ impl UploadDesk {
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
-            account_page:false,data_page:false,data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
+            data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
             reset_armed:false,resetting:false,
 
         };
@@ -388,14 +396,14 @@ impl UploadDesk {
                         _window.push_notification(Notification::success("演示：资源链接已复制").autohide(false),cx);
                     }
                     Ok("updates")=>{
-                        view.account_panel=true;view.inspector_open=false;
+                        view.page=Page::Settings;view.inspector_open=false;
                         view.update_state=crate::update::State::Newer(crate::update::Available{version:"0.6.0".into(),page:crate::update::RELEASES.into(),package:Some((crate::update::RELEASES.into(),crate::update::RELEASES.into()))});
                     }
-                    Ok("data")=>{view.account_panel=true;view.inspector_open=false;view.data_page=true;view.refresh_data(cx);}
-                    Ok("account")=>{view.account_panel=true;view.account_page=true;view.inspector_open=false;}
-                    Ok("account-identified")=>{view.account_panel=true;view.account_page=true;view.inspector_open=false;view.account.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});view.account.identity_status="已识别个人账号；保存时仍需核对网页会话".into();}
-                    Ok("settings")=>{view.account_panel=true;view.inspector_open=false;}
-                    Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
+                    Ok("data")=>{view.page=Page::Data;view.inspector_open=false;view.refresh_data(cx);}
+                    Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
+                    Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});view.account.identity_status="已识别个人账号；保存时仍需核对网页会话".into();}
+                    Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
+                    Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
                     Ok("rail")=>{view.sidebar_collapsed=true;}

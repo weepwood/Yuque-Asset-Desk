@@ -187,3 +187,11 @@
 - 复查 PR #3 的 CI 45476368867，Windows success、macOS queued。未放宽门禁，继续在同一分支修复实际体验差距。
 - 预览缩略图恢复按选中资源的七图范围而非旧图库视口调度；主图本地恢复同时更新路径和比例，尾部向前补齐导航。后台上传触发刷新时保留预览游标/选中项，退出后统一刷新。高清加载失败不覆盖成功的图，支持显式切回离线，加载/错误独立展示；原文件打开失败可见。未新增依赖或持久化缓存，切换来源时可能短暂共存两张高清图，后台阻塞请求仍受20s超时约束。
 - 51 passed/0 failed/1 ignored；QA build、all-targets check、static/diff check；增加原生交互断言（失败保留、离线释放、跨页实际缩略图和2:1比例、延迟刷新、源文件保留）。重新生成7张真实渲染截图，其中深浅/窄窗高清与离线4张预览。无真实账号/CDN/Windows真机/正式内存性能测量，未发布新版。
+
+## V0.7 设计重构第一批（候选，非正式发布）
+- PR #3 固定 head 5410fc2，双平台 CI 45477696693 成功，合并 main 61a39f6。
+- 根 DESIGN.md、固定来源 docs/design-references.md；实际审查 Spacedrive/Immich 参考图。原图和前后 QA 截图存于 ignored dist/design-research/。
+- Page 枚举替代互斥页面 bool；shell Command 统一部分命令；独立 InspectorModel Entity 异步标签读取，代际守卫；选择纯模型，单击不打开检查器；Shift/修饰键多选、Space、Escape、方向键、显式详情，统一菜单入口。隐藏页面不再构建图库。视觉改变为稳定工具栏、固定选择命令区、单密度控制、图片文件名/大小、分组属性和连续设置行。
+- 真实渲染 QA 14 张；实际 GPUI 注入操作8阶段通过，dist/design-research/path/operation-path.gif（逐帧渲染，不是物理鼠标录屏）；状态证据 docs/performance/v0.7-design-path.log。10000合成 JPEG debug 采样：grid CPU draw p50 9.675/p95 12.938ms RSS154.38MiB；masonry 9.797/11.412ms RSS158.44MiB；各120样本、各300已加载、解码缓存192。原生回调无样本，不等于 FPS；不能直接与历史 release 比较。详见 docs/performance/v0.7-design-debug.json。
+- 剩余：继续以真实截图做布局精修，独立 Gallery/Viewer/Queue/Account Entity 与设置页拆离 inspector；写操作仍同步，必须先确保数据清理、退出和账号切换串行安全；统一原生 GPUI Action/key context、真正几何方向导航、焦点/菜单完整路径、宽度过渡与中断验证。当前窄窗与舒适/紧凑已作本地验证，仍需 Windows 真机及 release 性能对照。不得宣称全部六专项完成。
+- 后续集中迭代：先检查本批 PR 固定 head CI；仅通过且审查无阻塞才合并；失败仅修复实际错误；每轮一批原子提交，优先上述剩余问题，不增加业务功能，不修改已发布 tag，不绕过分支保护。避免重复开启 PR、并行修改同一路径、覆盖用户本地未提交代码。

@@ -2,7 +2,7 @@
 use gpui_kit::*;
 use gpui_kit::component::theme::{Theme,ThemeMode};
 
-pub(super) const CONTROL_RADIUS:f32=8.;
+pub(super) const CONTROL_RADIUS:f32=6.;
 pub(super) const FEEDBACK_MS:u64=160;
 pub(super) const HOVER_MS:u64=120;
 pub(super) const SURFACE_MS:u64=180;
@@ -41,8 +41,8 @@ pub(super) struct Spacing{
 }
 impl Spacing{
     pub fn new(comfortable:bool)->Self{
-        if comfortable{Self{pad:32.,gap:24.,day:44.,section:22.,row:20.,nav:10.,sidebar:200.,inspector:320.,nav_pad:12.,footer:32.,title:21.,body:14.,caption:12.,control:8.}}
-        else{Self{pad:16.,gap:10.,day:28.,section:8.,row:12.,nav:4.,sidebar:184.,inspector:280.,nav_pad:8.,footer:24.,title:18.,body:13.,caption:11.,control:4.}}
+        if comfortable{Self{pad:20.,gap:16.,day:36.,section:16.,row:16.,nav:4.,sidebar:200.,inspector:304.,nav_pad:12.,footer:36.,title:16.,body:14.,caption:12.,control:8.}}
+        else{Self{pad:16.,gap:10.,day:28.,section:8.,row:12.,nav:4.,sidebar:184.,inspector:280.,nav_pad:8.,footer:32.,title:15.,body:13.,caption:11.,control:4.}}
     }
     pub fn sidebar_width(self,narrow:bool)->f32{if narrow{150.}else{self.sidebar}}
 }
@@ -54,7 +54,7 @@ pub(super) struct Palette {
 impl Palette {
     pub fn new(dark:bool)->Self {
         let c=|a,b|rgb(if dark{a}else{b});
-        Self{canvas:c(0x151619,0xfafaf9),sidebar:c(0x1c1d20,0xf0f1f2),surface:c(0x222428,0xffffff),
+        Self{canvas:c(0x18191b,0xffffff),sidebar:c(0x202124,0xf4f5f6),surface:c(0x25272b,0xf9fafb),
             subtle:c(0x2b2d32,0xe8eaed),line:c(0x2d3035,0xe3e4e6),text:c(0xe8e9ed,0x25272b),
             muted:c(0xa1a5af,0x60656f),accent:c(0x8bc9b5,0x28745e),accent_soft:c(0x263e37,0xdceee7),
             error:c(0xf2ad9e,0x9f392b)}
