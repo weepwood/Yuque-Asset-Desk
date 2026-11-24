@@ -104,9 +104,27 @@ pub(super) fn fit_preview(width:f32,height:f32,ratio:f32,zoom:f32)->(f32,f32){
     (w*zoom,w/ratio*zoom)
 }
 
+/// Limit panning to the portion of the image outside the canvas.
+pub(super) fn clamp_pan(canvas:(f32,f32),image:(f32,f32),pan:(f32,f32))->(f32,f32){
+    let x=((image.0-canvas.0)*0.5).max(0.);
+    let y=((image.1-canvas.1)*0.5).max(0.);
+    (pan.0.clamp(-x,x),pan.1.clamp(-y,y))
+}
+/// Anchor the same image coordinate at the pointer when changing scale.
+pub(super) fn anchor_pan(pan:(f32,f32),anchor:(f32,f32),old:f32,new:f32)->(f32,f32){
+    let scale=new/old.max(1.);
+    (anchor.0+(pan.0-anchor.0)*scale,anchor.1+(pan.1-anchor.1)*scale)
+}
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[::core::prelude::v1::test]
+    fn preview_anchor_and_pan_bounds(){
+        let p=anchor_pan((10.,-20.),(80.,40.),2.,3.);
+        assert_eq!(p,(-25.,-50.));
+        assert_eq!(clamp_pan((800.,600.),(1200.,400.),(500.,-99.)),(200.,0.));
+        assert_eq!(clamp_pan((800.,600.),(800.,600.),(20.,30.)),(0.,0.));
+    }
     #[::core::prelude::v1::test]
     fn preview_fits_at_one_hundred_percent(){
         for ratio in [0.4,1.,2.4]{

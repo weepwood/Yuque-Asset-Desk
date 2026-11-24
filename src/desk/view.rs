@@ -106,17 +106,16 @@ impl UploadDesk {
                 .child(div().text_lg().font_semibold().child("存储与数据")))
                 .child(self.data_panel(cx));
         } else if self.account_panel {
-            panel = panel.child(div().text_lg().font_semibold().child("设置"))
+            panel = panel.child(div().text_size(px(self.spacing().title)).font_semibold().child("设置"))
                 .child(self.update_panel(cx))
-                .child(div().h(px(1.)).bg(self.palette().line))
                 .child(self.settings_preferences(cx))
-                .child(div().h(px(1.)).bg(self.palette().line))
-                .child(div().flex().items_center().justify_between().gap_2()
-                    .child(div().flex_1().child("存储与数据").child(div().text_xs().text_color(self.palette().muted).child("空间统计、隐私清理、重置与卸载")))
+                .child(div().flex().items_center().justify_between().gap_3().border_1().border_color(self.palette().line).rounded(px(design::CONTROL_RADIUS)).p(px(self.spacing().row))
+                    .child(div().size(px(28.)).flex().items_center().justify_center().rounded_md().bg(self.palette().accent_soft).text_color(self.palette().accent).child(IconName::HardDrive))
+                    .child(div().flex_1().min_w(px(0.)).child("存储与数据").child(div().text_xs().text_color(self.palette().muted).child("空间统计、隐私清理、重置与卸载")))
                     .child(div().debug_selector(||"open-data-settings".into()).child(Button::new("open-data-settings").small().ghost().icon(IconName::ChevronRight).label("管理").on_click(cx.listener(|v,_,_,cx|{v.data_page=true;v.reset_armed=false;v.refresh_data(cx);cx.notify();})))))
-                .child(div().h(px(1.)).bg(self.palette().line))
-                .child(div().flex().items_center().justify_between().gap_2()
-                    .child(div().flex_1().child("语雀账号").child(div().text_xs().text_color(self.palette().muted).child("自动识别账号、配置上传会话")))
+                .child(div().flex().items_center().justify_between().gap_3().border_1().border_color(self.palette().line).rounded(px(design::CONTROL_RADIUS)).p(px(self.spacing().row))
+                    .child(div().size(px(28.)).flex().items_center().justify_center().rounded_md().bg(self.palette().accent_soft).text_color(self.palette().accent).child(IconName::FolderOpen))
+                    .child(div().flex_1().min_w(px(0.)).child("语雀账号").child(div().text_xs().text_color(self.palette().muted).child("自动识别账号、配置上传会话")))
                     .child(div().debug_selector(||"open-account-settings".into()).child(Button::new("open-account-settings").small().ghost().icon(IconName::ChevronRight).label("管理").on_click(cx.listener(|v,_,_,cx|{v.account_page=true;v.data_page=false;cx.notify();})))));
         } else if let Some(asset) = &self.resource.selected_asset {
             let url_asset = asset.clone();
@@ -126,7 +125,7 @@ impl UploadDesk {
             if asset.category=="image"{
                 panel=panel.child(div().h(px(if self.prefs.comfortable{208.}else{184.})).w_full().rounded(px(design::CONTROL_RADIUS)).overflow_hidden().bg(self.palette().subtle).flex().items_center().justify_center()
                     .child(if let Some(path)=&self.resource.thumbnail_path{img(path.clone()).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element()}else{div().text_xs().text_color(self.palette().muted).child(if self.resource.preview_loading{"读取本地预览…"}else{"无本地预览"}).into_any_element()}))
-                    .child(Button::new("large-preview").small().ghost().icon(IconName::Maximize).label("沉浸式预览").disabled(self.resource.preview_loading).on_click(cx.listener(|v,_,_,cx|v.open_large_preview(cx))));
+                    .child(Button::new("large-preview").small().ghost().icon(IconName::Maximize).label("沉浸式预览").disabled(self.resource.preview_loading).on_click(cx.listener(|v,_,w,cx|v.open_large_preview(w,cx))));
                 if self.resource.thumbnail_path.is_none()&&!self.resource.preview_loading{
                     panel=panel.child(Button::new("preview-image").small().label("重新读取本地预览").on_click(cx.listener(|v,_,_,cx|v.load_preview(cx))));
                     if let Some(error)=&self.resource.preview_error{panel=panel.child(div().text_xs().text_color(self.palette().error).child(error.clone()));}
@@ -206,7 +205,7 @@ impl UploadDesk {
                         .child(div().id(("album-image",index)).relative().h(px(tile_image_height)).w_full().overflow_hidden()
                             .rounded(px(design::CONTROL_RADIUS)).bg(palette.subtle).flex().items_center().justify_center()
                             .cursor_pointer()
-                            .on_click(cx.listener(move |v,_,window,cx|{v.immersive=false;v.select_asset(detail_asset.clone(),window,cx)}))
+                            .on_click(cx.listener(move |v,e:&ClickEvent,window,cx|v.click_tile(detail_asset.clone(),e.click_count(),window,cx)))
                             .child(match thumbnail {
                                 Some(path)=>img(path).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element(),
                                 None=>div().flex().flex_col().items_center().gap_1().text_color(palette.muted)
@@ -287,6 +286,71 @@ impl UploadDesk {
     }
 }
 
+impl UploadDesk {
+    #[inline(never)]
+    fn preview_view(&mut self,surface_alpha:f32,window:&mut Window,cx:&mut Context<Self>)->AnyElement{
+            // Each preview owns a fresh channel; closing never drives a hidden animation.
+            let zoom=design::tween(ElementId::from(("preview-zoom",self.resource.zoom_channel)),self.resource.zoom,design::ZOOM_MS,window,cx);
+            self.resource.displayed_zoom=zoom;
+            let (canvas_w,canvas_h,ratio)=self.preview_size(window);
+            let (image_w,image_h)=album::fit_preview(canvas_w,canvas_h,ratio,zoom);
+            let pan=album::clamp_pan((canvas_w,canvas_h),(image_w,image_h),(f32::from(self.resource.pan.x),f32::from(self.resource.pan.y)));
+            let previous=self.preview_neighbor(false).is_some();let next=self.preview_neighbor(true).is_some();
+            div().id("preview-root").track_focus(&self.resource.preview_focus).size_full().flex().flex_col().p_4().gap_3().opacity(surface_alpha)
+                .on_key_down(cx.listener(|v,e:&KeyDownEvent,w,cx|{
+                    if e.keystroke.modifiers.control||e.keystroke.modifiers.platform||e.keystroke.modifiers.alt{return;}
+                    match e.keystroke.key.as_str(){
+                        "escape"=>v.close_preview(cx),
+                        "left"=>v.step_preview(false,w,cx),
+                        "right"=>v.step_preview(true,w,cx),
+                        "+"|"="=>v.zoom_by(0.25,cx),
+                        "-"=>v.zoom_by(-0.25,cx),
+                        "0"=>{v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));cx.notify();},
+                        _=>return,
+                    }
+                    cx.stop_propagation();
+                }))
+                .bg(self.palette().canvas).text_color(self.palette().text)
+                .child(div().h(px(32.)).flex_shrink_0().flex().items_center().gap_2()
+                    .child(Button::new("close-preview").ghost().small().icon(IconName::ArrowLeft).label("返回").on_click(cx.listener(|v,_,_,cx| {v.close_preview(cx);})))
+                    .child(div().flex_1().font_semibold().truncate().child(self.resource.selected_asset.as_ref().map(|a|a.name.clone()).unwrap_or_default()))
+                    .child(Button::new("preview-prev").ghost().small().icon(IconName::ChevronLeft).tooltip("上一张 · ←").disabled(!previous).on_click(cx.listener(|v,_,w,cx|v.step_preview(false,w,cx))))
+                    .child(Button::new("preview-next").ghost().small().icon(IconName::ChevronRight).tooltip("下一张 · →").disabled(!next).on_click(cx.listener(|v,_,w,cx|v.step_preview(true,w,cx))))
+                    .child(Button::new("zoom-out").ghost().small().icon(IconName::Minus).on_click(cx.listener(|v,_,_,cx|v.zoom_by(-0.25,cx))))
+                    .child(format!("{:.0}%",zoom*100.))
+                    .child(Button::new("zoom-in").ghost().small().icon(IconName::Plus).on_click(cx.listener(|v,_,_,cx|v.zoom_by(0.25,cx))))
+                    .child(div().text_xs().text_color(self.palette().muted).child("本地低清预览"))
+                    .child(Button::new("zoom-reset").ghost().small().label("适应窗口").on_click(cx.listener(|v,_,_,cx|{v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));cx.notify();}))))
+                .child({
+                    let panel=div().id("preview-canvas").bg(self.palette().sidebar).rounded(px(design::CONTROL_RADIUS)).relative().flex_1().min_h(px(0.)).overflow_hidden().flex().items_center().justify_center()
+                        .debug_selector(||"preview-canvas".into())
+                        .on_scroll(cx.listener(|v,e:&ScrollEvent,w,cx|{
+                            let dy=f32::from(e.delta.pixel_delta(px(20.)).y);
+                            if dy.abs()>0.01{v.zoom_at((dy*0.003).clamp(-0.5,0.5),e.position,w,cx);cx.stop_propagation();}
+                        }))
+                        .on_mouse_down(MouseButton::Left,cx.listener(|v,e:&MouseDownEvent,w,cx|{
+                            v.resource.preview_focus.focus(w,cx);
+                            v.resource.drag_at=Some(e.position);
+                            v.resource.zoom=v.resource.displayed_zoom;
+                            v.resource.zoom_channel=v.resource.zoom_channel.wrapping_add(1);
+                            cx.notify();
+                        }))
+                        .on_mouse_move(cx.listener(|v,e:&MouseMoveEvent,w,cx|{
+                            if e.dragging(){v.drag_preview(e.position,w,cx);}else{v.resource.drag_at=None;}
+                        }))
+                        .on_mouse_up(MouseButton::Left,cx.listener(|v,_,_,cx|{v.resource.drag_at=None;cx.notify();}))
+                        .on_mouse_up_out(MouseButton::Left,cx.listener(|v,_,_,cx|{v.resource.drag_at=None;cx.notify();}));
+                    if let Some(path)=&self.resource.large_preview_path { panel.child(div().absolute()
+                        .left(px((canvas_w-image_w)*0.5)+px(pan.0))
+                        .top(px((canvas_h-image_h)*0.5)+px(pan.1))
+                        .w(px(image_w)).h(px(image_h))
+                        .child(img(path.clone()).image_cache(&self.resource.image_cache).w(px(image_w)).h(px(image_h)).object_fit(ObjectFit::Contain))) }
+                    else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
+                }).into_any_element()
+
+    }
+}
+
 impl Render for UploadDesk {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Event-driven, short transition. Respects the OS reduced-motion preference.
@@ -308,7 +372,7 @@ impl Render for UploadDesk {
                     cx.defer_in(window,move|v,w,cx|{if v.resource.selected_asset.is_none(){v.select_asset(asset,w,cx);}});
                 }
             }else if page=="preview" && !self.resource.large_preview_open && self.resource.thumbnail_path.is_some(){
-                cx.defer_in(window,|v,_,cx|{if !v.resource.large_preview_open{v.open_large_preview(cx);}});
+                cx.defer_in(window,|v,w,cx|{if !v.resource.large_preview_open{v.open_large_preview(w,cx);}});
             }
         }
         let narrow = window.viewport_size().width < px(1000.);
@@ -316,9 +380,12 @@ impl Render for UploadDesk {
         let show_center=!narrow||!show_inspector;
         let inspector_opacity=design::tween("inspector-opacity",if show_inspector&&!self.resource.large_preview_open{1.}else{0.},design::SURFACE_MS,window,cx);
         use design::Surface;
-        let surface=if self.resource.large_preview_open{Surface::Preview}else if self.account_panel{if self.account_page{Surface::Account}else if self.data_page{Surface::Data}else{Surface::Settings}}else if self.jobs_page{Surface::Jobs}else{Surface::Gallery};
+        let surface=if self.resource.large_preview_open{Surface::Preview}else if self.account_panel{if self.account_page{Surface::Account}else if self.data_page{Surface::Data}else{Surface::Settings}}else if self.jobs_page{Surface::Jobs}else if self.immersive{Surface::Immersive}else{Surface::Gallery};
         let surface_alpha=self.surface_motion.sample(surface,window,cx);
-        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else {self.spacing().sidebar_width(narrow)} - if !narrow && show_inspector {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
+        if self.resource.large_preview_open {return self.preview_view(surface_alpha,window,cx);}
+        let nav_width=if self.immersive{0.}else if self.sidebar_collapsed{56.}else{self.spacing().sidebar_width(narrow)};
+        let nav_progress=design::tween("nav-reveal",if self.sidebar_collapsed{0.}else{1.},design::SURFACE_MS,window,cx);
+        let available = f32::from(window.viewport_size().width) - nav_width - if !narrow && show_inspector {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         let gallery=if masonry_mode{
@@ -413,50 +480,16 @@ impl Render for UploadDesk {
         // Never access SQLite from the hot render path.
         let total = self.resource.total_count;
         let is_demo = self.account.config.mode == Mode::Demo;
-        if self.resource.large_preview_open {
-            // Each preview owns a fresh channel; closing never drives a hidden animation.
-            let zoom=design::tween(ElementId::from(("preview-zoom",self.resource.preview_session)),self.resource.zoom,design::ZOOM_MS,window,cx);
-            let canvas_w=(f32::from(window.viewport_size().width)-32.).max(1.);
-            let canvas_h=(f32::from(window.viewport_size().height)-76.).max(1.);
-            let ratio=self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
-            let (image_w,image_h)=album::fit_preview(canvas_w,canvas_h,ratio,zoom);
-            return div().size_full().flex().flex_col().p_4().gap_3().opacity(surface_alpha)
-                .bg(self.palette().canvas).text_color(self.palette().text)
-                .child(div().h(px(32.)).flex_shrink_0().flex().items_center().gap_2()
-                    .child(Button::new("close-preview").ghost().small().icon(IconName::ArrowLeft).label("返回").on_click(cx.listener(|v,_,_,cx| {v.resource.large_preview_open=false; cx.notify();})))
-                    .child(div().flex_1().font_semibold().truncate().child(self.resource.selected_asset.as_ref().map(|a|a.name.clone()).unwrap_or_default()))
-                    .child(Button::new("zoom-out").ghost().small().icon(IconName::Minus).on_click(cx.listener(|v,_,_,cx|v.zoom_by(-0.25,cx))))
-                    .child(format!("{:.0}%",self.resource.zoom*100.))
-                    .child(Button::new("zoom-in").ghost().small().icon(IconName::Plus).on_click(cx.listener(|v,_,_,cx|v.zoom_by(0.25,cx))))
-                    .child(div().text_xs().text_color(self.palette().muted).child("本地低清预览"))
-                    .child(Button::new("zoom-reset").ghost().small().label("适应窗口").on_click(cx.listener(|v,_,_,cx|{v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));cx.notify();}))))
-                .child({
-                    let panel=div().id("preview-canvas").bg(self.palette().sidebar).rounded(px(design::CONTROL_RADIUS)).relative().flex_1().min_h(px(0.)).overflow_hidden().flex().items_center().justify_center()
-                        .on_mouse_down(MouseButton::Left,cx.listener(|v,e:&MouseDownEvent,_,_|{v.resource.drag_at=Some(e.position);}))
-                        .on_mouse_move(cx.listener(|v,e:&MouseMoveEvent,_,cx|{
-                            if e.dragging() && v.resource.zoom>1. {
-                                if let Some(prev)=v.resource.drag_at {let d=e.position-prev;
-                                    v.resource.pan=point((v.resource.pan.x+d.x).clamp(px(-1500.),px(1500.)),(v.resource.pan.y+d.y).clamp(px(-1500.),px(1500.)));cx.notify();}
-                                v.resource.drag_at=Some(e.position);
-                            }else{v.resource.drag_at=None;}
-                        }))
-                        .on_mouse_up(MouseButton::Left,cx.listener(|v,_,_,_|v.resource.drag_at=None));
-                    if let Some(path)=&self.resource.large_preview_path { panel.child(div().absolute()
-                        .left(px((canvas_w-image_w)*0.5)+self.resource.pan.x)
-                        .top(px((canvas_h-image_h)*0.5)+self.resource.pan.y)
-                        .w(px(image_w)).h(px(image_h))
-                        .child(img(path.clone()).image_cache(&self.resource.image_cache).w(px(image_w)).h(px(image_h)).object_fit(ObjectFit::Contain))) }
-                    else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
-                }).into_any_element();
-        }
-        let detail_width=(f32::from(window.viewport_size().width)-self.spacing().sidebar_width(true)).max(0.);
+        let detail_width=if narrow{(f32::from(window.viewport_size().width)-nav_width).max(0.)}else{self.spacing().inspector};
         div()
             .flex()
             .size_full()
             .text_size(px(self.spacing().body))
             .bg(self.palette().canvas)
             .text_color(self.palette().text)
-            .when(!self.immersive,|root|root.child(self.navigation(narrow,window,cx)))
+             .when(!self.immersive,|root|root.child(div().relative().w(px(nav_width)).h_full().flex_shrink_0().overflow_hidden().bg(self.palette().sidebar)
+                .child(div().absolute().top_0().bottom_0().left(px(if self.sidebar_collapsed{-8.*nav_progress}else{-12.*(1.-nav_progress)})).w(px(nav_width))
+                    .child(if self.sidebar_collapsed{self.navigation_rail(cx).into_any_element()}else{self.navigation(narrow,window,cx).into_any_element()}))))
             .when(self.account_panel,|d|d.child(div().flex_1().min_w(px(0.)).h_full().flex().justify_center().opacity(surface_alpha).child(div().w_full().max_w(px(680.)).h_full().child(self.inspector(true,cx)))))
             .when(show_center && self.jobs_page && !self.account_panel, |d| d.child(div().flex_1().min_w(px(0.)).h_full().flex().opacity(surface_alpha).child(self.task_center(cx))))
             .when(show_center && !self.jobs_page && !self.account_panel, |d| d.child(
@@ -532,7 +565,7 @@ impl Render for UploadDesk {
                             .child(self.status.clone()),
                     )),
             ))
-            .when(show_inspector, |d| d.child(div().min_w(px(0.)).h_full().overflow_hidden().when(narrow, |d| d.w(px(detail_width)).flex_shrink_0()).opacity(inspector_opacity).child(self.inspector(narrow,cx))))
+            .when(show_inspector, |d| d.child(div().relative().w(px(detail_width)).flex_shrink_0().h_full().overflow_hidden().bg(self.palette().sidebar).child(div().absolute().top_0().bottom_0().w(px(detail_width)).left(px(14.*(1.-inspector_opacity))).opacity(inspector_opacity).child(self.inspector(narrow,cx)))))
             .into_any_element()
     }
 }

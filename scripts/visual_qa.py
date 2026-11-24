@@ -84,6 +84,8 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("compact-masonry.png",YUQUE_QA_PAGE="compact-masonry")
     capture("resources-light.png",YUQUE_QA_LIGHT="1")
     capture("resources-narrow.png",YUQUE_QA_NARROW="1")
+    capture("rail-dark.png",YUQUE_QA_PAGE="rail")
+    capture("rail-light.png",YUQUE_QA_PAGE="rail",YUQUE_QA_LIGHT="1")
     capture("album-immersive.png",YUQUE_QA_PAGE="immersive")
     capture("album-masonry-dark.png",YUQUE_QA_PAGE="masonry")
     capture("album-masonry-light.png",YUQUE_QA_PAGE="masonry",YUQUE_QA_LIGHT="1")

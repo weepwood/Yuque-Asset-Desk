@@ -391,3 +391,61 @@ fn motion_samples_retarget_and_respect_reduced_motion(){
     draw(&mut ui);
     assert_eq!(app.read(|cx|{let p=probe.read(cx);(p.alpha,p.value)}),(1.,1.));
 }
+
+#[::core::prelude::v1::test]
+fn preview_double_click_keyboard_zoom_and_sidebar(){
+    let root=std::env::temp_dir().join(format!("yuque-preview-ui-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    for i in 0..3{
+        let source=root.join(format!("fixture-{i}.png"));
+        image::RgbImage::from_pixel(80,60,image::Rgb([i as u8*50,120,70])).save(&source).unwrap();
+        db.insert_or_get(&crate::storage::NewAsset{name:format!("{i}.png"),bytes:100,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:url::Url::from_file_path(&source).unwrap().to_string(),sha256:{use sha2::{Digest,Sha256};hex::encode(Sha256::digest(std::fs::read(&source).unwrap()))},filekey:String::new()}).unwrap();
+    }
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    app.update(|cx|cx.set_reduce_motion(true));
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(780.),px(640.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    let draw=|ui:&mut VisualTestContext|ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    draw(&mut ui);
+    let collapse=ui.debug_bounds("collapse-sidebar").unwrap();
+    ui.simulate_click(collapse.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).sidebar_collapsed));draw(&mut ui);
+    let expand=ui.debug_bounds("expand-sidebar").unwrap();
+    ui.simulate_click(expand.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(!app.read(|cx|desk.read(cx).sidebar_collapsed));
+    let id=app.read(|cx|desk.read(cx).resource.assets[0].id);
+    assert_eq!(id,3);
+    let tile=ui.debug_bounds("tile-3").unwrap();
+    let pos=point(tile.center().x,tile.top()+px(35.));
+    ui.simulate_click(pos,Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(!app.read(|cx|desk.read(cx).inspector_open));
+    ui.simulate_event(MouseDownEvent{position:pos,button:MouseButton::Left,click_count:2,..Default::default()});
+    ui.simulate_event(MouseUpEvent{position:pos,button:MouseButton::Left,click_count:2,..Default::default()});
+    app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.large_preview_open));
+    assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
+    ui.simulate_keystrokes("right");app.run_until_parked();draw(&mut ui);
+    assert_ne!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
+    ui.simulate_keystrokes("left");app.run_until_parked();draw(&mut ui);
+    assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
+    let canvas=ui.debug_bounds("preview-canvas").unwrap();
+    ui.simulate_event(ScrollEvent{position:canvas.center()+point(px(80.),px(0.)),delta:ScrollDelta::Pixels(point(px(0.),px(180.))),..Default::default()});
+    app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.zoom>1.));
+    let start=canvas.center();
+    ui.simulate_event(MouseDownEvent{position:start,button:MouseButton::Left,click_count:1,..Default::default()});
+    ui.simulate_event(MouseMoveEvent{position:start+point(px(40.),px(25.)),pressed_button:Some(MouseButton::Left),..Default::default()});
+    ui.simulate_event(MouseUpEvent{position:start+point(px(40.),px(25.)),button:MouseButton::Left,click_count:1,..Default::default()});
+    app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.drag_at.is_none()));
+
+    ui.simulate_keystrokes("0");app.run_until_parked();draw(&mut ui);
+    assert_eq!(app.read(|cx|desk.read(cx).resource.zoom),1.);
+    ui.simulate_keystrokes("escape");app.run_until_parked();draw(&mut ui);
+    assert!(!app.read(|cx|desk.read(cx).resource.large_preview_open));
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}

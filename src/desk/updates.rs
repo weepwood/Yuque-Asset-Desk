@@ -15,7 +15,7 @@ impl UploadDesk {
     }
     pub(super) fn update_panel(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
-        let mut section=div().flex().flex_col().gap_2()
+        let mut section=div().flex().flex_col().gap_2().rounded(px(design::CONTROL_RADIUS)).border_1().border_color(p.line).p(px(self.spacing().row))
             .child(div().font_medium().child("关于与更新"))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().min_w(px(0.)).child(format!("当前版本 v{}",update::CURRENT))

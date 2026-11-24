@@ -50,6 +50,17 @@ impl UploadDesk {
         self.resource.similar_to=None;self.resource.tag_filter=None;self.resource.favorites_only=favorites;self.resource.category=category;
         self.persist_preferences(cx);self.reset_history(cx);
     }
+    pub(super) fn navigation_rail(&self,cx:&mut Context<Self>)->impl IntoElement{
+        let p=self.palette();
+        let mut rail=div().size_full().flex().flex_col().items_center().gap_2().p_2().bg(p.sidebar).border_r_1().border_color(p.line)
+            .child(div().debug_selector(||"expand-sidebar".into()).child(Button::new("expand-sidebar").ghost().icon(IconName::PanelLeftOpen).tooltip("展开侧栏").on_click(cx.listener(|v,_,_,cx|{v.sidebar_collapsed=false;cx.notify();}))));
+        for (label,category,fav,icon) in [("全部资源","",false,IconName::FolderOpen),("图片","image",false,IconName::GalleryVerticalEnd),("收藏","",true,IconName::Star),("视频","video",false,IconName::Play),("附件","attachment",false,IconName::File)]{
+            rail=rail.child(Button::new(label).ghost().icon(icon).tooltip(label).selected(!self.account_panel&&!self.jobs_page&&self.resource.category==category&&self.resource.favorites_only==fav&&self.resource.tag_filter.is_none()).on_click(cx.listener(move|v,_,_,cx|v.navigate(category,fav,cx))));
+        }
+        rail.child(div().flex_1())
+            .child(Button::new("rail-jobs").ghost().icon(IconName::File).tooltip("上传任务").selected(self.jobs_page).on_click(cx.listener(|v,_,_,cx|{v.jobs_page=true;v.account_panel=false;v.inspector_open=false;v.refresh_jobs(cx);cx.notify();})))
+            .child(Button::new("rail-settings").ghost().icon(IconName::Settings).tooltip("设置").selected(self.account_panel).on_click(cx.listener(|v,_,_,cx|{v.account_panel=true;v.account_page=false;v.data_page=false;v.jobs_page=false;v.inspector_open=false;cx.notify();})))
+    }
     pub(super) fn navigation(&self,narrow:bool,w:&mut Window,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
         let section=|label:&str|div().px_2().pt(px(if self.prefs.comfortable{18.}else{12.})).pb_1().text_xs().font_medium().text_color(p.muted).child(label.to_owned());
@@ -64,8 +75,9 @@ impl UploadDesk {
             .flex().flex_col().p(px(self.spacing().nav_pad)).bg(p.sidebar).border_r_1().border_color(p.line)
             .child(div().flex().items_center().gap(px(self.spacing().nav)).px_2().py(px(if self.prefs.comfortable{18.}else{12.}))
                 .child(div().size(px(if self.prefs.comfortable{32.}else{26.})).rounded(px(7.)).bg(p.accent_soft).text_color(p.accent).flex().items_center().justify_center().child(IconName::FolderOpen))
-                .child(div().flex().flex_col().min_w(px(0.)).child(div().font_semibold().truncate().child(if narrow&&self.prefs.comfortable{"Yuque"}else{"Yuque Desk"}))
-                    .child(div().text_xs().text_color(p.muted).child("资源工作台"))))
+                .child(div().flex().flex_col().min_w(px(0.)).child(div().font_semibold().truncate().child(if narrow{"语雀"}else{"Yuque Desk"}))
+                    .when(!narrow,|d|d.child(div().text_xs().text_color(p.muted).child("资源工作台"))))
+                .child(div().debug_selector(||"collapse-sidebar".into()).child(Button::new("collapse-sidebar").xsmall().ghost().icon(IconName::PanelLeftClose).tooltip("收起侧栏").on_click(cx.listener(|v,_,_,cx|{v.resource.tile_click_task=None;v.sidebar_collapsed=true;cx.notify();})))))
             .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap_1().child(nav).child(section("分类")).child(self.tag_tree(w,cx)).overflow_y_scrollbar())
             .child(div().h(px(1.)).bg(p.line))
             .when(self.prefs.comfortable,|d|d.child(div().h(px(8.))))
@@ -78,7 +90,7 @@ impl UploadDesk {
     }
     pub(super) fn settings_preferences(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
-        div().flex().flex_col().gap(px(self.spacing().section))
+        div().flex().flex_col().gap(px(self.spacing().section)).rounded(px(design::CONTROL_RADIUS)).border_1().border_color(p.line).p(px(self.spacing().row))
             .child(div().text_sm().font_medium().child("外观与快捷操作"))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("深色主题").child(div().text_xs().text_color(p.muted).child("切换应用的整体配色")))
@@ -140,7 +152,7 @@ impl UploadDesk {
                 .when(comfortable,|d|d.bg(p.surface).rounded(px(design::CONTROL_RADIUS)))
                 .child(Button::new("tile-smaller").with_size(size).ghost().icon(IconName::Minus).tooltip("缩小图片").disabled(self.resource.tile_size<=96.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
                 .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").with_size(size).ghost().icon(IconName::Plus).tooltip("放大图片").disabled(self.resource.tile_size>=240.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();})))))
-            .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").with_size(size).ghost().selected(self.immersive).icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出图片墙"}else{"沉浸图片墙"}).on_click(cx.listener(|v,_,_,cx|{v.immersive=!v.immersive;cx.notify();}))))
+            .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").with_size(size).ghost().selected(self.immersive).icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出图片墙"}else{"沉浸图片墙"}).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_click_task=None;v.immersive=!v.immersive;cx.notify();}))))
             .when(self.immersive,|d|d.child(Button::new("native-fullscreen").with_size(size).ghost().icon(if w.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
             .child(Button::new("paste").with_size(size).ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
             .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").with_size(size).primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));

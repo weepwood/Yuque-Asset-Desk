@@ -132,7 +132,10 @@ struct ResourceState {
     preview_loading: bool,
     large_preview_path: Option<PathBuf>,
     large_preview_open: bool,
-    preview_session:usize,
+    tile_click_task:Option<Task<()>>,
+    preview_focus:FocusHandle,
+    zoom_channel:usize,
+    displayed_zoom:f32,
     preview_error: Option<String>,
     search_input: Entity<InputState>,
     category: &'static str,
@@ -157,6 +160,7 @@ pub(crate) struct UploadDesk {
     jobs_page: bool,
     inspector_open: bool,
     immersive:bool,
+    sidebar_collapsed:bool,
     surface_motion:design::SurfaceMotion,
     status: String,
     picker_pending: bool,
@@ -301,7 +305,7 @@ impl UploadDesk {
                 preview_loading: false,
                 large_preview_path: None,
                 large_preview_open: false,
-                preview_session:0,
+                tile_click_task:None,preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
                 preview_error: None,
                 search_input,
                 category: "",
@@ -352,7 +356,7 @@ impl UploadDesk {
             _subscriptions: vec![subscription,resize_subscription,density_subscription],
             jobs_page: false,
             inspector_open: false,
-            immersive:false,
+            immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
             status,
             picker_pending:false,picker_task:None,
@@ -386,6 +390,7 @@ impl UploadDesk {
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
+                    Ok("rail")=>{view.sidebar_collapsed=true;}
                     Ok("immersive")=>{view.immersive=true;view.resource.masonry=true;}
                     Ok("masonry")=>{view.resource.masonry=true;}
                     Ok("dense")=>{view.resource.tile_size=96.;view.prefs.comfortable=false;}

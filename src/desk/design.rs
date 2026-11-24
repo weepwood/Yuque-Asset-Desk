@@ -2,14 +2,14 @@
 use gpui_kit::*;
 use gpui_kit::component::theme::{Theme,ThemeMode};
 
-pub(super) const CONTROL_RADIUS:f32=6.;
+pub(super) const CONTROL_RADIUS:f32=8.;
 pub(super) const FEEDBACK_MS:u64=160;
 pub(super) const HOVER_MS:u64=120;
 pub(super) const SURFACE_MS:u64=180;
 pub(super) const ZOOM_MS:u64=160;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub(super) enum Surface { Gallery, Jobs, Settings, Account, Data, Preview }
+pub(super) enum Surface { Gallery, Immersive, Jobs, Settings, Account, Data, Preview }
 /// A single, short paint-only entrance. Never animate gallery layout or scrolling.
 #[derive(Default)]
 pub(super) struct SurfaceMotion {

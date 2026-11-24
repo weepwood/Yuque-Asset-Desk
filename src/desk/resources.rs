@@ -2,6 +2,7 @@ use super::*;
 
 impl UploadDesk {
     pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+        self.resource.tile_click_task=None;
         self.resource.page_cursors = vec![None];
         self.resource.selected_asset = None;
         self.resource.selected_ids.clear();
@@ -226,6 +227,7 @@ impl UploadDesk {
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
+        self.resource.tile_click_task=None;
         let tags = self.storage.tags(asset.id).unwrap_or_default().join(", ");
         self.resource.tag_input.update(cx, |input, cx| input.set_value(tags, window, cx));
         self.resource.large_preview_open = false;
@@ -238,6 +240,30 @@ impl UploadDesk {
         self.account_panel = false;
         self.inspector_open = true;
         if asset.category == "image" { self.load_preview(cx); }
+        cx.notify();
+    }
+
+    pub(super) fn click_tile(&mut self,asset:Asset,count:usize,window:&mut Window,cx:&mut Context<Self>){
+        // Keep the first click's tile under the pointer until a possible second
+        // click is delivered. Only defer detail layout when it would change.
+        let defer=count==1&&asset.category=="image"&&(!self.inspector_open||self.immersive);
+        let immersive=self.immersive;
+        self.select_asset(asset.clone(),window,cx);
+        if count>=2&&asset.category=="image"{
+            self.immersive=false;self.open_large_preview(window,cx);return;
+        }
+        if defer{
+            self.inspector_open=false;self.immersive=immersive;
+            let id=asset.id;let generation=self.resource.history_generation;
+            self.resource.tile_click_task=Some(cx.spawn(async move|this,cx|{
+                cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+                let _=this.update(cx,|v,cx|{
+                    if !v.account_panel&&!v.jobs_page&&!v.resource.large_preview_open&&v.immersive==immersive&&v.resource.history_generation==generation&&v.resource.selected_asset.as_ref().is_some_and(|a|a.id==id){
+                        v.immersive=false;v.inspector_open=true;cx.notify();
+                    }
+                });
+            }));
+        }else{self.immersive=false;}
         cx.notify();
     }
 
@@ -268,15 +294,20 @@ impl UploadDesk {
         cx.notify();
     }
 
-    pub(super) fn open_large_preview(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_large_preview(&mut self, window:&mut Window,cx: &mut Context<Self>) {
         let Some(asset) = self.resource.selected_asset.clone() else { return; };
-        if asset.category != "image" || self.resource.preview_loading { return; }
+        if asset.category != "image" { return; }
+        self.resource.preview_task=None;
         let storage = self.storage.clone();
         let id = asset.id;
         self.resource.large_preview_open = true;
-        self.resource.preview_session=self.resource.preview_session.wrapping_add(1);
+        self.resource.preview_focus.focus(window,cx);
+
+        self.resource.zoom_channel=self.resource.zoom_channel.wrapping_add(1);
+        self.resource.displayed_zoom=1.;
         self.resource.zoom=1.; self.resource.pan=point(px(0.),px(0.)); self.resource.drag_at=None;
-        self.resource.large_preview_path = None;
+        self.resource.large_preview_path = self.resource.cached_thumbnails.get(&id).cloned();
+        if self.resource.large_preview_path.is_some(){self.resource.preview_loading=false;self.resource.preview_error=None;cx.notify();return;}
         self.resource.preview_loading = true;
         self.resource.preview_error = None;
         self.resource.preview_task = Some(cx.spawn(async move |this,cx| {
@@ -302,12 +333,52 @@ impl UploadDesk {
         cx.notify();
     }
 
-    pub(super) fn zoom_by(&mut self, delta:f32,cx:&mut Context<Self>) {
-        self.resource.zoom=(self.resource.zoom+delta).clamp(1.,4.);
-        if self.resource.zoom==1. {self.resource.pan=point(px(0.),px(0.));}
+    pub(super) fn preview_size(&self,window:&Window)->(f32,f32,f32){
+        let ratio=self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
+        ((f32::from(window.viewport_size().width)-32.).max(1.),(f32::from(window.viewport_size().height)-76.).max(1.),ratio)
+    }
+    pub(super) fn preview_neighbor(&self,forward:bool)->Option<Asset>{
+        let id=self.resource.selected_asset.as_ref()?.id;
+        let at=self.resource.assets.iter().position(|a|a.id==id)?;
+        if forward{self.resource.assets[at+1..].iter().find(|a|a.category=="image").cloned()}
+        else{self.resource.assets[..at].iter().rev().find(|a|a.category=="image").cloned()}
+    }
+    pub(super) fn step_preview(&mut self,forward:bool,window:&mut Window,cx:&mut Context<Self>){
+        if let Some(asset)=self.preview_neighbor(forward){
+            self.select_asset(asset,window,cx);
+            self.open_large_preview(window,cx);
+        }
+    }
+    pub(super) fn close_preview(&mut self,cx:&mut Context<Self>){
+        self.resource.large_preview_open=false;
+        self.resource.drag_at=None;
         cx.notify();
     }
-
+    pub(super) fn zoom_by(&mut self,delta:f32,cx:&mut Context<Self>){
+        self.resource.zoom=(self.resource.zoom+delta).clamp(1.,4.);
+        if self.resource.zoom==1.{self.resource.pan=point(px(0.),px(0.));}
+        cx.notify();
+    }
+    pub(super) fn zoom_at(&mut self,delta:f32,position:Point<Pixels>,window:&Window,cx:&mut Context<Self>){
+        let (w,h,ratio)=self.preview_size(window);
+        let old=self.resource.displayed_zoom;
+        let new=(old+delta).clamp(1.,4.);
+        let anchor=(f32::from(position.x)-16.-w*0.5,f32::from(position.y)-60.-h*0.5);
+        let current=album::clamp_pan((w,h),album::fit_preview(w,h,ratio,old),(f32::from(self.resource.pan.x),f32::from(self.resource.pan.y)));
+        let pan=album::anchor_pan(current,anchor,old,new);
+        let p=album::clamp_pan((w,h),album::fit_preview(w,h,ratio,new),pan);
+        self.resource.zoom=new;self.resource.displayed_zoom=new;
+        self.resource.zoom_channel=self.resource.zoom_channel.wrapping_add(1);
+        self.resource.pan=point(px(p.0),px(p.1));cx.notify();
+    }
+    pub(super) fn drag_preview(&mut self,position:Point<Pixels>,window:&Window,cx:&mut Context<Self>){
+        if let Some(prev)=self.resource.drag_at{
+            let d=position-prev;let (w,h,ratio)=self.preview_size(window);
+            let pan=album::clamp_pan((w,h),album::fit_preview(w,h,ratio,self.resource.displayed_zoom),(f32::from(self.resource.pan.x+d.x),f32::from(self.resource.pan.y+d.y)));
+            self.resource.pan=point(px(pan.0),px(pan.1));
+            self.resource.drag_at=Some(position);cx.notify();
+        }
+    }
     pub(super) fn open_selected_resource(&mut self,cx:&mut Context<Self>) {
         let Some(asset)=self.resource.selected_asset.as_ref() else{return;};
         let Ok(url)=url::Url::parse(&asset.url) else {self.status="资源链接无效".into();cx.notify();return;};
