@@ -360,14 +360,14 @@ impl UploadDesk {
         let p=self.palette();
         let current=self.resource.selected_asset.as_ref().map(|a|a.id);
         let online=self.resource.selected_asset.as_ref().is_some_and(|a|a.provider=="yuque");
-        let status=if self.resource.pending_preview.is_some(){"正在加载下一页…".into()}else if self.resource.quality_status.is_empty(){"离线微缩图 · 原图按需加载".into()}else{self.resource.quality_status.clone()};
+        let quality=self.resource.quality.as_ref();
+        let mode=if let Some(q)=quality{
+            let source=if q.remote{"在线原图"}else{"本地原图"};
+            if (q.width,q.height)==(q.shown_width,q.shown_height){format!("{source} · {}×{}",q.width,q.height)}else{format!("{source} · {}×{} · 预览 {}×{}",q.width,q.height,q.shown_width,q.shown_height)}
+        }else{"离线微缩图".into()};
+        let message=if self.resource.pending_preview.is_some(){"正在加载下一页…"}else{self.resource.quality_status.as_str()};
         let mut strip=div().h(px(48.)).flex().justify_center().items_center().gap_2().overflow_hidden();
-        let at=self.resource.assets.iter().position(|a|Some(a.id)==current).unwrap_or(0);
-        let mut nearby=self.resource.assets[..at].iter().rev().filter(|a|a.category=="image").take(3).collect::<Vec<_>>();
-        nearby.reverse();
-        let remaining=7-nearby.len();
-        nearby.extend(self.resource.assets[at..].iter().filter(|a|a.category=="image").take(remaining));
-        for a in nearby{
+        for a in self.preview_strip(){
             let selected=Some(a.id)==current;
             let asset=a.clone();let id=a.id;
             let mut tile=div().id(("preview-strip",a.id as usize)).debug_selector(move||format!("preview-strip-{id}")).w(px(56.)).h(px(44.)).flex_shrink_0().rounded_md().overflow_hidden().border_1().border_color(if selected{p.accent}else{p.line}).bg(p.sidebar).cursor_pointer().flex().items_center().justify_center()
@@ -376,12 +376,14 @@ impl UploadDesk {
             else{tile=tile.child(IconName::GalleryVerticalEnd);}
             strip=strip.child(tile);
         }
-        div().h(px(84.)).flex_shrink_0().flex().flex_col().gap_2()
+        div().h(px(112.)).flex_shrink_0().flex().flex_col().gap_2()
             .child(div().h(px(28.)).flex().items_center().gap_2()
-                .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(status))
-                .child(div().debug_selector(||"local-quality".into()).child(Button::new("local-quality").small().label("本地原图").disabled(self.resource.quality_busy).on_click(cx.listener(|v,_,_,cx|v.load_quality(false,cx)))))
-                .when(online,|d|d.child(Button::new("remote-quality").small().label("在线原图").disabled(self.resource.quality_busy).on_click(cx.listener(|v,_,_,cx|v.load_quality(true,cx)))))
+                .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(mode))
+                .when(quality.is_some()||self.resource.quality_busy,|d|d.child(div().debug_selector(||"offline-quality".into()).child(Button::new("offline-quality").small().ghost().label("离线预览").on_click(cx.listener(|v,_,_,cx|{v.clear_quality(cx);cx.notify();})))))
+                .child(div().debug_selector(||"local-quality".into()).child(Button::new("local-quality").small().label("本地原图").selected(quality.is_some_and(|q|!q.remote)).disabled(self.resource.quality_busy||quality.is_some_and(|q|!q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(false,cx)))))
+                .when(online,|d|d.child(Button::new("remote-quality").small().label("在线原图").selected(quality.is_some_and(|q|q.remote)).disabled(self.resource.quality_busy||quality.is_some_and(|q|q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(true,cx)))))
                 .child(Button::new("preview-browser").ghost().small().label("打开原文件").on_click(cx.listener(|v,_,_,cx|v.open_selected_resource(cx)))))
+            .child(div().h(px(20.)).flex().items_center().justify_center().text_xs().text_color(p.muted).truncate().child(if message.is_empty(){if self.resource.preview_reload_pending{"相册有更新，返回后刷新".to_string()}else{"左右键切图 · 原图按需加载".to_string()}}else{message.to_owned()}))
             .child(strip).into_any_element()
     }
 }

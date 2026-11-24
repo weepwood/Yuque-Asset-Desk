@@ -3,6 +3,7 @@ use super::*;
 impl UploadDesk {
     pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
         self.clear_quality(cx);
+        self.resource.preview_reload_pending=false;
         self.resource.pending_preview=None;
         self.resource.tile_click_task=None;
         self.resource.page_cursors = vec![None];
@@ -33,6 +34,13 @@ impl UploadDesk {
     }
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        // Upload completion can refresh the album while the user is deep in a
+        // preview. Keep the current cursor chain until they return.
+        if self.resource.large_preview_open{
+            self.resource.preview_reload_pending=true;
+            cx.notify();return;
+        }
+        self.resource.preview_reload_pending=false;
         self.resource.pending_preview=None;
         self.resource.page_cursors=vec![None];
         self.resource.visible_range=(0,48);
@@ -154,7 +162,12 @@ impl UploadDesk {
         let lo=start.saturating_sub(24).min(self.resource.assets.len());
         let hi=end.saturating_add(48).min(self.resource.assets.len());
         let mid=start.min(self.resource.assets.len());
-        let items=self.resource.assets[mid..hi].iter().chain(self.resource.assets[lo..mid].iter()).filter(|a|a.category=="image"&&!self.resource.preview_attempted.contains(&a.id)&&!self.resource.cached_thumbnails.contains_key(&a.id)).take(12).cloned().collect::<Vec<_>>();
+        let candidates:Vec<&Asset>=if self.resource.large_preview_open{
+            self.preview_strip()
+        }else{
+            self.resource.assets[mid..hi].iter().chain(self.resource.assets[lo..mid].iter()).collect()
+        };
+        let items=candidates.into_iter().filter(|a|a.category=="image"&&!self.resource.preview_attempted.contains(&a.id)&&!self.resource.cached_thumbnails.contains_key(&a.id)).take(12).cloned().collect::<Vec<_>>();
         if items.is_empty(){
             #[cfg(feature="qa")]
             if std::env::var_os("YUQUE_QA_PERF").is_some() && self.resource.perf_preview_count!=self.resource.cached_thumbnails.len(){
@@ -314,15 +327,28 @@ impl UploadDesk {
         self.resource.displayed_zoom=1.;
         self.resource.zoom=1.; self.resource.pan=point(px(0.),px(0.)); self.resource.drag_at=None;
         self.resource.large_preview_path = self.resource.cached_thumbnails.get(&id).cloned();
-        if self.resource.large_preview_path.is_some(){self.resource.preview_loading=false;self.resource.preview_error=None;cx.notify();return;}
+        self.refresh_thumbnails(cx);
+        if self.resource.large_preview_path.is_some(){self.resource.preview_loading=false;self.resource.preview_error=None;self.resource.thumbnail_path=self.resource.large_preview_path.clone();cx.notify();return;}
         self.resource.preview_loading = true;
         self.resource.preview_error = None;
         self.resource.preview_task = Some(cx.spawn(async move |this,cx| {
-            let result = cx.background_spawn(async move { preview::restore_local(&storage,&asset) }).await;
+            let result = cx.background_spawn(async move {
+                let path=preview::restore_local(&storage,&asset)?;
+                let (w,h)=image::image_dimensions(&path)?;
+                Ok::<_,anyhow::Error>((path,w as f32/h.max(1) as f32))
+            }).await;
             _ = this.update(cx, |v,cx| {
                 if v.resource.selected_asset.as_ref().is_none_or(|a|a.id!=id) { return; }
                 v.resource.preview_loading = false;
-                match result { Ok(path)=>v.resource.large_preview_path=Some(path), Err(e)=>v.resource.preview_error=Some(e.to_string()) }
+                match result {
+                    Ok((path,ratio))=>{
+                        v.resource.thumbnail_path=Some(path.clone());
+                        v.resource.cached_thumbnails.insert(id,path.clone());
+                        if v.resource.ratios.insert(id,ratio)!=Some(ratio){v.resource.ratio_revision+=1;}
+                        v.resource.large_preview_path=Some(path);
+                    }
+                    Err(e)=>v.resource.preview_error=Some(e.to_string())
+                }
                 cx.notify();
             });
         }));
@@ -342,7 +368,17 @@ impl UploadDesk {
 
     pub(super) fn preview_size(&self,window:&Window)->(f32,f32,f32){
         let ratio=self.resource.quality.as_ref().map(|q|q.width as f32/q.height as f32).or_else(||self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied()).filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
-        ((f32::from(window.viewport_size().width)-32.).max(1.),(f32::from(window.viewport_size().height)-172.).max(1.),ratio)
+        ((f32::from(window.viewport_size().width)-32.).max(1.),(f32::from(window.viewport_size().height)-200.).max(1.),ratio)
+    }
+    pub(super) fn preview_strip(&self)->Vec<&Asset>{
+        let Some(id)=self.resource.selected_asset.as_ref().map(|a|a.id) else{return vec![];};
+        let Some(at)=self.resource.assets.iter().position(|a|a.id==id)else{return vec![];};
+        let mut after=self.resource.assets[at..].iter().filter(|a|a.category=="image").take(4).collect::<Vec<_>>();
+        let mut before=self.resource.assets[..at].iter().rev().filter(|a|a.category=="image").take(7-after.len()).collect::<Vec<_>>();
+        if before.len()+after.len()<7{
+            after.extend(self.resource.assets[at..].iter().filter(|a|a.category=="image").skip(after.len()).take(7-before.len()-after.len()));
+        }
+        before.reverse();before.extend(after);before
     }
     pub(super) fn preview_neighbor(&self,forward:bool)->Option<Asset>{
         let id=self.resource.selected_asset.as_ref()?.id;
@@ -381,8 +417,10 @@ impl UploadDesk {
     pub(super) fn load_quality(&mut self,remote:bool,cx:&mut Context<Self>){
         if !self.resource.large_preview_open||self.resource.quality_busy{return;}
         let Some(asset)=self.resource.selected_asset.clone()else{return;};
-        self.clear_quality(cx);
-        self.resource.quality_busy=true;self.resource.quality_status="正在读取高清图片…".into();
+        if self.resource.quality.as_ref().is_some_and(|q|q.remote==remote){return;}
+        self.resource.quality_generation=self.resource.quality_generation.wrapping_add(1);
+        self.resource.quality_task=None;
+        self.resource.quality_busy=true;self.resource.quality_status=if remote{"正在读取在线原图…".into()}else{"正在读取本地原图…".into()};
         let generation=self.resource.quality_generation;let storage=self.storage.clone();let id=asset.id;
         self.resource.quality_task=Some(cx.spawn(async move|this,cx|{
             let result=cx.background_spawn(async move{crate::high_preview::load(&storage,&asset,remote)}).await;
@@ -391,9 +429,8 @@ impl UploadDesk {
                 v.resource.quality_busy=false;
                 match result{
                     Ok(q)=>{
-                        let source=if q.remote{"在线原图"}else{"本地原图"};
-                        v.resource.quality_status=if (q.width,q.height)==(q.shown_width,q.shown_height){format!("{source} · {}×{}",q.width,q.height)}else{format!("{source} · {}×{} · 预览 {}×{}",q.width,q.height,q.shown_width,q.shown_height)};
-                        v.resource.quality=Some(q);
+                        v.resource.quality_status.clear();
+                        if let Some(old)=v.resource.quality.replace(q){cx.drop_image(old.image,None);}
                         v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));v.resource.zoom_channel=v.resource.zoom_channel.wrapping_add(1);
                     }
                     Err(e)=>v.resource.quality_status=e.to_string(),
@@ -408,6 +445,7 @@ impl UploadDesk {
         self.resource.pending_preview=None;
         self.resource.large_preview_open=false;
         self.resource.drag_at=None;
+        if self.resource.preview_reload_pending{self.reload(cx);}else{self.refresh_thumbnails(cx);}
         cx.notify();
     }
     pub(super) fn zoom_by(&mut self,delta:f32,cx:&mut Context<Self>){
@@ -437,7 +475,7 @@ impl UploadDesk {
     }
     pub(super) fn open_selected_resource(&mut self,cx:&mut Context<Self>) {
         let Some(asset)=self.resource.selected_asset.as_ref() else{return;};
-        let Ok(url)=url::Url::parse(&asset.url) else {self.status="资源链接无效".into();cx.notify();return;};
+        let Ok(url)=url::Url::parse(&asset.url) else {self.status="资源链接无效".into();if self.resource.large_preview_open{self.resource.quality_status=self.status.clone();}cx.notify();return;};
         if asset.provider=="demo" && url.scheme()=="file" {
             if let Ok(path)=url.to_file_path() {
                 if path.is_file(){cx.open_with_system(&path);return;}
@@ -445,7 +483,9 @@ impl UploadDesk {
         } else if url.scheme()=="https" && url.username().is_empty() && url.password().is_none() {
             cx.open_url(url.as_str());return;
         }
-        self.status="资源不存在或链接不受支持".into();cx.notify();
+        self.status="资源不存在或链接不受支持".into();
+        if self.resource.large_preview_open{self.resource.quality_status=self.status.clone();}
+        cx.notify();
     }
 
     pub(super) fn copy_selected(&mut self, markdown: bool, cx: &mut Context<Self>) {
