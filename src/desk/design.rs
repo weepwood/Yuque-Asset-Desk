@@ -4,6 +4,36 @@ use gpui_kit::component::theme::{Theme,ThemeMode};
 
 pub(super) const CONTROL_RADIUS:f32=6.;
 pub(super) const FEEDBACK_MS:u64=160;
+pub(super) const HOVER_MS:u64=120;
+pub(super) const SURFACE_MS:u64=180;
+pub(super) const ZOOM_MS:u64=160;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(super) enum Surface { Gallery, Jobs, Settings, Account, Data, Preview }
+/// A single, short paint-only entrance. Never animate gallery layout or scrolling.
+#[derive(Default)]
+pub(super) struct SurfaceMotion {
+    current:Option<Surface>, generation:usize, running:bool,
+}
+impl SurfaceMotion {
+    pub fn sample(&mut self,next:Surface,window:&mut Window,cx:&mut App)->f32{
+        use gpui_kit::base::motion::{animate_keyframes,Keyframes,Keyframe,Timing,MotionStatus,Easing};
+        if self.current!=Some(next){
+            self.running=self.current.is_some();
+            self.current=Some(next);
+            self.generation=self.generation.wrapping_add(1);
+        }
+        if !self.running||cx.reduce_motion(){self.running=false;return 1.;}
+        let frames=Keyframes::try_new([Keyframe::new(0.,0.88f32).ease(Easing::Custom(std::rc::Rc::new(gpui_kit::base::animation::ease_out_cubic))),Keyframe::new(1.,1.)]).expect("valid fixed motion");
+        let sample=animate_keyframes(ElementId::from(("desk-surface",self.generation)),&frames,Timing::new(std::time::Duration::from_millis(SURFACE_MS)),window,cx);
+        self.running=matches!(sample.status,MotionStatus::Running|MotionStatus::Delayed);
+        sample.value
+    }
+}
+pub(super) fn tween(id:impl Into<gpui_kit::base::motion::TransitionId>,target:f32,ms:u64,window:&mut Window,cx:&mut App)->f32{
+    gpui_kit::base::transition(id,target,gpui_kit::base::Transition::new(std::time::Duration::from_millis(ms)),window,cx)
+}
+
 
 #[derive(Clone,Copy)]
 pub(super) struct Spacing{

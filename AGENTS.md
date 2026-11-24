@@ -126,3 +126,8 @@
 ## V0.5.1 舒适模式视觉密度
 - design::Spacing 是唯一密度来源：舒适模式 pad/gap/day/section/row/nav=32/24/44/22/20/10，紧凑保持 16/10/28/8/12/4；footer 32/24、宽窗 sidebar 200/184、inspector 320/280，窄窗 sidebar 150。主标题 21/18、正文 14/13、图片名 12/11。绘制、虚拟布局宽度、瀑布流页脚和锚点必须共用参数；不改变已存图片尺寸。
 - 舒适工具栏标题分离，Medium 按钮及响应式搜索换行；窄窗短标题，详情相关属性及账号字段标签局部归组。最小 720×600 双密度实际 GPUI 点击上传和取消回归必须通过，避免新 UI 破坏 1c25eac 异步文件选择修复。
+
+## 原生交互动效约束
+- design::SurfaceMotion 与 tween 统一使用已锁定 GPUI Kit 0.9.0 的 keyed transition/keyframes。悬停 120ms、页面/详情 180ms、预览缩放 160ms；OS reduce_motion 直接终态。页面仅淡入、详情关闭即移除、悬停退出立即取消控件命中。预览每次独立通道，拖动直接响应。
+- 图库不得做全图逐项入场、宽度逐帧重排或常驻动画计时器。虚拟行与瀑布流复用可见/overscan 范围和稳定资源 ID；不要因动效新增解码、网络请求或 SQLite 查询。动画结束后不主动请求帧。维持舒适/紧凑、离线架构和异步文件选择。
+- 新增 motion_samples_retarget_and_respect_reduced_motion 原生渲染测试检查中间值、快速反向连续性、完成不重播及减少动态效果。参考 PicView、Zed、GPUI Kit 仅借鉴设计原则，不复制 GPL 代码或第三方素材；详见 docs/ui-design.md。

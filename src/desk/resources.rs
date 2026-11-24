@@ -274,6 +274,7 @@ impl UploadDesk {
         let storage = self.storage.clone();
         let id = asset.id;
         self.resource.large_preview_open = true;
+        self.resource.preview_session=self.resource.preview_session.wrapping_add(1);
         self.resource.zoom=1.; self.resource.pan=point(px(0.),px(0.)); self.resource.drag_at=None;
         self.resource.large_preview_path = None;
         self.resource.preview_loading = true;

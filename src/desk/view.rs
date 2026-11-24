@@ -155,13 +155,12 @@ impl UploadDesk {
                         cx.notify();
                     })));
             let favorite_asset=asset.clone();
-            panel=panel.child(Button::new("detail-favorite").small().ghost().icon(IconName::Star).label(if self.resource.favorites.contains(&asset.id){"取消收藏"}else{"收藏资源"})
-                .on_click(cx.listener(move |v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))));
-            if asset.category == "image" {
-                let similar_asset=asset.clone();
-                panel=panel.child(Button::new("detail-similar").small().ghost().label("查找相似图片")
-                    .on_click(cx.listener(move |v,_,_,cx|v.find_similar(similar_asset.clone(),cx))));
-            }
+            let similar_asset=asset.clone();
+            panel=panel.child(div().flex().flex_wrap().items_center().gap(px(self.spacing().control))
+                .child(Button::new("detail-favorite").small().ghost().icon(if self.resource.favorites.contains(&asset.id){IconName::StarFill}else{IconName::Star}).label(if self.resource.favorites.contains(&asset.id){"取消收藏"}else{"收藏资源"})
+                    .on_click(cx.listener(move |v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))))
+                .when(asset.category=="image",|d|d.child(Button::new("detail-similar").small().ghost().icon(IconName::Search).label("相似图片")
+                    .on_click(cx.listener(move |v,_,_,cx|v.find_similar(similar_asset.clone(),cx))))));
             panel=panel.child(div().h(px(1.)).bg(self.palette().line))
                 .child(div().text_xs().font_medium().text_color(self.palette().muted).child("文件属性"))
                 .child(div().text_xs().text_color(self.palette().muted).child(format!("来源：{} / {}",asset.provider,asset.owner_id)))
@@ -178,7 +177,7 @@ impl UploadDesk {
 }
 
 impl UploadDesk {
-    fn album_item(&self,asset:Asset,tile_width:f32,tile_image_height:f32,narrow:bool,cx:&mut Context<Self>)->AnyElement {
+    fn album_item(&self,asset:Asset,tile_width:f32,tile_image_height:f32,narrow:bool,window:&mut Window,cx:&mut Context<Self>)->AnyElement {
                 let index = asset.id as usize;
                 let url_asset = asset.clone();
                 let markdown_asset = asset.clone();
@@ -189,6 +188,8 @@ impl UploadDesk {
                 if self.resource.grid_view {
                     let starred=self.resource.favorites.contains(&asset.id);
                     let hovered=self.resource.hover_asset==Some(asset.id);
+                    let revealed=hovered||checked||selected;
+                    let hover_alpha=design::tween(ElementId::from(("album-hover",index)),if revealed{1.}else{0.},design::HOVER_MS,window,cx);
                     let favorite_asset=asset.clone();
                     let thumbnail = self.resource.cached_thumbnails.get(&asset.id).cloned();
                     let palette=self.palette();
@@ -213,9 +214,9 @@ impl UploadDesk {
                                     .child(div().text_xs().child(if asset.category=="image" {"无本地预览"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
                             })
                             .when(checked||selected,|d|d.child(div().absolute().inset_0().rounded(px(design::CONTROL_RADIUS)).border_2().border_color(palette.accent)))
-                            .when(hovered || checked || selected,|d|d.child(div().absolute().top_0().left_0().right_0().h(px(42.))
+                            .when(hover_alpha>0.001,|d|d.child(div().absolute().top_0().left_0().right_0().h(px(42.)).opacity(hover_alpha)
                                 .bg(linear_gradient(180.,linear_color_stop(gpui_kit::rgba(0x00000088),0.),linear_color_stop(gpui_kit::rgba(0x00000000),1.)))))
-                            .when(hovered || checked || selected,|d|d.child(div().absolute().top(px(5.)).left(px(5.)).right(px(5.)).flex().justify_between().items_center()
+                            .when(revealed,|d|d.child(div().absolute().top(px(5.)).left(px(5.)).right(px(5.)).flex().justify_between().items_center().opacity(0.72+0.28*hover_alpha)
                                 .child(Button::new(("grid-select",index)).xsmall().selected(checked).icon(if checked{IconName::Check}else{IconName::Square}).tooltip("选择")
                                     .on_click(cx.listener(move|v,_,_,cx|v.toggle_album_selection(asset_id,cx))))
                                 .child(div().flex().gap_1().rounded(px(design::CONTROL_RADIUS)).bg(palette.surface)
@@ -276,12 +277,12 @@ impl UploadDesk {
                     .into_any_element()
     }
 
-    fn album_row(&self,row:&album::AlbumRow,narrow:bool,cx:&mut Context<Self>)->AnyElement {
+    fn album_row(&self,row:&album::AlbumRow,narrow:bool,window:&mut Window,cx:&mut Context<Self>)->AnyElement {
         match row {
-            album::AlbumRow::Day(day)=>div().h(px(self.spacing().day)).flex().items_center().text_xs().font_medium().text_color(self.palette().muted).child(day.clone()).into_any_element(),
-            album::AlbumRow::Item(i)=>div().pb_2().child(self.album_item(self.resource.assets[*i].clone(),0.,0.,narrow,cx)).into_any_element(),
+            album::AlbumRow::Day(day)=>div().h(px(self.spacing().day)).flex().items_center().text_size(px(self.spacing().caption)).font_medium().text_color(self.palette().muted).child(day.clone()).into_any_element(),
+            album::AlbumRow::Item(i)=>div().pb_2().child(self.album_item(self.resource.assets[*i].clone(),0.,0.,narrow,window,cx)).into_any_element(),
             album::AlbumRow::Tiles{items,height}=>div().w_full().flex().items_start().gap(px(self.spacing().gap)).pb(px(self.spacing().gap))
-                .children(items.iter().map(|(i,w)|self.album_item(self.resource.assets[*i].clone(),*w,*height,narrow,cx)).collect::<Vec<_>>()).into_any_element(),
+                .children(items.iter().map(|(i,w)|self.album_item(self.resource.assets[*i].clone(),*w,*height,narrow,window,cx)).collect::<Vec<_>>()).into_any_element(),
         }
     }
 }
@@ -299,9 +300,6 @@ impl Render for UploadDesk {
         if self.resource.density.read(cx).value().start()!=self.resource.tile_size{
             self.resource.density.update(cx,|state,cx|state.set_value(self.resource.tile_size,window,cx));
         }
-        let inspector_opacity=gpui_kit::base::transition(
-            ("inspector","opacity"),if self.inspector_open{1.0f32}else{0.0f32},
-            gpui_kit::base::Transition::new(std::time::Duration::from_millis(120)),window,cx);
         #[cfg(feature="qa")]
         if self.isolated_qa(){
             let page=std::env::var("YUQUE_QA_PAGE").unwrap_or_default();
@@ -314,7 +312,13 @@ impl Render for UploadDesk {
             }
         }
         let narrow = window.viewport_size().width < px(1000.);
-        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else {self.spacing().sidebar_width(narrow)} - if !self.immersive && !narrow && self.inspector_open {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
+        let show_inspector=!self.account_panel&&!self.jobs_page&&!self.immersive&&self.inspector_open&&(!narrow||self.resource.selected_asset.is_some());
+        let show_center=!narrow||!show_inspector;
+        let inspector_opacity=design::tween("inspector-opacity",if show_inspector&&!self.resource.large_preview_open{1.}else{0.},design::SURFACE_MS,window,cx);
+        use design::Surface;
+        let surface=if self.resource.large_preview_open{Surface::Preview}else if self.account_panel{if self.account_page{Surface::Account}else if self.data_page{Surface::Data}else{Surface::Settings}}else if self.jobs_page{Surface::Jobs}else{Surface::Gallery};
+        let surface_alpha=self.surface_motion.sample(surface,window,cx);
+        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else {self.spacing().sidebar_width(narrow)} - if !narrow && show_inspector {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         let gallery=if masonry_mode{
@@ -337,7 +341,7 @@ impl Render for UploadDesk {
             let plan=&self.resource.masonry_plan;
             let mut wall=div().relative().w_full().h(px(plan.height)).flex_shrink_0();
             for (day,y) in &plan.days{if *y+self.spacing().day>=lo && *y<=hi{
-                wall=wall.child(div().absolute().top(px(*y)).left(px(0.)).h(px(self.spacing().day)).text_xs().font_medium().text_color(self.palette().muted).child(day.clone()));
+                wall=wall.child(div().absolute().top(px(*y)).left(px(0.)).h(px(self.spacing().day)).flex().items_center().text_size(px(self.spacing().caption)).font_medium().text_color(self.palette().muted).child(day.clone()));
             }}
             let mut first=usize::MAX;let mut last=0;
             // Tile start positions are monotonic; skip all earlier tiles except
@@ -350,7 +354,7 @@ impl Render for UploadDesk {
                 first=first.min(t.index);last=last.max(t.index+1);
                 if let Some(asset)=self.resource.assets.get(t.index){
                     wall=wall.child(div().absolute().left(px(t.x)).top(px(t.y)).w(px(t.width))
-                        .child(self.album_item(asset.clone(),t.width,t.height,narrow,cx)));
+                        .child(self.album_item(asset.clone(),t.width,t.height,narrow,window,cx)));
                 }
             }
             if first!=usize::MAX && self.resource.visible_range!=(first,last){
@@ -401,8 +405,8 @@ impl Render for UploadDesk {
                     if first!=usize::MAX{v.update_visible(first,last,cx);}
                 });});
             });
-            list(self.resource.album_list.clone(),move|i,_,app|{
-                entity.update(app,|v,cx|planned.get(i).map(|row|v.album_row(row,narrow,cx)).unwrap_or_else(||div().into_any_element()))
+            list(self.resource.album_list.clone(),move|i,window,app|{
+                entity.update(app,|v,cx|planned.get(i).map(|row|v.album_row(row,narrow,window,cx)).unwrap_or_else(||div().into_any_element()))
                     .unwrap_or_else(|_|div().into_any_element())
             }).flex_1().min_h(px(0.)).w_full().into_any_element()
         };
@@ -410,11 +414,13 @@ impl Render for UploadDesk {
         let total = self.resource.total_count;
         let is_demo = self.account.config.mode == Mode::Demo;
         if self.resource.large_preview_open {
+            // Each preview owns a fresh channel; closing never drives a hidden animation.
+            let zoom=design::tween(ElementId::from(("preview-zoom",self.resource.preview_session)),self.resource.zoom,design::ZOOM_MS,window,cx);
             let canvas_w=(f32::from(window.viewport_size().width)-32.).max(1.);
             let canvas_h=(f32::from(window.viewport_size().height)-76.).max(1.);
             let ratio=self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
-            let (image_w,image_h)=album::fit_preview(canvas_w,canvas_h,ratio,self.resource.zoom);
-            return div().size_full().flex().flex_col().p_4().gap_3()
+            let (image_w,image_h)=album::fit_preview(canvas_w,canvas_h,ratio,zoom);
+            return div().size_full().flex().flex_col().p_4().gap_3().opacity(surface_alpha)
                 .bg(self.palette().canvas).text_color(self.palette().text)
                 .child(div().h(px(32.)).flex_shrink_0().flex().items_center().gap_2()
                     .child(Button::new("close-preview").ghost().small().icon(IconName::ArrowLeft).label("返回").on_click(cx.listener(|v,_,_,cx| {v.resource.large_preview_open=false; cx.notify();})))
@@ -443,8 +449,6 @@ impl Render for UploadDesk {
                     else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
                 }).into_any_element();
         }
-        let show_inspector = !self.account_panel && !self.immersive && self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
-        let show_center = !narrow || !show_inspector;
         let detail_width=(f32::from(window.viewport_size().width)-self.spacing().sidebar_width(true)).max(0.);
         div()
             .flex()
@@ -453,14 +457,14 @@ impl Render for UploadDesk {
             .bg(self.palette().canvas)
             .text_color(self.palette().text)
             .when(!self.immersive,|root|root.child(self.navigation(narrow,window,cx)))
-            .when(self.account_panel,|d|d.child(div().flex_1().min_w(px(0.)).h_full().flex().justify_center().child(div().w_full().max_w(px(680.)).h_full().child(self.inspector(true,cx)))))
-            .when(show_center && self.jobs_page && !self.account_panel, |d| d.child(self.task_center(cx)))
+            .when(self.account_panel,|d|d.child(div().flex_1().min_w(px(0.)).h_full().flex().justify_center().opacity(surface_alpha).child(div().w_full().max_w(px(680.)).h_full().child(self.inspector(true,cx)))))
+            .when(show_center && self.jobs_page && !self.account_panel, |d| d.child(div().flex_1().min_w(px(0.)).h_full().flex().opacity(surface_alpha).child(self.task_center(cx))))
             .when(show_center && !self.jobs_page && !self.account_panel, |d| d.child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .flex()
-                    .flex_col()
+                    .flex_col().opacity(surface_alpha)
                     .gap(px(self.spacing().section)).p(px(self.spacing().pad))
                     .child(self.gallery_toolbar(available<760.,total,is_demo,window,cx))
                     .when(self.resource.similar_to.is_some(),|d|d.child(div().flex().items_center().gap_2()

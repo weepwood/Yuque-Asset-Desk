@@ -350,3 +350,44 @@ fn comfort_toolbar_fits_minimum_window_and_preserves_density(){
     }
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn motion_samples_retarget_and_respect_reduced_motion(){
+    use design::{Surface,SurfaceMotion};
+    struct Probe{motion:SurfaceMotion,next:Surface,target:f32,alpha:f32,value:f32}
+    impl Render for Probe{
+        fn render(&mut self,w:&mut Window,cx:&mut Context<Self>)->impl IntoElement{
+            self.alpha=self.motion.sample(self.next,w,cx);
+            self.value=design::tween("motion-test",self.target,design::HOVER_MS,w,cx);
+            div().size_full().opacity(self.alpha)
+        }
+    }
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    app.update(|cx|cx.set_reduce_motion(false));
+    let (window,probe)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,|_,cx|cx.new(|_|Probe{motion:Default::default(),next:Surface::Gallery,target:0.,alpha:0.,value:0.}))).unwrap();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    let draw=|ui:&mut VisualTestContext|ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    draw(&mut ui);
+    assert_eq!(app.read(|cx|probe.read(cx).alpha),1.);
+    app.update(|cx|probe.update(cx,|v,cx|{v.next=Surface::Settings;v.target=1.;cx.notify();}));
+    draw(&mut ui);
+    let initial=app.read(|cx|probe.read(cx).alpha);
+    assert!(initial<1.&&initial>=0.88,"{initial}");
+    app.executor().advance_clock(std::time::Duration::from_millis(40));
+    draw(&mut ui);
+    let (alpha,mid)=app.read(|cx|{let p=probe.read(cx);(p.alpha,p.value)});
+    assert!(alpha>initial&&alpha<1.,"{alpha}");
+    assert!(mid>0.&&mid<1.,"{mid}");
+    app.update(|cx|probe.update(cx,|v,cx|{v.target=0.;cx.notify();}));
+    draw(&mut ui);
+    let reverse=app.read(|cx|probe.read(cx).value);
+    assert!((reverse-mid).abs()<0.05,"{reverse} versus {mid}");
+    app.executor().advance_clock(std::time::Duration::from_millis(250));
+    draw(&mut ui);
+    assert_eq!(app.read(|cx|{let p=probe.read(cx);(p.alpha,p.value)}),(1.,0.));
+    draw(&mut ui);
+    assert_eq!(app.read(|cx|probe.read(cx).alpha),1.);
+    app.update(|cx|{cx.set_reduce_motion(true);probe.update(cx,|v,cx|{v.next=Surface::Preview;v.target=1.;cx.notify();});});
+    draw(&mut ui);
+    assert_eq!(app.read(|cx|{let p=probe.read(cx);(p.alpha,p.value)}),(1.,1.));
+}

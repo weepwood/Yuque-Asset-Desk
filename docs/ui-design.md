@@ -36,3 +36,10 @@
 
 ## V0.5.1 舒适模式二次精修
 舒适/紧凑模式分别采用主内容边距 32/16px、图片间距 24/10px、日期标题 44/28px、区块间距 22/8px、列表内边距 20/12px、导航间隔 10/4px、图名区域 32/24px。宽窗侧栏 200/184px、详情栏 320/280px，窄窗侧栏保持 150px。主标题 21/18px、正文 14/13px、文件名 12/11px。舒适模式标题独立成行，使用原生 Medium 操作按钮，搜索与按钮响应式换行，底部状态和工具紧密归组；窄窗品牌缩写为 Yuque。详情预览 208/184px，名称与属性、账号标签与输入框使用局部小间隔。紧凑模式保留原间距、字号与控件规格，工具栏允许换行防溢出。不调整用户图片尺寸、主题或偏好结构。
+
+## V0.5.1 原生动效与交互精修
+参考 [PicView](https://github.com/Ruben2776/PicView) 的图片优先/虚拟图库（GPL，仅借鉴设计原则）、[Zed dock](https://github.com/zed-industries/zed/blob/main/crates/workspace/src/dock.rs) 的工作区面板层级和 [GPUI Kit motion](https://github.com/longbridge/gpui-kit/blob/main/docs/STYLING-AND-MOTION.md)。实际实现以本地锁定 gpui-base 0.9.0 为准；不复制第三方代码或素材，不增加依赖。
+- 舒适模式缩放按钮组合、筛选及沉浸模式选中状态，日期标题在网格/瀑布流对齐，详情收藏和相似图片操作同组并支持换行。
+- design::SurfaceMotion：主工作区六种页面的 180ms 0.88→1 淡入，初始显示不动画，切换才启动；不阻塞事件。详情使用 180ms 原生值过渡淡入；关闭立即移除，避免不可见控件仍接收点击。任务页不再展示旧详情。
+- 仅虚拟列表可见及 overscan 图片使用稳定 asset ID 的 120ms 悬停渐变，反向使用当前插值；控件退出立即移除，避免幽灵点击。预览每次打开独立缩放通道，160ms ease-out 数值插值，拖动即时，关闭不继续运行隐藏动效。
+- 使用 GPUI Kit 本身的 frame scheduling 和 OS reduce_motion，不使用循环计时器/全图入场/宽度渐变，不强制高帧率。已锁定的组件自带菜单、按钮、Switch 等交互，不另造动效框架。

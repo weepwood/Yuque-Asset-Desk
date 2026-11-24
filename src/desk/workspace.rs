@@ -110,7 +110,7 @@ impl UploadDesk {
         let p=self.palette();let weak=cx.weak_entity();
         let size=if self.prefs.comfortable{Size::Medium}else{Size::Small};
         let (sort,dates,all,fav)=(self.resource.oldest,self.resource.group_dates,self.resource.all_accounts,self.resource.favorites_only);
-        let filter=Button::new("filter-menu").ghost().with_size(size).icon(IconName::Settings2).label("筛选")
+        let filter=Button::new("filter-menu").ghost().with_size(size).icon(IconName::Settings2).selected(sort||!dates||all||fav).label("筛选")
             .dropdown_menu(move|m,_,_|m
                 .item(action(weak.clone(),"最早优先",sort,|v,_,cx|{v.resource.oldest=true;v.persist_preferences(cx);v.reset_history(cx);}))
                 .item(action(weak.clone(),"最新优先",!sort,|v,_,cx|{v.resource.oldest=false;v.persist_preferences(cx);v.reset_history(cx);}))
@@ -136,9 +136,11 @@ impl UploadDesk {
                 .item(action(weak.clone(),"紧凑模式",!comfortable,|v,_,cx|v.set_comfortable(false,cx))));
         let controls=div().flex().flex_wrap().items_center().gap(px(self.spacing().control))
             .child(div().debug_selector(||"filter-trigger".into()).child(filter)).child(div().debug_selector(||"layout-trigger".into()).child(layout))
-            .child(Button::new("tile-smaller").with_size(size).ghost().icon(IconName::Minus).tooltip("缩小图片").disabled(self.resource.tile_size<=96.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
-            .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").with_size(size).ghost().icon(IconName::Plus).tooltip("放大图片").disabled(self.resource.tile_size>=240.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();}))))
-            .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").with_size(size).ghost().icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出图片墙"}else{"沉浸图片墙"}).on_click(cx.listener(|v,_,_,cx|{v.immersive=!v.immersive;cx.notify();}))))
+            .child(div().flex().items_center().gap(px(if comfortable{2.}else{4.}))
+                .when(comfortable,|d|d.bg(p.surface).rounded(px(design::CONTROL_RADIUS)))
+                .child(Button::new("tile-smaller").with_size(size).ghost().icon(IconName::Minus).tooltip("缩小图片").disabled(self.resource.tile_size<=96.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
+                .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").with_size(size).ghost().icon(IconName::Plus).tooltip("放大图片").disabled(self.resource.tile_size>=240.||!self.resource.grid_view).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();})))))
+            .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").with_size(size).ghost().selected(self.immersive).icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出图片墙"}else{"沉浸图片墙"}).on_click(cx.listener(|v,_,_,cx|{v.immersive=!v.immersive;cx.notify();}))))
             .when(self.immersive,|d|d.child(Button::new("native-fullscreen").with_size(size).ghost().icon(if w.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
             .child(Button::new("paste").with_size(size).ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
             .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").with_size(size).primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));
