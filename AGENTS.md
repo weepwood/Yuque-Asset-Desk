@@ -112,3 +112,8 @@
 - Windows ZIP 9245630 bytes SHA256 fad393c7850ed32149c792679abccff686f3fb89ebb8ee7a72e82a2544d6d107；macOS DMG 8855946 bytes SHA256 cfa0ffd0b2bf0049ac161907adbdac46030346a4446f2e5db0b6e029e0d5f3ef。两份原始 SHA256 文件亦核对 GitHub digest；公开后四项资产重新下载并校验一致。
 - 本地 QA 39 passed/1 ignored；隔离进程重置复验通过（错误 token、unknown 阻止删除、等待实例锁、外部原图/备份/未知文件保留）。CI DMG 只读挂载并复制至隔离目录实际启动，窗口 1160×828、空 Demo 数据库、托盘和快捷键注册成功；公网更新 smoke 返回 Current("0.5.0")。
 - 未测试 Windows 真机、真实系统凭据批量清除、真实语雀上传、物理拖拽安装、Gatekeeper 公证或系统通知送达。macOS 启动有非致命 sandbox_extension 日志，hdiutil 有弃用提示；不修改系统权限或真实数据目录。本次仅发布与文档收口，不增加功能。
+
+## V0.5.1 语雀账号自动识别
+- 依据语雀官方 CLI 内置 OpenAPI 2.0.1 规格 https://github.com/yuque/yuque-open-cli/blob/main/spec/yuque-openapi.yaml ，GET https://www.yuque.com/api/v2/user + X-Auth-Token 仅查询个人身份。解析 data.id/name/login，明确拒绝团队或无法确认个人类型的 Token；不下载头像、不持久化 API Token。
+- 独立账号页取消手填数字 ID。个人 API Token 可选；网页上传仍须 Cookie + CSRF，Cookie 中 yuque_ctoken 可自动提取，冲突则拒绝。保存必须重新查询当前输入对应身份，API Token 和 Cookie ID 不一致或任一必要查询失败不写入凭据。无 Token 仅查询既有 /api/mine。不会静默回退无效 Token。区分身份查询和上传授权，旧凭据编码/账号索引/数据库兼容。
+- 两种查询分离认证头、固定官方域名、禁止重定向、12s 超时、256KiB 响应上限、错误不包含请求密钥/响应正文。仅显式按钮触发请求；成功保存清空输入框，Cookie/CSRF 保持系统密钥库。测试只用合成数据与回环 HTTP，不使用真实语雀凭据；V0.5.0 已发布 Tag 不动，V0.5.1 候选待双平台 CI。

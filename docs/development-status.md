@@ -145,3 +145,8 @@
 - 实际 CI DMG 应用复制到临时目录并启动（非 QA 正式构建），窗口 1160×828，隔离数据库初始化，托盘/快捷键注册成功；有非致命 sandbox_extension 日志、hdiutil 弃用提示。未安装至 Applications，未触碰真实凭据或用户数据。未验证 Windows 真机、真实批量凭据删除、Apple 公证、真实上传或系统通知送达。
 - v0.5.0 正式 Release 已公开（2026-11-24T17:27:44Z），Tag 指向 bdb29acc6983b248a39d7481a3904c82789d74c8。草稿先核对四项资产的 GitHub SHA256 digest 后公开；公开后重新下载四项资产，全部大小、digest 及包内外校验一致。公网更新检查返回 Current("0.5.0")。本地验收产物位于 dist/release-audit-v0.5.0/，未提交二进制。
 - 发布说明 https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.0 。后续文档提交不改变已发布 Tag。
+
+## V0.5.1 账号自动识别（基线 7482255）
+- 核对语雀官方 yuque-open-cli README 和内置 OpenAPI 2.0.1 YAML（官方文档网页无法直接读取，使用官方仓库规格）。GET /api/v2/user，X-Auth-Token，data.id/name/login/type；拒绝 Group/未知类型。Token 仅用于识别，不持久化，不请求头像。Cookie-only 使用既有 /api/mine，保存时重新获取身份并核对，CSRF 自动提取及冲突检查，禁止错误 Token 静默降级。旧版系统凭据、任务及相册数据兼容。
+- 账号独立设置页、遮蔽输入框、识别反馈、官方 Token 获取入口；移除手填 ID。成功后保存原有 Cookie/CSRF 格式并清空输入。昵称/登录名为本次识别展示，不新增元数据持久化。验证失败保留输入用于修正，不写入账号索引；密钥库失败保留索引。
+- 本地常规 36 passed/1 ignored、QA 42 passed/1 ignored；真实回环请求验证认证头隔离、302/401/429，合成响应验证身份匹配/团队/缺失 ID/CSRF 冲突/Token 不序列化，原生空表单交互测试确认不入库。深浅与窄窗三张账号页实际渲染截图审查，浅色已识别状态使用虚构账号；窄窗低频管理需滚动。未用真实 Token/Cookie 调用语雀，未测试真实上传与 Windows 真机。V0.5.1 待双平台 CI，未发布。

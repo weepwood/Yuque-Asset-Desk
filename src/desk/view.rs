@@ -95,7 +95,12 @@ impl UploadDesk {
         let mut panel = div().id("inspector").h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad)).when(!narrow && !self.account_panel, |d| d.w(px(design::INSPECTOR_W)).flex_shrink_0()).when(narrow || self.account_panel, |d| d.w_full())
             .bg(if self.account_panel{self.palette().canvas}else{self.palette().sidebar})
             .when(!self.account_panel,|d|d.border_l_1().border_color(self.palette().line));
-        if self.account_panel && self.data_page {
+        if self.account_panel && self.account_page {
+            panel=panel.child(div().flex().items_center().gap_2()
+                .child(Button::new("back-account-settings").small().ghost().icon(IconName::ArrowLeft).label("设置").on_click(cx.listener(|v,_,_,cx|{v.account_page=false;cx.notify();})))
+                .child(div().text_lg().font_semibold().child("语雀账号")))
+                .child(self.account_form(cx));
+        } else if self.account_panel && self.data_page {
             panel=panel.child(div().flex().items_center().gap_2()
                 .child(Button::new("back-data-settings").small().ghost().icon(IconName::ArrowLeft).label("设置").on_click(cx.listener(|v,_,_,cx|{v.data_page=false;v.reset_armed=false;cx.notify();})))
                 .child(div().text_lg().font_semibold().child("存储与数据")))
@@ -110,38 +115,9 @@ impl UploadDesk {
                     .child(div().flex_1().child("存储与数据").child(div().text_xs().text_color(self.palette().muted).child("空间统计、隐私清理、重置与卸载")))
                     .child(div().debug_selector(||"open-data-settings".into()).child(Button::new("open-data-settings").small().ghost().icon(IconName::ChevronRight).label("管理").on_click(cx.listener(|v,_,_,cx|{v.data_page=true;v.reset_armed=false;v.refresh_data(cx);cx.notify();})))))
                 .child(div().h(px(1.)).bg(self.palette().line))
-                .child(div().font_semibold().child("语雀账号"))
-                .child(div().text_sm().child("仅保存到系统密钥库。凭据格式有效不代表已登录。"))
-                .child(div().text_sm().child(self.account.session_status.clone()))
-                .when(self.account.config.mode == Mode::Yuque && self.account.config.creds.is_some(), |d| d.child(
-                    Button::new("check-session").label("检查会话（只读）").disabled(self.account.account_busy || self.queue.busy)
-                        .on_click(cx.listener(|view,_,_,cx| view.check_session(cx)))))
-                .child(div().text_xs().text_color(self.palette().muted).child("用户 ID"))
-                .child(Input::new(&self.account.account_id).disabled(self.account.account_busy || self.queue.busy))
-                .child(div().text_xs().text_color(self.palette().muted).child("CSRF Token"))
-                .child(Input::new(&self.account.account_csrf).disabled(self.account.account_busy || self.queue.busy))
-                .child(div().text_xs().text_color(self.palette().muted).child("Cookie"))
-                .child(Input::new(&self.account.account_cookie).disabled(self.account.account_busy || self.queue.busy))
-                .child(Button::new("save-account").primary().label("保存并切换")
-                    .disabled(self.account.account_busy || self.queue.busy)
-                    .on_click(cx.listener(|view, _, window, cx| view.save_credentials(window, cx))))
-                .child(Button::new("demo-account").small().ghost().label("切换本地演示")
-                    .disabled(self.account.account_busy || self.queue.busy)
-                    .on_click(cx.listener(|view, _, _, cx| view.activate_account(None, cx))))
-                .when(self.account.config.mode == Mode::Yuque, |d| d.child(
-                    Button::new("forget-account").label("删除当前保存凭据")
-                        .disabled(self.account.account_busy || self.queue.busy)
-                        .on_click(cx.listener(|view, _, window, cx| view.confirm_privacy(false,window,cx)))))
-                .child(div().font_semibold().child("已保存账号"))
-                .when(self.account.saved_accounts.is_empty(),|d|d.child(div().text_xs().text_color(self.palette().muted).child("暂无已保存账号")));
-            for owner in &self.account.saved_accounts {
-                let id = owner.clone();
-                panel = panel.child(Button::new(SharedString::from(format!("account-{owner}")))
-                    .label(format!("账号 {owner}"))
-                    .disabled(self.account.account_busy || self.queue.busy)
-                    .on_click(cx.listener(move |view, _, _, cx| view.load_credentials(id.clone(), cx))));
-            }
-            panel=panel.child(div().text_xs().text_color(self.palette().muted).child(self.status.clone()));
+                .child(div().flex().items_center().justify_between().gap_2()
+                    .child(div().flex_1().child("语雀账号").child(div().text_xs().text_color(self.palette().muted).child("自动识别账号、配置上传会话")))
+                    .child(div().debug_selector(||"open-account-settings".into()).child(Button::new("open-account-settings").small().ghost().icon(IconName::ChevronRight).label("管理").on_click(cx.listener(|v,_,_,cx|{v.account_page=true;v.data_page=false;cx.notify();})))));
         } else if let Some(asset) = &self.resource.selected_asset {
             let url_asset = asset.clone();
             let md_asset = asset.clone();

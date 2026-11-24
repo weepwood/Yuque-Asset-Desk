@@ -52,7 +52,9 @@ const PAGE_SIZE: usize = 150;
 
 struct AccountState {
     config: Config,
-    account_id: Entity<InputState>,
+    account_token: Entity<InputState>,
+    identity: Option<crate::config::AccountIdentity>,
+    identity_status: String,
     account_csrf: Entity<InputState>,
     account_cookie: Entity<InputState>,
     account_busy: bool,
@@ -162,6 +164,7 @@ pub(crate) struct UploadDesk {
     backup_task: Option<Task<()>>,
     update_state:crate::update::State,
     update_task:Option<Task<()>>,
+    account_page:bool,
     data_page:bool,
     data_usage:Option<crate::data_management::Usage>,
     data_scan_busy:bool,
@@ -226,7 +229,7 @@ impl UploadDesk {
         );
         let status = match (&config.mode, &config.creds) {
             (Mode::Demo, _) => "本地演示模式：不会上传至网络".to_string(),
-            (Mode::Yuque, None) => "语雀未配置：请设置用户 ID、Cookie 和 CSRF Token".to_string(),
+            (Mode::Yuque, None) => "语雀未配置：请在设置中识别账号并配置网页会话".to_string(),
             (Mode::Yuque, Some(_)) => "语雀会话已配置，等待上传文件".to_string(),
         };
         let saved_accounts = storage.accounts().unwrap_or_default();
@@ -329,8 +332,9 @@ impl UploadDesk {
             },
             account: AccountState {
                 config,
-                account_id: cx.new(|cx| InputState::new(window, cx).placeholder("语雀数字用户 ID")),
-                account_csrf: cx.new(|cx| InputState::new(window, cx).placeholder("CSRF Token").masked(true)),
+                account_token: cx.new(|cx| InputState::new(window, cx).placeholder("个人 API Token（可选）").masked(true)),
+                identity:None, identity_status:String::new(),
+                account_csrf: cx.new(|cx| InputState::new(window, cx).placeholder("Cookie 无 yuque_ctoken 时填写").masked(true)),
                 account_cookie: cx.new(|cx| InputState::new(window, cx).placeholder("Cookie").masked(true)),
                 account_busy: false,
                 session_status: "尚未验证会话".into(),
@@ -352,7 +356,7 @@ impl UploadDesk {
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
-            data_page:false,data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
+            account_page:false,data_page:false,data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
             reset_armed:false,resetting:false,
 
         };
@@ -369,6 +373,8 @@ impl UploadDesk {
                         view.update_state=crate::update::State::Newer(crate::update::Available{version:"0.6.0".into(),page:crate::update::RELEASES.into(),package:Some((crate::update::RELEASES.into(),crate::update::RELEASES.into()))});
                     }
                     Ok("data")=>{view.account_panel=true;view.inspector_open=false;view.data_page=true;view.refresh_data(cx);}
+                    Ok("account")=>{view.account_panel=true;view.account_page=true;view.inspector_open=false;}
+                    Ok("account-identified")=>{view.account_panel=true;view.account_page=true;view.inspector_open=false;view.account.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});view.account.identity_status="已识别个人账号；保存时仍需核对网页会话".into();}
                     Ok("settings")=>{view.account_panel=true;view.inspector_open=false;}
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}

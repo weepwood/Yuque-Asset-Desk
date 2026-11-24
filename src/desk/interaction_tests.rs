@@ -56,6 +56,17 @@ fn native_clicks_switch_resource_and_task_views() {
     let bounds=ui.debug_bounds("arm-reset").unwrap();ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
     assert!(app.read(|cx|desk.read(cx).reset_armed));
     assert!(root.join("assets.db").exists());
+    app.update(|cx|desk.update(cx,|v,cx|{v.account_page=true;v.data_page=false;v.reset_armed=false;cx.notify();}));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("identify-account").unwrap();
+    ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).account.identity_status.contains("请先填写")));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("save-account").unwrap();
+    ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).account.identity_status.contains("网页 Cookie")));
+    assert!(app.read(|cx|desk.read(cx).storage.accounts().unwrap().is_empty()));
+
 
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);

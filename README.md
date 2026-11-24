@@ -2,7 +2,7 @@
 
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
-> **当前版本：[v0.4.0 正式发布](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.4.0)。** 已将原有 Slint UI 入口更换为 GPUI Kit View + Button + Input，上传后端和数据库保留。需经过 CI 与真机验证，才可正式发布。
+> **当前正式版本：[v0.5.0](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.0)。** v0.5.1 为开发候选，尚未发布。
 
 ## 技术架构
 
@@ -38,7 +38,12 @@ cargo run --release
 
 语雀上传功能使用第三方逆向研究的非公开 Web API，不是语雀正式承诺的稳定接口。请仅使用自己的合法授权会话，并保留原文件。
 
-macOS bash（示例）：
+图形界面：设置 → 语雀账号 → 管理（v0.5.1 候选）。
+- 可选填写 [个人访问 Token](https://www.yuque.com/settings/tokens) 并点击「识别账号」，通过官方 OpenAPI 获取 ID、昵称、登录名；不持久化个人 Token。
+- 填写自己的网页 Cookie；其中包含 yuque_ctoken 时无需另填 CSRF Token。点击「验证并保存账号」，重新验证网页会话并核对可选的个人 Token 所属 ID，避免错绑。没有个人 Token 时直接通过 Cookie 识别；网络或身份校验失败不保存。
+- 个人 API Token 不是网页上传凭据，不能单独上传。旧账号凭据格式、历史和数据库保持兼容。团队 Token 不用于个人上传。
+
+macOS bash（原有开发环境变量方式，仍需显式 ID）：
 
 ```bash
 export YUQUE_MODE=yuque
@@ -48,18 +53,15 @@ export YUQUE_COOKIE='_yuque_session=...; yuque_ctoken=...'
 cargo run --release
 ```
 
-Windows PowerShell 使用 `$env:KEY="value"` 设置环境变量。不要把 Cookie 和 CSRF Token 提交到 GitHub、Issues 或聊天中。
+Windows PowerShell 使用 `$env:KEY="value"` 设置环境变量。不要把个人 API Token、Cookie 和 CSRF Token 提交到 GitHub、Issues 或聊天中。
 
 ## 迁移范围
 
 已实现源码：GPUI Kit 窗口、上传工作台、系统文件选择、多文件串行任务、SQLite 资源历史、文件去重、复制 URL / Markdown、搜索与筛选、状态提示。
 
-**暂未迁移和验证：**
-- Slint 原有 SystemTrayIcon 不能直接复用；当前 GPUI 版本没有托盘入口。
-- Finder / Explorer 文件拖放、粘贴截图、全局快捷键。
-- 窗口动效、无障碍、DPI 和运行内存的跨平台真机测试。
-- 图形化账号管理及 Keychain / Credential Manager 凭据保管。
-- 真实语雀账号端到端测试、CDN 公开外链/防盗链验证、安装包签名与公证。
+**已支持：** 原生托盘、文件拖放、主动粘贴、全局快捷键、图形化账号管理和系统凭据库。
+
+**尚未完成真机验收：** Windows 实际运行、完整辅助功能、真实语雀账号上传、CDN 长期有效性及 Apple 公证。
 
 保留已有 SQLite 目录、字段和去重约束，不删除旧上传历史。GPUI Kit 的 GPU 资源占用与 Slint 不同，不能假设更换后必然更省内存。
 

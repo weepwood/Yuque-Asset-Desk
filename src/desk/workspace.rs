@@ -71,7 +71,7 @@ impl UploadDesk {
             .child(div().debug_selector(||"nav-jobs".into()).child(SidebarMenuItem::new(if self.queue.queue_count>0{format!("上传任务 · {}",self.queue.queue_count)}else{"上传任务".into()})
                 .icon(IconName::File).active(self.jobs_page&&!self.account_panel).on_click(cx.listener(|v,_,_,cx|{v.jobs_page=true;v.account_panel=false;v.inspector_open=false;v.refresh_jobs(cx);cx.notify();})).render("nav-jobs",w,cx)))
             .child(div().debug_selector(||"nav-settings".into()).child(SidebarMenuItem::new("设置").icon(IconName::Settings).active(self.account_panel)
-                .on_click(cx.listener(|v,_,_,cx|{v.account_panel=true;v.data_page=false;v.reset_armed=false;v.jobs_page=false;v.inspector_open=false;cx.notify();})).render("nav-settings",w,cx)))
+                .on_click(cx.listener(|v,_,_,cx|{v.account_panel=true;v.account_page=false;v.data_page=false;v.reset_armed=false;v.jobs_page=false;v.inspector_open=false;cx.notify();})).render("nav-settings",w,cx)))
             .child(div().px_2().pt_2().text_xs().text_color(p.muted).truncate().child(if self.account.config.mode==Mode::Demo{"本地演示 · 离线"}else{"语雀账号 · 离线预览"}))
     }
     pub(super) fn settings_preferences(&self,cx:&mut Context<Self>)->impl IntoElement{
