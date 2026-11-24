@@ -6,6 +6,25 @@ use std::{io::{Cursor, Read}, path::{Path, PathBuf}, time::Duration};
 
 const MAX_INPUT: u64 = 8 * 1024 * 1024;
 const CACHE_ITEMS: usize = 256;
+static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn clear_cache(cache: &Path) -> Result<usize> {
+    let _guard = CACHE_LOCK.lock().map_err(|_| anyhow::anyhow!("缓存锁异常"))?;
+    if !cache.exists() { return Ok(0); }
+    let mut removed = 0;
+    for entry in std::fs::read_dir(cache)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue; };
+        let Some(stem) = name.strip_suffix(".png") else { continue; };
+        let stem = stem.strip_prefix("large-").unwrap_or(stem);
+        if stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && entry.file_type()?.is_file() {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
 
 pub fn cached_path(cache: &Path, asset: &Asset) -> PathBuf {
     let key = format!("v1:{}:{}:{}:{}", asset.provider, asset.owner_id, asset.sha256, asset.url);
@@ -13,8 +32,20 @@ pub fn cached_path(cache: &Path, asset: &Asset) -> PathBuf {
 }
 
 pub fn thumbnail(cache: &Path, asset: &Asset) -> Result<PathBuf> {
+    render_preview(cache, asset, false)
+}
+
+pub fn large_preview(cache: &Path, asset: &Asset) -> Result<PathBuf> {
+    render_preview(cache, asset, true)
+}
+
+fn render_preview(cache: &Path, asset: &Asset, large: bool) -> Result<PathBuf> {
+    let _guard = CACHE_LOCK.lock().map_err(|_| anyhow::anyhow!("缓存锁异常"))?;
     ensure!(asset.category == "image", "仅支持图片预览");
-    let dest = cached_path(cache, asset);
+    let mut dest = cached_path(cache, asset);
+    if large {
+        dest = cache.join(format!("large-{}", dest.file_name().unwrap_or_default().to_string_lossy()));
+    }
     if dest.is_file() { return Ok(dest); }
     let url = url::Url::parse(&asset.url).context("图片地址格式错误")?;
     let mut bytes = Vec::new();
@@ -40,7 +71,8 @@ pub fn thumbnail(cache: &Path, asset: &Asset) -> Result<PathBuf> {
     limits.max_alloc = Some(96 * 1024 * 1024);
     reader.limits(limits);
     let image = reader.decode().context("图片格式不支持或解码超出限制")?;
-    let small = image.thumbnail(320, 320);
+    let edge = if large { 1600 } else { 320 };
+    let small = if image.width() > edge || image.height() > edge { image.thumbnail(edge, edge) } else { image };
     std::fs::create_dir_all(cache)?;
     let tmp = dest.with_extension(format!("{}.{}.tmp", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
@@ -59,8 +91,8 @@ pub fn thumbnail(cache: &Path, asset: &Asset) -> Result<PathBuf> {
         .collect();
     files.sort_by_key(|(time, _)| *time);
     let excess = files.len().saturating_sub(CACHE_ITEMS);
-    for (_, path) in files.into_iter().take(excess) {
-        if path != dest { let _ = std::fs::remove_file(path); }
+    for (_, path) in files.into_iter().filter(|(_, p)| p != &dest).take(excess) {
+        let _ = std::fs::remove_file(path);
     }
     Ok(dest)
 }
@@ -82,6 +114,11 @@ mod tests {
         let output = thumbnail(&cache, &asset).unwrap();
         assert_eq!(image::image_dimensions(&output).unwrap(), (320, 240));
         assert_eq!(thumbnail(&cache, &asset).unwrap(), output);
+        let large = large_preview(&cache, &asset).unwrap();
+        assert_eq!(image::image_dimensions(&large).unwrap(), (640,480));
+        std::fs::write(cache.join("keep.txt"), b"keep").unwrap();
+        assert_eq!(clear_cache(&cache).unwrap(), 2);
+        assert!(src.exists() && cache.join("keep.txt").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 use std::time::Duration;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use anyhow::{bail, Context, Result};
 use reqwest::{blocking::{Client, multipart}, header::{ACCEPT, COOKIE, ORIGIN, REFERER, HeaderMap, HeaderValue}};
 use serde_json::Value;
@@ -14,7 +15,31 @@ pub struct UploadResult {
     pub duplicate: bool,
 }
 
+/// Bytes pulled by the HTTP body reader, not acknowledged by the remote server.
+#[derive(Default)]
+pub struct TransferProgress {
+    pub bytes: AtomicU64,
+    pub total: AtomicU64,
+}
+
+struct MeteredReader<R> {
+    inner: R,
+    progress: Arc<TransferProgress>,
+}
+impl<R: Read> Read for MeteredReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+#[cfg(test)]
 pub fn upload(path: &Path, cfg: &Config, storage: &Storage) -> Result<UploadResult> {
+    upload_with_progress(path, cfg, storage, Arc::new(TransferProgress::default()))
+}
+
+pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progress: Arc<TransferProgress>) -> Result<UploadResult> {
     // Fail before hashing large files when the account is not configured.
     if cfg.mode == Mode::Yuque && cfg.creds.is_none() {
         bail!("未配置语雀会话，请设置 YUQUE_USER_ID、YUQUE_CTOKEN 和 YUQUE_COOKIE");
@@ -54,7 +79,7 @@ pub fn upload(path: &Path, cfg: &Config, storage: &Storage) -> Result<UploadResu
                 .map_err(|_| anyhow::anyhow!("无法生成本机文件 URL"))?;
             (local.to_string(), String::new())
         }
-        Mode::Yuque => upload_yuque(path, &file_name, &category, cfg)?,
+        Mode::Yuque => upload_yuque(path, &file_name, &category, cfg, progress)?,
     };
     let item = storage.insert_or_get(&NewAsset {
         name: file_name, bytes: metadata.len() as i64, category,
@@ -84,7 +109,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hash.finalize()))
 }
 
-fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config) -> Result<(String, String)> {
+fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config, progress: Arc<TransferProgress>) -> Result<(String, String)> {
     let auth = cfg.creds.as_ref().context("缺少语雀账号凭据，请设置环境变量 YUQUE_USER_ID / YUQUE_CTOKEN / YUQUE_COOKIE")?;
     let url = reqwest::Url::parse_with_params("https://www.yuque.com/api/upload/attach", &[
         ("attachable_type", "User"),
@@ -105,8 +130,12 @@ fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config) -> Re
     headers.insert("x-requested-with", HeaderValue::from_static("XMLHttpRequest"));
 
     let mime = mime_guess::from_path(path).first_or_octet_stream();
-    let part = multipart::Part::file(path)
-        .context("打开待上传文件失败")?
+    let file = File::open(path).context("打开待上传文件失败")?;
+    let length = file.metadata()?.len();
+    anyhow::ensure!(length > 0 && length <= cfg.max_file_mb * 1024 * 1024, "文件大小已变化或超过限制");
+    progress.total.store(length, Ordering::Relaxed);
+    let reader = MeteredReader { inner: file.take(length), progress };
+    let part = multipart::Part::reader_with_length(reader, length)
         .file_name(filename.to_string())
         .mime_str(mime.essence_str())?;
     let form = multipart::Form::new().part("file", part);
@@ -182,6 +211,18 @@ fn find_string(node: &Value, keys: &[&str], depth: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metered_reader_counts_actual_bytes() {
+        let progress = Arc::new(TransferProgress::default());
+        let mut reader = MeteredReader { inner: std::io::Cursor::new(b"123456"), progress: progress.clone() };
+        let mut buf = [0; 4];
+        assert_eq!(reader.read(&mut buf).unwrap(), 4);
+        assert_eq!(progress.bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(reader.read(&mut buf).unwrap(), 2);
+        assert_eq!(reader.read(&mut buf).unwrap(), 0);
+        assert_eq!(progress.bytes.load(Ordering::Relaxed), 6);
+    }
+
     #[test]
     fn unconfigured_account_is_rejected_before_reading_file() {
         let cfg = Config { mode: Mode::Yuque, creds: None, max_file_mb: 25 };

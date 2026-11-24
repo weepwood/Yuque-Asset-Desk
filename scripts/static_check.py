@@ -3,7 +3,7 @@ root = Path(__file__).resolve().parent.parent
 files = ["Cargo.toml","src/main.rs","src/storage.rs","src/uploader.rs","src/config.rs","src/format.rs",".github/workflows/build.yml","README.md"]
 for f in files:
     assert (root/f).is_file(), f
-main=(root/"src/main.rs").read_text()
+main="\n".join(p.read_text() for p in (root/"src").rglob("*.rs"))
 cargo=(root/"Cargo.toml").read_text()
 assert 'gpui_kit::*' in main
 assert 'background_spawn' in main

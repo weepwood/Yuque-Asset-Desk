@@ -21,3 +21,23 @@
 - 不自动探测会话有效性；账号选择不持久化为默认登录，启动仍遵循环境变量 / Demo 模式。Windows Credential Manager 行为需真机验收。
 - 未完成完整跨平台 CI、正式发布、安装包签名或公证。当前版本仍为 0.3.1。
 - 主要控制器仍集中在 main.rs，下一轮应优先按账号、资源、队列及视图拆分，并增加 GPUI 交互测试。
+
+## 第二轮集中开发（基线 f6016df，2026-11-24）
+
+### 实施
+- main.rs 从 1042 行降至 41 行；desk/mod.rs 管理工作台状态与初始化，account.rs / queue.rs / resources.rs / view.rs 分离业务方法和渲染，仍共享 UploadDesk 状态。
+- 独立任务中心按当前账号分页（50 条）、显示 SQLite 持久化错误与状态；单任务重试受账号和状态约束。重启后 running 表示中断／结果未知，不自动发送请求；重试前核实远端状态。
+- 语雀上传 multipart 采用 MeteredReader，实际统计 HTTP 库读取的文件字节；每 120ms 刷新，非服务端接收确认，非 Demo 上传的模拟进度。
+- 主动触发只读 GET /api/mine 会话检查；参考公开的第三方 Web API 实践（https://glama.ai/mcp/servers/k187401/yuque-mcp），非官方稳定契约。限制响应体大小、不重定向、不记录响应内容；必须匹配配置的账号 ID，成功也不代表上传权限。
+- GPUI 原生图标、紧凑工具栏、右栏可折叠；1000px 以下使用窄窗口策略，720×600 最小窗口。保留系统原生标题栏。
+- 增加全部/图片/视频/附件分类；名称与标签搜索 100ms 防抖；当前页批量 URL/Markdown、取消选择。
+- 缩略图与大图共享缓存及互斥保护；大图最长边 1600px，不放大较小图片；仅清理匹配派生缓存命名的 PNG，不删原文件或任务。远端预览仍需主动触发。
+
+### 本轮验收
+- python3 scripts/static_check.py、git diff --check、cargo check --locked --all-targets、cargo test --locked（16 passed / 0 failed）、cargo build --locked 均通过（macOS arm64）。
+- 真实 macOS 系统凭据库诊断：YUQUE_KEYCHAIN_SMOKE=1 + 隔离 YUQUE_DATA_DIR + Demo 模式，唯一临时假凭据写入、读取、删除、确认不存在全部成功；未使用真实账号。
+- 最终 Debug 程序以隔离 Demo 数据目录启动，CGWindowList 检测到真实窗口 ID 43992；screencapture -l 返回 could not create image from window，未取得截图。未完成真实双主题、缩放、拖放、任务页交互的视觉验收。
+- 本轮发现并修复 GPUI IconName 导入错误与小图预览被放大问题；回归测试通过。
+- 实际语雀上传、真实 Cookie 会话探测、CSRF 校验及接口兼容性仍待用户授权测试；未自动发出真实账号请求。Windows / Intel CI 未执行。
+- 剩余欠账：账号/任务/资源仍共享状态；未做完整 GPUI 交互测试，未实现上传字节级暂停/取消、服务器端确认进度、断点续传、严格幂等或独立标签树；缩略图调度仍按页串行，未完成长时间内存和缓存并发压力验收。
+- Cargo 全局缓存权限警告依旧非致命，未改变系统权限。

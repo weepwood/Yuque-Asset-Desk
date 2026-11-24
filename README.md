@@ -100,3 +100,9 @@ GitHub Actions 覆盖 Windows x64、macOS Apple Silicon 和 macOS Intel。构建
 - 本地缩略图缓存，远端图片需主动加载，不发送账户凭据。
 - 可用 `YUQUE_DATA_DIR` 指定独立测试目录；`YUQUE_UPLOAD_INTERVAL_MS` 调整语雀文件之间的请求间隔（默认 350ms）。
 - 当前开发验收与限制见 [开发交接](docs/development-status.md)。
+
+### 第二轮工作台优化（开发中）
+- 独立上传任务中心、历史失败详情、单任务恢复及 HTTP 文件读取进度。
+- 账号面板提供主动只读会话检查，不保证上传接口权限。
+- 可折叠详情栏、窄窗口布局、图片/视频/附件分类、1600px 大图预览、批量复制与派生缓存清理。
+- 代码入口已拆分至 `src/desk/`，最新测试和限制见 [开发交接](docs/development-status.md)。

@@ -17,6 +17,14 @@ pub struct Asset {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct Job {
+    pub id: i64,
+    pub path: PathBuf,
+    pub state: String,
+    pub error: String,
+}
+
 #[derive(Clone)]
 pub struct Storage {
     path: PathBuf,
@@ -78,8 +86,16 @@ impl Storage {
         self.page_sorted(limit, query, image_only, scope, before, false)
     }
 
+    #[cfg(test)]
     pub fn page_sorted(
         &self, limit: usize, query: &str, image_only: bool,
+        scope: Option<(&str, &str)>, cursor: Option<i64>, oldest: bool,
+    ) -> Result<(Vec<Asset>, bool, i64)> {
+        self.page_category(limit, query, if image_only { "image" } else { "" }, scope, cursor, oldest)
+    }
+
+    pub fn page_category(
+        &self, limit: usize, query: &str, category: &str,
         scope: Option<(&str, &str)>, cursor: Option<i64>, oldest: bool,
     ) -> Result<(Vec<Asset>, bool, i64)> {
         let conn = self.open()?;
@@ -106,12 +122,12 @@ impl Storage {
              FROM assets
              WHERE (?1 = '' OR instr(lower(name), lower(?1)) > 0
                  OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id = assets.id AND instr(lower(tag), lower(?1)) > 0))
-               AND (?2 = 0 OR category = 'image')
+               AND (?2 = '' OR category = ?2)
                {scope_filter} {cursor_filter}
              ORDER BY id {order} LIMIT ?6"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![query, i64::from(image_only),
+        let rows = stmt.query_map(params![query, category,
             provider, owner, cursor, (limit + 1) as i64], map_row)?;
         let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = items.len() > limit;
@@ -186,6 +202,25 @@ impl Storage {
         }
         tx.commit()?;
         Ok(jobs)
+    }
+
+    pub fn jobs(&self, provider: &str, owner: &str, before: Option<i64>) -> Result<Vec<Job>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare("SELECT id,path,state,error FROM upload_jobs
+            WHERE provider=?1 AND owner_id=?2 AND (?3 IS NULL OR id < ?3)
+            ORDER BY id DESC LIMIT 51")?;
+        let rows = stmt.query_map(params![provider, owner, before], |r| Ok(Job {
+            id: r.get(0)?, path: PathBuf::from(r.get::<_,String>(1)?),
+            state: r.get(2)?, error: r.get(3)?,
+        }))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn retry_job(&self, provider: &str, owner: &str, id: i64) -> Result<Option<(i64, PathBuf)>> {
+        let conn = self.open()?;
+        Ok(conn.query_row("SELECT id,path FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND id=?3
+            AND state IN ('pending','paused','failed','running')", params![provider, owner, id],
+            |r| Ok((r.get(0)?, PathBuf::from(r.get::<_,String>(1)?)))).optional()?)
     }
 
     pub fn recoverable(&self, provider: &str, owner: &str) -> Result<Vec<(i64, PathBuf)>> {
@@ -341,6 +376,12 @@ mod tests {
         let db = Storage::new(path).unwrap();
         assert_eq!(db.recoverable("yuque", "1").unwrap(), vec![jobs[1].clone()]);
         assert!(db.recoverable("yuque", "2").unwrap().is_empty());
+        db.job_state(jobs[1].0, "failed", "fixture failure").unwrap();
+        assert_eq!(db.jobs("yuque", "1", None).unwrap()[0].error, "fixture failure");
+        assert!(db.jobs("yuque", "2", None).unwrap().is_empty());
+        assert!(db.retry_job("yuque", "2", jobs[1].0).unwrap().is_none());
+        assert!(db.retry_job("yuque", "1", jobs[0].0).unwrap().is_none());
+        assert_eq!(db.retry_job("yuque", "1", jobs[1].0).unwrap(), Some(jobs[1].clone()));
         assert_eq!(db.accounts().unwrap(), vec!["1".to_string()]);
         db.job_state(jobs[1].0, "cancelled", "").unwrap();
         assert!(db.recoverable("yuque", "1").unwrap().is_empty());
@@ -359,6 +400,8 @@ mod tests {
         }).unwrap().id).collect();
         db.set_tags(ids[1], "设计, 摄影，设计").unwrap();
         assert_eq!(db.tags(ids[1]).unwrap().len(), 2);
+        assert!(db.page_category(10, "", "video", None, None, false).unwrap().0.is_empty());
+        assert_eq!(db.page_category(10, "", "image", None, None, false).unwrap().0.len(), 3);
         assert_eq!(db.page_sorted(10, "摄影", false, None, None, false).unwrap().0[0].id, ids[1]);
         let (first, more, _) = db.page_sorted(2, "", false, None, None, true).unwrap();
         assert!(more);
