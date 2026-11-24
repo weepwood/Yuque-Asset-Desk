@@ -15,7 +15,7 @@ use config::Config;
 use storage::Storage;
 use desk::{UploadDesk, db_path};
 use gpui_kit::*;
-use gpui_kit::component::theme::{Theme, ThemeMode};
+
 
 fn main() -> Result<()> {
     let config = Config::from_env();
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
             init(cx);
             let prefs=desk::preferences::Preferences::decode(storage.preferences().unwrap_or_default());
             let light = std::env::var("YUQUE_QA_LIGHT").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && config.mode == config::Mode::Demo;
-            Theme::change(if light || !prefs.dark {ThemeMode::Light} else {ThemeMode::Dark}, None, cx);
+            desk::design::apply(!light && prefs.dark,None,cx);
             let config = config.clone();
             let storage = storage.clone();
             let narrow = std::env::var("YUQUE_QA_NARROW").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && config.mode == config::Mode::Demo;

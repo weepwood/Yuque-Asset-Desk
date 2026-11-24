@@ -1,12 +1,10 @@
 use super::*;
-use gpui_kit::component::{IconName, Sizable};
+use gpui_kit::component::{IconName, Sizable, menu::ContextMenuExt, sidebar::{SidebarItem,SidebarMenuItem}};
 
 impl UploadDesk {
-    pub(super) fn color(&self, dark: u32, light: u32) -> Rgba {
-        rgb(if self.dark { dark } else { light })
-    }
+    pub(super) fn palette(&self)->design::Palette{design::Palette::new(self.dark)}
 
-    fn tag_tree(&self,cx:&mut Context<Self>) -> impl IntoElement {
+    pub(super) fn tag_tree(&self,w:&mut Window,cx:&mut Context<Self>) -> impl IntoElement {
         let mut nodes=std::collections::BTreeSet::new();
         for tag in &self.resource.tag_catalog {
             let mut path=String::new();
@@ -17,31 +15,24 @@ impl UploadDesk {
             }
         }
         let mut tree=div().flex().flex_col().gap_1()
-            .child(Button::new("tags-toggle").ghost().small().label(if self.resource.tags_expanded {"▾ 标签分类"} else {"▸ 标签分类"})
-                .on_click(cx.listener(|v,_,_,cx|{v.resource.tags_expanded=!v.resource.tags_expanded;cx.notify();})));
+            .child(SidebarMenuItem::new("标签").icon(if self.resource.tags_expanded{IconName::ChevronDown}else{IconName::ChevronRight})
+                .on_click(cx.listener(|v,_,_,cx|{v.resource.tags_expanded=!v.resource.tags_expanded;cx.notify();})).render("tags-toggle",w,cx));
         if self.resource.tags_expanded {
-            tree=tree.child(Button::new("tag-all").ghost().small().label("全部标签").selected(self.resource.tag_filter.is_none())
-                .on_click(cx.listener(|v,_,_,cx|{v.resource.tag_filter=None;v.reset_history(cx);})));
+            tree=tree.child(SidebarMenuItem::new("全部标签").active(self.resource.tag_filter.is_none())
+                .on_click(cx.listener(|v,_,_,cx|{v.jobs_page=false;v.account_panel=false;v.inspector_open=false;v.resource.tag_filter=None;v.reset_history(cx);})).render("tag-all",w,cx));
             for (i,path) in nodes.into_iter().enumerate() {
                 let depth=path.matches('/').count().min(5);
                 let title=path.rsplit('/').next().unwrap_or(&path).to_string();
                 let selected=self.resource.tag_filter.as_ref()==Some(&path);
-                tree=tree.child(div().pl(px(depth as f32*8.)).child(Button::new(("tag-node",i)).ghost().small().label(title).selected(selected)
-                    .on_click(cx.listener(move |v,_,_,cx|{v.jobs_page=false;v.account_panel=false;v.inspector_open=false;v.resource.similar_to=None;v.resource.tag_filter=Some(path.clone());v.reset_history(cx);}))));
+                tree=tree.child(div().pl(px(depth as f32*10.+8.)).child(SidebarMenuItem::new(title).icon(IconName::FolderOpen).active(selected)
+                    .on_click(cx.listener(move |v,_,_,cx|{v.jobs_page=false;v.account_panel=false;v.inspector_open=false;v.resource.similar_to=None;v.resource.tag_filter=Some(path.clone());v.reset_history(cx);})).render(("tag-node",i),w,cx)));
             }
         }
         tree
     }
 
-    pub(super) fn status_panel(&self) -> impl IntoElement {
-        div().flex().flex_col().gap_1().p_2().rounded_md().text_xs()
-            .bg(self.color(0x25272a,0xe1e3e6))
-            .child(div().font_semibold().child(if self.account.config.mode==Mode::Demo {"本地演示"} else {"语雀账号"}))
-            .child(format!("{} · 待处理 {}",self.account.config.owner_id(),self.queue.queue_count))
-    }
-
-    fn task_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div().id("jobs-list").flex_1().min_h(px(0.)).flex().flex_col().gap_2();
+    pub(super) fn task_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div().id("jobs-list").flex_1().min_h(px(0.)).flex().flex_col();
         for job in &self.queue.jobs {
             let id = job.id;
             let active = self.queue.active_job == Some(id);
@@ -52,12 +43,11 @@ impl UploadDesk {
             let retry = matches!(job.state.as_str(), "pending" | "paused" | "failed");
             let total = self.queue.transfer.total.load(Ordering::Relaxed);
             let bytes = self.queue.transfer.bytes.load(Ordering::Relaxed).min(total);
-            let mut row = div().flex().flex_col().gap_2().p_3().rounded_lg()
-                .border_1().border_color(self.color(0x34363a,0xdfe2e6))
-                .bg(self.color(0x242629,0xffffff))
+            let mut row = div().flex().flex_col().gap_2().p_3()
+                .border_b_1().border_color(self.palette().line)
                 .child(div().flex().items_center().gap_2()
                     .child(div().flex_1().min_w(px(0.)).font_semibold().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
-                    .child(div().text_sm().child(state))
+                    .child(div().text_xs().text_color(if job.state=="failed"||job.state=="unknown"{self.palette().error}else if job.state=="done"{self.palette().accent}else{self.palette().muted}).child(state))
                     .when(retry, |d| d.child(Button::new(("retry-job",id as usize))
                         .label("重试（先核实远端）").disabled(self.queue.busy || self.account.account_busy)
                         .on_click(cx.listener(move |view, _, _, cx| view.retry_one(id,cx)))))
@@ -68,11 +58,10 @@ impl UploadDesk {
                 row = row.child(if total == 0 { "检查文件／去重中".into() }
                     else { format!("已读取请求体 {} / {}，不代表服务端已确认",file_size(bytes as i64),file_size(total as i64)) });
                 if total > 0 {
-                    row = row.child(div().h(px(4.)).rounded_md().bg(self.color(0x36383c,0xdfe2e6))
-                        .child(div().h_full().rounded_md().bg(rgb(0x4c8ce8)).w(relative(bytes as f32 / total as f32))));
+                    row = row.child(gpui_kit::component::progress::Progress::new(("upload-progress",id as usize)).xsmall().value(bytes as f32 / total as f32 * 100.).accessibility_label("请求体读取进度"));
                 }
             }
-            if !job.error.is_empty() { row = row.child(div().text_sm().text_color(self.color(0xf5b4a5,0xa53222)).child(job.error.clone())); }
+            if !job.error.is_empty() { row = row.child(div().text_sm().text_color(self.palette().error).child(job.error.clone())); }
             list = list.child(row);
         }
         div().flex_1().min_w(px(0.)).flex().flex_col().gap_3().p_4()
@@ -102,18 +91,24 @@ impl UploadDesk {
     }
 
     pub(super) fn inspector(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = div().id("inspector").h_full().min_h(px(0.)).flex().flex_col().gap_3().p_4().when(!narrow, |d| d.w(px(260.)).flex_shrink_0()).when(narrow, |d| d.w_full())
-            .bg(self.color(0x1c1e21, 0xf7f8fa))
-            .border_l_1().border_color(self.color(0x34363a, 0xdfe2e6));
+        let mut panel = div().id("inspector").h_full().min_h(px(0.)).flex().flex_col().gap_3().p_4().when(!narrow && !self.account_panel, |d| d.w(px(260.)).flex_shrink_0()).when(narrow || self.account_panel, |d| d.w_full())
+            .bg(if self.account_panel{self.palette().canvas}else{self.palette().sidebar})
+            .when(!self.account_panel,|d|d.border_l_1().border_color(self.palette().line));
         if self.account_panel {
-            panel = panel.child(div().font_semibold().child("账号管理"))
+            panel = panel.child(div().text_lg().font_semibold().child("设置"))
+                .child(self.settings_preferences(cx))
+                .child(div().h(px(1.)).bg(self.palette().line))
+                .child(div().font_semibold().child("语雀账号"))
                 .child(div().text_sm().child("仅保存到系统密钥库。凭据格式有效不代表已登录。"))
                 .child(div().text_sm().child(self.account.session_status.clone()))
                 .when(self.account.config.mode == Mode::Yuque && self.account.config.creds.is_some(), |d| d.child(
                     Button::new("check-session").label("检查会话（只读）").disabled(self.account.account_busy || self.queue.busy)
                         .on_click(cx.listener(|view,_,_,cx| view.check_session(cx)))))
+                .child(div().text_xs().text_color(self.palette().muted).child("用户 ID"))
                 .child(Input::new(&self.account.account_id).disabled(self.account.account_busy || self.queue.busy))
+                .child(div().text_xs().text_color(self.palette().muted).child("CSRF Token"))
                 .child(Input::new(&self.account.account_csrf).disabled(self.account.account_busy || self.queue.busy))
+                .child(div().text_xs().text_color(self.palette().muted).child("Cookie"))
                 .child(Input::new(&self.account.account_cookie).disabled(self.account.account_busy || self.queue.busy))
                 .child(Button::new("save-account").primary().label("保存并切换")
                     .disabled(self.account.account_busy || self.queue.busy)
@@ -125,7 +120,8 @@ impl UploadDesk {
                     Button::new("forget-account").label("删除当前保存凭据")
                         .disabled(self.account.account_busy || self.queue.busy)
                         .on_click(cx.listener(|view, _, _, cx| view.forget_account(cx)))))
-                .child(div().font_semibold().child("已保存账号"));
+                .child(div().font_semibold().child("已保存账号"))
+                .when(self.account.saved_accounts.is_empty(),|d|d.child(div().text_xs().text_color(self.palette().muted).child("暂无已保存账号")));
             for owner in &self.account.saved_accounts {
                 let id = owner.clone();
                 panel = panel.child(Button::new(SharedString::from(format!("account-{owner}")))
@@ -136,7 +132,8 @@ impl UploadDesk {
         } else if let Some(asset) = &self.resource.selected_asset {
             let url_asset = asset.clone();
             let md_asset = asset.clone();
-            panel = panel.child(div().font_semibold().child("资源详情"))
+            panel = panel.child(div().flex().items_center().justify_between().child(div().font_semibold().child("资源详情"))
+                .child(Button::new("close-inspector").ghost().small().label("关闭").on_click(cx.listener(|v,_,_,cx|{v.inspector_open=false;cx.notify();}))))
                 .child(div().font_semibold().child(asset.name.clone()))
                 .child(format!("{} · {}", asset.category, file_size(asset.bytes)))
                 .child(format!("来源：{} / {}", asset.provider, asset.owner_id))
@@ -203,13 +200,12 @@ impl UploadDesk {
                     let starred=self.resource.favorites.contains(&asset.id);
                     let hovered=self.resource.hover_asset==Some(asset.id);
                     let favorite_asset=asset.clone();
-                    let similar_asset=asset.clone();
                     let thumbnail = self.resource.cached_thumbnails.get(&asset.id).cloned();
-                    return div().id(("album-tile",index)).relative().flex().flex_col().gap_1()
-                        .w(px(tile_width)).h(px(tile_image_height+album::TILE_FOOTER)).flex_shrink_0().gap_0().rounded_md()
-                        .border_1().border_color(if checked || selected {rgb(0x528bd8)} else {self.color(0x17191b,0xf3f4f6)})
-                        .bg(self.color(0x17191b,0xf3f4f6))
-                        .hover(|s|s.bg(self.color(0x2d3035,0xe8edf4)))
+                    let palette=self.palette();
+                    let menu_asset=asset.clone();
+                    let weak=cx.weak_entity();
+                    return div().id(("album-tile",index)).debug_selector(move||format!("tile-{index}")).relative().flex().flex_col()
+                        .w(px(tile_width)).h(px(tile_image_height+album::TILE_FOOTER)).flex_shrink_0()
                         .on_hover(cx.listener(move |v,hovered:&bool,_,cx|{
                             let old=v.resource.hover_asset;
                             if *hovered {v.resource.hover_asset=Some(asset_id);}
@@ -217,31 +213,27 @@ impl UploadDesk {
                             if old!=v.resource.hover_asset{cx.notify();}
                         }))
                         .child(div().id(("album-image",index)).relative().h(px(tile_image_height)).w_full().overflow_hidden()
-                            .rounded_md().bg(self.color(0x303338,0xeef0f3)).flex().items_center().justify_center()
+                            .rounded(px(design::CONTROL_RADIUS)).bg(palette.subtle).flex().items_center().justify_center()
+                            .when(checked||selected,|d|d.border_2().border_color(palette.accent))
                             .cursor_pointer()
                             .on_click(cx.listener(move |v,_,window,cx|{v.immersive=false;v.select_asset(detail_asset.clone(),window,cx)}))
                             .child(match thumbnail {
                                 Some(path)=>img(path).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element(),
-                                None=>div().flex().flex_col().items_center().gap_1()
-                                    .text_color(self.color(0xa6a9b0,0x646a73))
+                                None=>div().flex().flex_col().items_center().gap_1().text_color(palette.muted)
                                     .child(IconName::File)
-                                    .child(div().text_xs().child(if asset.category=="image" {"无本地缩略图"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
-                            }))
-                        .when(hovered || selected,|d|d.child(div().absolute().top(px(6.)).left(px(6.)).right(px(6.)).flex().items_center().justify_end().gap_1().p_1().rounded_md().bg(self.color(0x202226,0xffffff))
-                            .child(Button::new(("grid-md",index)).xsmall().label("MD").tooltip("复制 Markdown")
-                                .on_click(cx.listener(move |v,_,_,cx|v.copy_asset(&markdown_asset,true,cx))))
-                            .when(asset.category=="image" && tile_width>=112.,|d|d.child(Button::new(("grid-similar",index)).xsmall().label("相似")
-                                .on_click(cx.listener(move |v,_,_,cx|v.find_similar(similar_asset.clone(),cx)))))))
-                        .child(div().h(px(19.)).text_xs().font_medium().truncate().px_1().child(asset.name.clone()))
-                        .child(div().h(px(22.)).flex().items_center().justify_between().gap_1()
-                            .child(Button::new(("grid-select",index)).ghost().xsmall().selected(checked)
-                                .icon(if checked {IconName::Check} else {IconName::Square}).tooltip("选择")
-                                .on_click(cx.listener(move |v,_,_,cx|{if !v.resource.selected_ids.remove(&asset_id){if v.resource.selected_ids.len()<150{v.resource.selected_ids.insert(asset_id);}else{v.status="单批最多选择 150 项".into();}}cx.notify();})))
-                            .child(Button::new(("grid-fav",index)).ghost().xsmall()
-                                .icon(if starred {IconName::StarFill} else {IconName::Star}).tooltip("收藏")
-                                .on_click(cx.listener(move |v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))))
-                            .child(Button::new(("grid-copy",index)).ghost().xsmall().icon(IconName::Copy).tooltip("复制原始链接")
-                                .on_click(cx.listener(move |v,_,_,cx|v.copy_asset(&url_asset,false,cx)))))
+                                    .child(div().text_xs().child(if asset.category=="image" {"无本地预览"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
+                            })
+                            .when(hovered || checked || selected,|d|d.child(div().absolute().top(px(5.)).left(px(5.)).right(px(5.)).flex().justify_between().items_center()
+                                .child(Button::new(("grid-select",index)).xsmall().selected(checked).icon(if checked{IconName::Check}else{IconName::Square}).tooltip("选择")
+                                    .on_click(cx.listener(move|v,_,_,cx|v.toggle_album_selection(asset_id,cx))))
+                                .child(div().flex().gap_1().rounded(px(design::CONTROL_RADIUS)).bg(palette.surface)
+                                    .child(Button::new(("grid-fav",index)).ghost().xsmall().icon(if starred{IconName::StarFill}else{IconName::Star}).tooltip("收藏")
+                                        .on_click(cx.listener(move|v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))))
+                                    .child(Button::new(("grid-copy",index)).ghost().xsmall().icon(IconName::Copy).tooltip("复制原始链接")
+                                        .on_click(cx.listener(move|v,_,_,cx|v.copy_asset(&url_asset,false,cx)))))))
+                            .when(starred && !hovered && !checked && !selected,|d|d.child(div().absolute().top(px(6.)).right(px(6.)).p_1().rounded_sm().bg(palette.surface).text_color(palette.accent).child(IconName::StarFill))))
+                        .child(div().h(px(album::TILE_FOOTER)).flex().items_center().text_xs().text_color(palette.muted).truncate().child(asset.name.clone()))
+                        .context_menu(move|menu,_,_|super::workspace::asset_menu(menu,weak.clone(),menu_asset.clone(),starred,checked))
                         .into_any_element();
                 }
                 div()
@@ -251,8 +243,8 @@ impl UploadDesk {
                     .gap_3()
                     .p_2()
                     .rounded_md()
-                    .bg(self.color(0x242629, 0xffffff))
-                    .hover(|style| style.bg(self.color(0x303338, 0xeef0f3)))
+                    .bg(self.palette().surface)
+                    .hover(|style| style.bg(self.palette().subtle))
                     .child(
                         div()
                             .flex()
@@ -260,7 +252,7 @@ impl UploadDesk {
                             .gap_1()
                             .flex_1()
                             .child(div().font_semibold().text_sm().truncate().child(asset.name.clone()))
-                            .child(div().text_sm().text_color(self.color(0xa6a9b0, 0x646a73)).truncate().child(format!(
+                            .child(div().text_sm().text_color(self.palette().muted).truncate().child(format!(
                                 "{} · {} · {}",
                                 file_size(asset.bytes), if self.resource.all_accounts {format!("{} / {}",asset.provider,asset.owner_id)} else {asset.category.clone()},
                                 asset.created_at.get(..16).unwrap_or(&asset.created_at).replace("T"," ")
@@ -294,7 +286,7 @@ impl UploadDesk {
 
     fn album_row(&self,row:&album::AlbumRow,narrow:bool,cx:&mut Context<Self>)->AnyElement {
         match row {
-            album::AlbumRow::Day(day)=>div().h(px(32.)).flex().items_center().text_sm().font_semibold().text_color(self.color(0xa6a9b0,0x646a73)).child(day.clone()).into_any_element(),
+            album::AlbumRow::Day(day)=>div().h(px(32.)).flex().items_center().text_sm().font_semibold().text_color(self.palette().muted).child(day.clone()).into_any_element(),
             album::AlbumRow::Item(i)=>div().pb_2().child(self.album_item(self.resource.assets[*i].clone(),0.,0.,narrow,cx)).into_any_element(),
             album::AlbumRow::Tiles{items,height}=>div().w_full().flex().items_start().gap_2().pb_2()
                 .children(items.iter().map(|(i,w)|self.album_item(self.resource.assets[*i].clone(),*w,*height,narrow,cx)).collect::<Vec<_>>()).into_any_element(),
@@ -308,12 +300,12 @@ impl Render for UploadDesk {
         let feedback_opacity = gpui_kit::base::transition(
             ("upload-feedback", "opacity"),
             if self.queue.busy { 1.0f32 } else { 0.82f32 },
-            gpui_kit::base::Transition::new(std::time::Duration::from_millis(160)),
+            gpui_kit::base::Transition::new(std::time::Duration::from_millis(design::FEEDBACK_MS)),
             window,
             cx,
         );
         let narrow = window.viewport_size().width < px(1000.);
-        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else if narrow {150.} else {184.} - if !self.immersive && !narrow && self.inspector_open {260.} else {0.} - 32.;
+        let available = f32::from(window.viewport_size().width) - if self.immersive {0.} else if narrow {design::SIDEBAR_NARROW} else {design::SIDEBAR_W} - if !self.immersive && !narrow && self.inspector_open {260.} else {0.} - 2.*design::CONTENT_PAD;
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         let gallery=if masonry_mode{
@@ -408,7 +400,7 @@ impl Render for UploadDesk {
         let is_demo = self.account.config.mode == Mode::Demo;
         if self.resource.large_preview_open {
             return div().size_full().flex().flex_col().p_4().gap_3()
-                .bg(self.color(0x17191b,0xf3f4f6)).text_color(self.color(0xebedf0,0x24272c))
+                .bg(self.palette().canvas).text_color(self.palette().text)
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("close-preview").label("返回资源").on_click(cx.listener(|v,_,_,cx| {v.resource.large_preview_open=false; cx.notify();})))
                     .child(div().flex_1().font_semibold().truncate().child(self.resource.selected_asset.as_ref().map(|a|a.name.clone()).unwrap_or_default()))
@@ -434,120 +426,28 @@ impl Render for UploadDesk {
                     else { panel.child(self.resource.preview_error.clone().unwrap_or_else(|| "正在加载大图…".into())) }
                 }).into_any_element();
         }
-        let show_inspector = !self.immersive && self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
+        let show_inspector = !self.account_panel && !self.immersive && self.inspector_open && (!narrow || self.account_panel || self.resource.selected_asset.is_some());
         let show_center = !narrow || !show_inspector;
         div()
             .flex()
             .size_full()
             .text_sm()
-            .bg(self.color(0x17191b, 0xf3f4f6))
-            .text_color(self.color(0xebedf0, 0x24272c))
-            .when(!self.immersive,|root|root.child(
-                div()
-                    .id("navigation-sidebar").w(px(if narrow { 150. } else { 184. })).flex_shrink_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_3()
-                    .border_r_1().border_color(self.color(0x303237,0xdde0e4))
-                    .bg(self.color(0x1d1f22, 0xe9ebee))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .p_2().child(div().font_semibold().truncate().child(if narrow {"Yuque Desk"} else {"Yuque Asset Desk"}))
-                            .child(div().text_xs().text_color(self.color(0xa6a9b0, 0x666c75)).child("资源相册")),
-                    )
-                    .child(
-                        Button::new("upload-navigation").ghost().small()
-                            .selected(self.resource.category.is_empty() && !self.jobs_page).icon(IconName::FolderOpen)
-                            .label("上传工作台")
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.jobs_page = false;
-                                view.resource.similar_to=None;view.resource.favorites_only=false;view.resource.category = ""; view.account_panel=false; view.inspector_open=false;
-                                view.reset_history(cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("images-navigation").ghost().small()
-                            .selected(self.resource.category == "image" && !self.jobs_page).icon(IconName::File)
-                            .label("图片资源")
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.jobs_page = false;
-                                view.resource.similar_to=None;view.resource.favorites_only=false;view.resource.category = "image"; view.resource.grid_view=true; view.account_panel=false; view.inspector_open=false;
-                                view.reset_history(cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(Button::new("video-nav").ghost().small().label("视频").icon(IconName::File).selected(self.resource.category=="video" && !self.jobs_page)
-                        .on_click(cx.listener(|v,_,_,cx| {v.jobs_page=false; v.resource.similar_to=None;v.resource.favorites_only=false;v.resource.category="video"; v.account_panel=false; v.inspector_open=false; v.reset_history(cx); })))
-                    .child(Button::new("attachment-nav").ghost().small().label("附件").icon(IconName::File).selected(self.resource.category=="attachment" && !self.jobs_page)
-                        .on_click(cx.listener(|v,_,_,cx| {v.jobs_page=false; v.resource.similar_to=None;v.resource.favorites_only=false;v.resource.category="attachment"; v.account_panel=false; v.inspector_open=false; v.reset_history(cx); })))
-                    .child(self.tag_tree(cx))
-                    .child(Button::new("jobs-nav").ghost().small().selected(self.jobs_page).label("上传任务")
-                        .on_click(cx.listener(|view,_,_,cx| {view.jobs_page=true; view.account_panel=false; view.inspector_open=false; view.refresh_jobs(cx); cx.notify();})))
-                    .child(Button::new("account-nav").ghost().small().icon(IconName::Settings).selected(self.account_panel).label("账号管理")
-                        .on_click(cx.listener(|view, _, _, cx| { view.account_panel = true; view.inspector_open = true; cx.notify(); })))
-                    .child(Button::new("inspector-toggle").ghost().small().icon(IconName::PanelRight).label(if self.inspector_open {"隐藏详情"} else {"显示详情"})
-                        .on_click(cx.listener(|v,_,_,cx| {v.inspector_open = !v.inspector_open; cx.notify();})))
-                    .child(Button::new("theme-toggle").ghost().small().icon(if self.dark {IconName::Sun} else {IconName::Moon}).label(if self.dark { "浅色主题" } else { "深色主题" })
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.dark = !view.dark;
-                            Theme::change(if view.dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(window), cx);
-                            view.persist_preferences(cx);cx.notify();
-                        })))
-                    .child(Button::new("shortcut-choice").ghost().small().label(format!("快捷键：{}",if self.prefs.shortcut=="off"{"关闭"}else{self.prefs.shortcut.as_str()}))
-                        .tooltip("切换 U / I / 禁用，重启生效")
-                        .on_click(cx.listener(|v,_,_,cx|{v.prefs.shortcut=match v.prefs.shortcut.as_str(){"U"=>"I","I"=>"off",_=>"U"}.into();v.persist_preferences(cx);v.status="快捷键设置已更改，重启生效".into();cx.notify();})))
-                    .child(Button::new("album-backup").ghost().small().label(if self.backup_busy{"备份中…"}else{"备份相册"})
-                        .disabled(self.backup_busy || self.queue.busy || self.account.account_busy)
-                        .on_click(cx.listener(|v,_,_,cx|v.export_album(cx))))
-                    .child(div().flex_1())
-                    .child(self.status_panel()).overflow_y_scrollbar(),
-            ))
-            .when(show_center && self.jobs_page, |d| d.child(self.task_center(cx)))
-            .when(show_center && !self.jobs_page, |d| d.child(
+            .bg(self.palette().canvas)
+            .text_color(self.palette().text)
+            .when(!self.immersive,|root|root.child(self.navigation(narrow,window,cx)))
+            .when(self.account_panel,|d|d.child(div().flex_1().min_w(px(0.)).h_full().flex().justify_center().child(div().w_full().max_w(px(680.)).h_full().child(self.inspector(true,cx)))))
+            .when(show_center && self.jobs_page && !self.account_panel, |d| d.child(self.task_center(cx)))
+            .when(show_center && !self.jobs_page && !self.account_panel, |d| d.child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .gap_1().p_3()
-                    .child(div().id("drop-zone").flex().flex_wrap().items_center().gap_2()
-                        .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
-                        .child(div().flex_1().min_w(px(120.)).child(div().text_lg().font_semibold().child(match self.resource.category{"image"=>"图片相册","video"=>"视频","attachment"=>"附件",_=>"资源相册"}))
-                            .child(div().text_xs().text_color(self.color(0xa6a9b0,0x646a73)).child(format!("{} 项 · {}",total,if is_demo{"本地演示"}else{"离线预览"}))))
-                        .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").small().ghost().icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出沉浸图片墙"}else{"沉浸图片墙"}).when(self.immersive,|b|b.label("退出图片墙"))
-                            .on_click(cx.listener(|v,_,_,cx|{v.immersive=!v.immersive;cx.notify();}))))
-                        .when(self.immersive,|d|d.child(Button::new("native-fullscreen").small().ghost().icon(if window.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("切换系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
-                        .child(Button::new("paste").small().label("粘贴").disabled(self.queue.busy || self.account.account_busy)
-                            .on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
-                        .child(Button::new("choose-main").small().primary().icon(IconName::Plus).label("导入").tooltip("选择或拖放文件").disabled(self.queue.busy || self.account.account_busy)
-                            .on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))))
-                    .child(div().flex().items_center().gap_2()
-                        .child(div().flex_1().min_w(px(0.)).child(Input::new(&self.resource.search_input)))
-                        .child(Button::new("grid-toggle").small().label(if self.resource.grid_view{"列表"}else{"相册"})
-                            .on_click(cx.listener(|v,_,_,cx|{v.resource.grid_view=!v.resource.grid_view;v.persist_preferences(cx);cx.notify();})))
-                        .child(Button::new("account-scope").small().label(if self.resource.all_accounts{"全部账号"}else{"当前账号"})
-                            .on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.resource.all_accounts=!v.resource.all_accounts;v.resource.tag_filter=None;v.reset_history(cx);}))))
+                    .gap_2().p(px(design::CONTENT_PAD))
+                    .child(self.gallery_toolbar(narrow,total,is_demo,window,cx))
                     .when(self.resource.similar_to.is_some(),|d|d.child(div().flex().items_center().gap_2()
-                        .child(div().text_xs().child(format!("相似图片 · {} · 同账号本地微缩图",self.resource.similar_to.as_ref().map(|a|a.name.as_str()).unwrap_or(""))))
-                        .child(Button::new("exit-similar").small().label("退出").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.reset_history(cx);})))) )
-                    .child(div().flex().flex_wrap().items_center().gap_1()
-                        .child(Button::new("select-all-compact").small().ghost().icon(IconName::Check).tooltip("选择已加载资源（最多150项）")
-                            .on_click(cx.listener(|v,_,_,cx|{v.resource.selected_ids=v.resource.assets.iter().take(150).map(|a|a.id).collect();cx.notify();})))
-                        .child(Button::new("sort-time").small().icon(if self.resource.oldest{IconName::SortAscending}else{IconName::SortDescending}).label(if self.resource.oldest { "最早优先" } else { "最新优先" })
-                            .on_click(cx.listener(|v,_,_,cx|{v.resource.oldest=!v.resource.oldest;v.persist_preferences(cx);v.reset_history(cx);})))
-                        .child(Button::new("favorites").small().selected(self.resource.favorites_only).icon(IconName::Star).tooltip("仅收藏").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.resource.favorites_only=!v.resource.favorites_only;v.persist_preferences(cx);v.reset_history(cx);})))
-                        .child(Button::new("date-groups").small().selected(self.resource.group_dates).icon(IconName::Calendar).tooltip("日期分组").on_click(cx.listener(|v,_,_,cx|{v.resource.group_dates=!v.resource.group_dates;v.persist_preferences(cx);cx.notify();})))
-                        .when(self.resource.grid_view,|d|d
-                            .child(Button::new("justified").small().selected(self.resource.justified).label(if self.resource.masonry {"瀑布流"}else if self.resource.justified {"等高拼图"}else{"等宽网格"}).on_click(cx.listener(|v,_,_,cx|{if v.resource.masonry{v.resource.masonry=false;v.resource.justified=false;}else if v.resource.justified{v.resource.justified=false;v.resource.masonry=true;}else{v.resource.justified=true;}v.persist_preferences(cx);cx.notify();})))
-                            .child(Button::new("tile-smaller").small().ghost().icon(IconName::Minus).tooltip("缩小图片").disabled(self.resource.tile_size<=96.).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size-16.).max(96.);v.persist_preferences(cx);cx.notify();})))
-                            .child(div().text_xs().child(format!("{:.0}px",self.resource.tile_size)))
-                            .child(div().debug_selector(||"album-density-increase".into()).child(Button::new("tile-larger").small().ghost().icon(IconName::Plus).tooltip("放大图片").disabled(self.resource.tile_size>=240.).on_click(cx.listener(|v,_,_,cx|{v.resource.tile_size=(v.resource.tile_size+16.).min(240.);v.persist_preferences(cx);cx.notify();}))))))
+                        .child(div().text_xs().text_color(self.palette().muted).child(format!("相似图片 · {}",self.resource.similar_to.as_ref().map(|a|a.name.as_str()).unwrap_or(""))))
+                        .child(Button::new("exit-similar").small().ghost().label("退出").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.reset_history(cx);})))) )
                     .when(self.resource.tag_filter.is_some(),|d|d.child(div().flex().items_center().gap_2()
                         .child(format!("标签：{}",self.resource.tag_filter.as_deref().unwrap_or_default()))
                         .child(Button::new("clear-tag").small().label("清除").on_click(cx.listener(|v,_,_,cx|{v.resource.tag_filter=None;v.reset_history(cx);})))) )
@@ -588,17 +488,16 @@ impl Render for UploadDesk {
                             .overflow_hidden(),
                     )
                     .child(
-                        div().flex().items_center().justify_between().gap_2()
+                        div().flex().items_center().justify_between().gap_2().text_xs().text_color(self.palette().muted)
                             .child(format!("已加载 {} 项 · 账号共 {} 项",self.resource.assets.len(),self.resource.total_count))
                             .when(self.resource.history_error.is_some(),|d|d.child(Button::new("refresh-history").small().label("重试读取")
                                 .on_click(cx.listener(|v,_,_,cx|{v.resource.history_error=None;if v.resource.assets.is_empty(){v.reload(cx);}else{v.load_more(cx);}}))))
-                            .child(Button::new("next-page").small().label(if self.resource.loading_history{"加载中…"}else if self.resource.has_more{"加载更多"}else{"已到底"})
-                                .disabled(self.resource.loading_history || !self.resource.has_more)
-                                .on_click(cx.listener(|v,_,_,cx|v.load_more(cx))))
+                            .when(self.resource.has_more || self.resource.loading_history,|d|d.child(Button::new("next-page").ghost().small().label(if self.resource.loading_history{"加载中…"}else{"加载更多"})
+                                .disabled(self.resource.loading_history).on_click(cx.listener(|v,_,_,cx|v.load_more(cx)))))
                     )
                     .child(
                         div()
-                            .px_1().text_xs()
+                            .px_1().text_xs().text_color(self.palette().muted)
                             .opacity(feedback_opacity)
                             .child(self.status.clone()),
                     ),

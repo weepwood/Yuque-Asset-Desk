@@ -1,4 +1,6 @@
 mod account;
+pub(crate) mod design;
+mod workspace;
 mod album;
 mod image_cache;
 pub(crate) mod preferences;
@@ -8,7 +10,7 @@ mod view;
 
 use anyhow::{Context as AnyhowContext, Result};
 use crate::config::{Config, Mode, YuqueCredentials};
-use gpui_kit::component::theme::{Theme, ThemeMode, ActiveTheme};
+use gpui_kit::component::theme::{ThemeMode, ActiveTheme};
 use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
 use directories::ProjectDirs;
 use gpui_kit::component::{
@@ -333,6 +335,7 @@ impl UploadDesk {
             #[cfg(feature="qa")]
             if view.account.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && (std::env::var_os("YUQUE_QA_CAPTURE").is_some() || std::env::var_os("YUQUE_QA_PERF").is_some()) {
                 match std::env::var("YUQUE_QA_PAGE").as_deref() {
+                    Ok("settings")=>{view.account_panel=true;view.inspector_open=false;}
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}

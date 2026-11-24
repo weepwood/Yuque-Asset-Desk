@@ -115,6 +115,10 @@ impl UploadDesk {
                         for (id,ratio,path) in ratios{
                             view.resource.ratios.insert(id,ratio);view.resource.cached_thumbnails.insert(id,path);
                         }
+                        #[cfg(feature="qa")]
+                        if view.isolated_qa() && std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("hover"){
+                            view.resource.hover_asset=view.resource.assets.first().map(|a|a.id);
+                        }
                         view.resource.ratio_revision+=1;
                         view.resource.preview_loading_batch=false;view.resource.thumbnails_task=None;
                         #[cfg(feature="qa")]

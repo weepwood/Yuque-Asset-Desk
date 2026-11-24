@@ -6,7 +6,6 @@ import sqlite3
 import subprocess
 import tempfile
 import struct
-import zlib
 import json
 
 root = Path(__file__).resolve().parent.parent
@@ -14,20 +13,36 @@ out = root / "dist" / "qa"
 out.mkdir(parents=True, exist_ok=True)
 binary = root / "target" / os.getenv("YUQUE_VISUAL_PROFILE","debug") / ("yuque-asset-desk.exe" if os.name == "nt" else "yuque-asset-desk")
 def fixture_png(index):
-    """Deterministic RGB test pattern; not user image content."""
-    w,h=[(320,240),(210,320),(440,180),(320,320)][index%4]
-    colors=[(40,88,150),(130,84,112),(52,120,95),(180,123,62),(76,90,140),(125,80,45)]
-    base=colors[index%len(colors)]
-    def pixel(x,y):
-        if x==0 and y==0:
-            return (index,0,0)
-        if 18<x<302 and 20<y<220 and ((x//40+y//40+index)%3==0):
-            return tuple(min(255,c+70) for c in base)
-        return tuple(min(255,c+(x+y)//12) for c in base)
-    def chunk(kind,body):
-        return struct.pack(">I",len(body))+kind+body+struct.pack(">I",zlib.crc32(kind+body)&0xffffffff)
-    raw=b"".join(b"\0"+bytes(c for x in range(w) for c in pixel(x,y)) for y in range(h))
-    return b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",w,h,8,2,0,0,0))+chunk(b"IDAT",zlib.compress(raw))+chunk(b"IEND",b"")
+    """Original synthetic visual assets: landscape, editorial, UI and abstract artwork.
+    Not photos, not user data, no network."""
+    from PIL import Image, ImageDraw
+    import io, math
+    w,h=[(480,320),(320,480),(560,240),(400,400)][index%4]
+    palettes=[("#e9c9a8","#476c76","#203b45"),("#d5e1dd","#87a89b","#244941"),("#e2c9b9","#b76b57","#613c46"),("#cbd4ea","#546b99","#26344b")]
+    a,b,c=palettes[index%4]
+    im=Image.new("RGB",(w,h),a);d=ImageDraw.Draw(im)
+    if index%3==0:
+        d.ellipse((w*.65,h*.08,w*.85,h*.08+w*.2),fill="#f7e7bd")
+        for level,col in enumerate([b,c]):
+            y=h*(.45+level*.24)
+            pts=[(0,h),(0,y)]+[(x,y+math.sin(x/w*9+index+level)*h*.14) for x in range(0,w+1,8)]+[(w,h)]
+            d.polygon(pts,fill=col)
+        d.line((0,h*.87,w,h*.87),fill="#efdbbd",width=3)
+    elif index%3==1:
+        d.rounded_rectangle((w*.13,h*.1,w*.87,h*.9),radius=14,fill=c)
+        d.rectangle((w*.2,h*.19,w*.8,h*.21),fill=a)
+        d.ellipse((w*.27,h*.28,w*.73,h*.28+w*.46),fill=b)
+        for j in range(4):
+            d.rectangle((w*.22,h*(.68+j*.035),w*(.79-j*.1),h*(.69+j*.035)),fill=a)
+    else:
+        d.rounded_rectangle((w*.06,h*.1,w*.94,h*.9),radius=12,fill="#faf9f7")
+        d.rectangle((w*.07,h*.11,w*.23,h*.89),fill=c)
+        for j in range(5):
+            y=h*(.21+j*.13)
+            d.rounded_rectangle((w*.29,y,w*.88,y+h*.09),radius=4,fill=b if j%2 else a)
+        d.rectangle((w*.3,h*.13,w*.62,h*.16),fill=c)
+    d.rectangle((0,0,2,2),fill=(index,0,0))
+    buf=io.BytesIO();im.save(buf,format="PNG");return buf.getvalue()
 
 with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     data = Path(folder)
@@ -70,6 +85,10 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("album-justified.png",YUQUE_QA_PAGE="justified")
     capture("album-dense.png",YUQUE_QA_PAGE="dense",YUQUE_QA_NARROW="1")
     capture("album-favorites.png",YUQUE_QA_PAGE="favorites",YUQUE_QA_LIGHT="1")
+    capture("album-hover.png",YUQUE_QA_PAGE="hover")
+    capture("settings-narrow.png",YUQUE_QA_PAGE="settings",YUQUE_QA_NARROW="1")
+    capture("settings-dark.png",YUQUE_QA_PAGE="settings")
+    capture("settings-light.png",YUQUE_QA_PAGE="settings",YUQUE_QA_LIGHT="1")
     capture("tasks-dark.png",YUQUE_QA_PAGE="tasks")
     capture("tags-light.png",YUQUE_QA_LIGHT="1",YUQUE_QA_PAGE="tags")
     assert (out/"empty-dark.png").read_bytes() != (out/"resources-dark.png").read_bytes(), "populated frame did not change"

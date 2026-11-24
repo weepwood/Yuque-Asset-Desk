@@ -144,3 +144,6 @@ YUQUE_VISUAL_PROFILE=release python3 scripts/visual_qa.py
 
 ### v0.4.0 下载
 正式发布仅提供 Windows x64 便携 ZIP 与 macOS ARM64 应用 ZIP，均附 SHA256。macOS 为 ad-hoc 签名、未公证；Windows 未签名。详见 [Release](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.4.0)。
+
+### V0.5.0 UI 开发
+V0.4.0 已发布版本保持不变。开发分支的 V0.5.0 聚焦内容优先相册、语义主题、原生菜单和独立设置；设计文档见 [docs/ui-design.md](docs/ui-design.md)。视觉脚本使用 Python Pillow 生成隔离合成测试图片（先安装 Pillow），不使用个人数据。

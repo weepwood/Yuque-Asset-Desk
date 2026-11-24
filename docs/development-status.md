@@ -94,3 +94,11 @@
 - CI 原始 ZIP 下载后独立验证 SHA256、CRC、路径安全、架构；macOS Info.plist 版本及 ad-hoc 签名通过。实际启动 ARM64 CI 包，窗口 1160x828，隔离数据库、托盘及快捷键注册成功；有 sandbox_extension 非致命权限警告。Windows 不进行真机启动，系统通知/实际快捷键/真实上传未验收。
 - ARM64 ZIP 7854534 bytes，SHA256 75d012724d6b53b639043bb597e4cd28f4e743b9967c0c4e039a3e9cb6219077；Windows ZIP 8917151 bytes，SHA256 93eae86d299cf82ee7c6af35fe09fc13afa355e34fe6c1c0ae57110b43791a90。
 - 发布后核对全部四项资产的名称、状态、大小与 GitHub SHA256 digest，全部一致。详细本地审计目录 dist/release-audit/45432243907-two-platforms。保持发布 Tag 指向构建源码，后续文档提交不改变发布二进制。
+
+## V0.5.0 UI 重构（基线 e2dbff8，2026-11-25）
+- 完成 GPUI Kit 0.9.0 本地源码 API 审计及官方设计指南/Eagle 工作台参考；复用 SidebarMenuItem、DropdownMenu、PopupMenuItem、ContextMenuExt、Progress，未添加 UI 依赖。
+- design.rs 集中语义颜色、边界尺寸、圆角、状态动效参数；workspace.rs 组织导航、筛选/布局菜单、设置及卡片菜单。相册主工具栏一行（窄窗搜索另起一行），标签左对齐，设置内容最大宽度 680px，任务列表弱分隔线；图片常驻操作移至悬停/选中/右键，卡片名栏 44 -> 24px，保留文件名、收藏标记及全部资源默认入口。
+- 保留数据库、上传、凭据、备份、永久离线微缩图和 192 项解码缓存。未新增业务功能或自动请求远程图片。版本号与锁文件更新 0.5.0，未推送/发布。
+- 本地 macOS ARM64：静态检查、cargo check --locked --all-targets、常规 24/24、QA 29/29、QA build、19 张真实渲染 PNG 全部通过。新增原生菜单点击/键盘排序、布局、悬停、右键收藏回归；既有滚动、锚点、上传隔离、设置、离线缩略图测试仍通过。视觉截图使用 Pillow 合成不同类型图片，删除测试原图后仍显示预览；不是自然照片或真实用户数据。
+- 已实际审查深浅主界面、窄窗、瀑布流、悬停、设置、标签及任务列表。窄设置需滚动；菜单原生交互测试通过但未截图覆盖所有菜单状态。未逐像素复刻商业产品，也未进行完整辅助功能、Windows 真机或 Release 性能/跨平台 CI 验收。Cargo 全局缓存权限警告非致命。
+- 截图目录 dist/qa；设计规范 docs/ui-design.md；本轮不改 v0.4.0 正式 Tag 和资产。

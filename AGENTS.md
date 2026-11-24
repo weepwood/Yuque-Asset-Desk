@@ -68,3 +68,8 @@
 - 根据用户最终确认，V0.4.0 仅发布 Windows x64 与 macOS ARM64 两个 ZIP 及各自 SHA256 文件，Intel Mac 不纳入本次发布门槛。未修改既有 CI 矩阵。
 - 正式 Tag v0.4.0 固定于已验收源码 6f485d8，CI 45432243907 两个目标 job 均 success。下载 CI 原始产物独立验证 SHA256、ZIP、架构、macOS 签名，再以 GitHub 返回的资产 digest 核实全部四个资产。不得移动 Tag 或混用其他提交产物。
 - macOS ARM64 CI 应用实际隔离启动通过，Windows 仅 CI 与归档/PE 架构验证；不宣称 Windows 真机启动、Apple 公证、系统通知送达或真实语雀上传已验收。
+
+## V0.5.0 UI 重构
+- 视觉规范与组件审计见 docs/ui-design.md。src/desk/design.rs 为工作台语义色、尺寸和动效入口；Theme::update 同步 GPUI Kit 主题。src/desk/workspace.rs 集中导航、筛选/布局菜单、设置、卡片右键行为。禁止重复实现成熟基础交互。
+- GPUI Kit 保持 0.9.0；使用 SidebarMenuItem、DropdownMenu、PopupMenuItem、ContextMenuExt、Progress，保留 Button/Input 等。默认全部资源及既有筛选/数据逻辑不变；图片卡片仅悬停/选中显示操作，右键菜单保留链接、Markdown、收藏、选择、详情、相似检索。
+- 不修改既有数据库结构、离线微缩图、上传或凭据逻辑；V0.5.0 UI 开发阶段不自动发布。QA 使用 Pillow 生成原创合成素材，隔离数据目录、禁止真实账号和剪贴板读写；核对真实双主题、窄窗口截图及原生交互。

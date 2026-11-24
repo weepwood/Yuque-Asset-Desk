@@ -60,7 +60,7 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
 pub(super) struct MasonryTile {pub index:usize,pub id:i64,pub x:f32,pub y:f32,pub width:f32,pub height:f32}
 #[derive(Clone,Debug,Default)]
 pub(super) struct MasonryPlan {pub tiles:Vec<MasonryTile>,pub days:Vec<(String,f32)>,pub height:f32}
-pub(super) const TILE_FOOTER:f32=44.;
+pub(super) const TILE_FOOTER:f32=24.;
 
 /// Shortest-column packing. Each date starts a new section, not a row.
 pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,dates:bool)->MasonryPlan {

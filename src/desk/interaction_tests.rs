@@ -21,21 +21,21 @@ fn native_clicks_switch_resource_and_task_views() {
     ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
     assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),1);
     // Native GPUI pointer events in a fixed 1160×800 logical viewport.
-    ui.simulate_click(point(px(90.),px(118.)),Modifiers::default());
+    let bounds=ui.debug_bounds("nav-images").unwrap(); ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
     assert_eq!(app.read(|cx|desk.read(cx).resource.category),"image");
     assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),0);
     ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
-    ui.simulate_click(point(px(90.),px(230.)),Modifiers::default());
+    let bounds=ui.debug_bounds("nav-jobs").unwrap(); ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
     assert!(app.read(|cx|desk.read(cx).jobs_page));
     ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
-    ui.simulate_click(point(px(90.),px(257.)),Modifiers::default());
+    let bounds=ui.debug_bounds("nav-settings").unwrap(); ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
-    assert!(app.read(|cx|desk.read(cx).account_panel && desk.read(cx).inspector_open));
+    assert!(app.read(|cx|desk.read(cx).account_panel && !desk.read(cx).inspector_open));
     let dark=app.read(|cx|desk.read(cx).dark);
     ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
-    ui.simulate_click(point(px(90.),px(314.)),Modifiers::default());
+    let bounds=ui.debug_bounds("settings-theme").unwrap(); ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
     assert_ne!(app.read(|cx|desk.read(cx).dark),dark);
     drop(ui);drop(desk);drop(app);
@@ -165,4 +165,43 @@ fn isolated_clipboard_image_creates_offline_resource(){
     assert!(root.join("clipboard").is_dir());
     assert!(!app.read(|cx|desk.read(cx).queue.busy));
     drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn native_filter_layout_and_card_context_menu(){
+    let root=std::env::temp_dir().join(format!("yuque-menu-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let asset=db.insert_or_get(&crate::storage::NewAsset{name:"fixture.txt".into(),bytes:10,category:"attachment".into(),provider:"demo".into(),owner_id:"local".into(),url:"file:///fixture.txt".into(),sha256:"fixture-menu".into(),filekey:String::new()}).unwrap();
+    let id=asset.id;
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let filter=ui.debug_bounds("filter-trigger").unwrap();
+    ui.simulate_click(filter.center(),Modifiers::default());app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    ui.simulate_keystrokes("down enter");app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).resource.oldest));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let layout=ui.debug_bounds("layout-trigger").unwrap();
+    ui.simulate_click(layout.center(),Modifiers::default());app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    ui.simulate_keystrokes("down down down enter");app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).resource.masonry));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let tile=ui.debug_bounds("tile-1").unwrap();
+    ui.simulate_mouse_move(tile.center(),None,Modifiers::default());app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert_eq!(app.read(|cx|desk.read(cx).resource.hover_asset),Some(id));
+    ui.simulate_mouse_down(tile.center(),MouseButton::Right,Modifiers::default());
+    ui.simulate_mouse_up(tile.center(),MouseButton::Right,Modifiers::default());app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    // Keyboard navigate to 收藏 (fourth selectable action); never modify OS clipboard.
+    ui.simulate_keystrokes("down down down down enter");app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).resource.favorites.contains(&id)));
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }
