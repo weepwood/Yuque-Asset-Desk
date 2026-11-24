@@ -73,3 +73,8 @@
 - 视觉规范与组件审计见 docs/ui-design.md。src/desk/design.rs 为工作台语义色、尺寸和动效入口；Theme::update 同步 GPUI Kit 主题。src/desk/workspace.rs 集中导航、筛选/布局菜单、设置、卡片右键行为。禁止重复实现成熟基础交互。
 - GPUI Kit 保持 0.9.0；使用 SidebarMenuItem、DropdownMenu、PopupMenuItem、ContextMenuExt、Progress，保留 Button/Input 等。默认全部资源及既有筛选/数据逻辑不变；图片卡片仅悬停/选中显示操作，右键菜单保留链接、Markdown、收藏、选择、详情、相似检索。
 - 不修改既有数据库结构、离线微缩图、上传或凭据逻辑；V0.5.0 UI 开发阶段不自动发布。QA 使用 Pillow 生成原创合成素材，隔离数据目录、禁止真实账号和剪贴板读写；核对真实双主题、窄窗口截图及原生交互。
+
+## V0.5.0 高级视觉精修
+- 继续使用 GPUI Kit 0.9.0，原生 Slider/Switch/Empty/Notification；完整 Settings 组件经评估不套入第二层导航。复制通知仅应用内，不新增系统通知权限或网络请求。
+- design.rs 统一间距、字体、主按钮/浮层色和动效，album.rs 共用布局间距；保持离线预览、虚拟化、缓存及现有数据库。详情栏窄窗口必须保持关闭入口可见，100% 放大预览必须完整适应窗口并保留比例。
+- scripts/visual_qa.py 默认完整截图，YUQUE_VISUAL_ONLY 可局部复验（仍初始化隔离数据与生成基础图）。不测试真实剪贴板、真实语雀账号。发布范围仅 Windows x64 与 macOS ARM64，既有 v0.4.0 正式资产不动。

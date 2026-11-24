@@ -70,6 +70,15 @@ fn album_native_scroll_and_density_controls() {
     ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
     assert_eq!(app.read(|cx|desk.read(cx).resource.tile_size),164.);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert_eq!(app.read(|cx|desk.read(cx).resource.density.read(cx).value().start()),164.);
+    let slider=ui.debug_bounds("density-slider").expect("native density slider");
+    ui.simulate_click(point(slider.left()+slider.size.width*0.8,slider.center().y),Modifiers::default());
+    app.run_until_parked();
+    let value=app.read(|cx|desk.read(cx).resource.tile_size);
+    assert!(value>164. && value<=240.,"slider value {value}");
+    assert_eq!(app.read(|cx|desk.read(cx).prefs.tile),value);
+
     app.update(|cx|desk.update(cx,|v,cx|{v.resource.masonry=true;cx.notify();}));
     ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
     ui.simulate_event(ScrollEvent{position:point(px(600.),px(420.)),delta:ScrollDelta::Pixels(point(px(0.),px(-1000.))),..Default::default()});

@@ -49,7 +49,10 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     env = {k:v for k,v in os.environ.items() if not k.startswith("YUQUE_")}
     env.update(YUQUE_DATA_DIR=str(data), YUQUE_MODE="demo")
 
+    selected = set(os.environ.get("YUQUE_VISUAL_ONLY","").split(",")) - {""}
     def capture(name, **extra):
+        if selected and name not in selected and name not in {"empty-dark.png","resources-dark.png","persisted-preferences.png"}:
+            return
         path = out / name
         path.unlink(missing_ok=True)
         result = subprocess.run([str(binary)], env={**env, **extra, "YUQUE_QA_CAPTURE": str(path)}, timeout=15, capture_output=True, text=True)
@@ -86,6 +89,11 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("album-dense.png",YUQUE_QA_PAGE="dense",YUQUE_QA_NARROW="1")
     capture("album-favorites.png",YUQUE_QA_PAGE="favorites",YUQUE_QA_LIGHT="1")
     capture("album-hover.png",YUQUE_QA_PAGE="hover")
+    capture("detail-dark.png",YUQUE_QA_PAGE="detail")
+    capture("detail-light.png",YUQUE_QA_PAGE="detail",YUQUE_QA_LIGHT="1")
+    capture("detail-narrow.png",YUQUE_QA_PAGE="detail",YUQUE_QA_NARROW="1")
+    capture("preview-dark.png",YUQUE_QA_PAGE="preview")
+    capture("notification-dark.png",YUQUE_QA_PAGE="notice")
     capture("settings-narrow.png",YUQUE_QA_PAGE="settings",YUQUE_QA_NARROW="1")
     capture("settings-dark.png",YUQUE_QA_PAGE="settings")
     capture("settings-light.png",YUQUE_QA_PAGE="settings",YUQUE_QA_LIGHT="1")

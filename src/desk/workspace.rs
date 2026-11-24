@@ -1,6 +1,6 @@
 //! Product composition: native sidebar items, menus and compact toolbars.
 use super::*;
-use gpui_kit::component::{IconName,Sizable,menu::{DropdownMenu,PopupMenu,PopupMenuItem},sidebar::{SidebarItem,SidebarMenuItem}};
+use gpui_kit::component::{IconName,Sizable,switch::Switch,slider::Slider,menu::{DropdownMenu,PopupMenu,PopupMenuItem},sidebar::{SidebarItem,SidebarMenuItem}};
 type DeskAction=fn(&mut UploadDesk,&mut Window,&mut Context<UploadDesk>);
 fn action(weak:WeakEntity<UploadDesk>,label:&'static str,checked:bool,f:DeskAction)->PopupMenuItem{
     PopupMenuItem::new(label).checked(checked).on_click(move|_,w,cx|{let _=weak.update(cx,|v,cx|f(v,w,cx));})
@@ -10,8 +10,8 @@ pub(super) fn asset_menu(menu:PopupMenu,weak:WeakEntity<UploadDesk>,asset:Asset,
         let weak=weak.clone();let a=asset.clone();
         PopupMenuItem::new(label.to_owned()).icon(icon).on_click(move|_,w,cx|{let _=weak.update(cx,|v,cx|f(v,&a,w,cx));})
     };
-    menu.item(item("复制链接",IconName::Copy,|v,a,_,cx|v.copy_asset(a,false,cx)))
-        .item(item("复制 Markdown",IconName::Copy,|v,a,_,cx|v.copy_asset(a,true,cx)))
+    menu.item(item("复制链接",IconName::Copy,|v,a,w,cx|v.copy_asset(a,false,w,cx)))
+        .item(item("复制 Markdown",IconName::Copy,|v,a,w,cx|v.copy_asset(a,true,w,cx)))
         .separator()
         .item(item("查看详情",IconName::PanelRight,|v,a,w,cx|{v.immersive=false;v.select_asset(a.clone(),w,cx)}))
         .item(item(if starred{"取消收藏"}else{"收藏"},IconName::Star,|v,a,_,cx|v.toggle_favorite(a,cx)))
@@ -33,7 +33,7 @@ impl UploadDesk {
     pub(super) fn navigation(&self,narrow:bool,w:&mut Window,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
         let section=|label:&str|div().px_2().pt_3().pb_1().text_xs().font_medium().text_color(p.muted).child(label.to_owned());
-        let rows=[("nav-all","全部资源","",false,IconName::FolderOpen),("nav-images","图片","image",false,IconName::File),("nav-favorites","收藏","",true,IconName::Star),("nav-videos","视频","video",false,IconName::File),("nav-attachments","附件","attachment",false,IconName::File)];
+        let rows=[("nav-all","全部资源","",false,IconName::FolderOpen),("nav-images","图片","image",false,IconName::GalleryVerticalEnd),("nav-favorites","收藏","",true,IconName::Star),("nav-videos","视频","video",false,IconName::Play),("nav-attachments","附件","attachment",false,IconName::File)];
         let mut nav=div().flex().flex_col().gap_1().child(section("资源库"));
         for (id,label,cat,fav,icon) in rows{
             let active=!self.jobs_page&&!self.account_panel&&self.resource.category==cat&&self.resource.favorites_only==fav&&self.resource.tag_filter.is_none();
@@ -59,13 +59,22 @@ impl UploadDesk {
         div().flex().flex_col().gap_3()
             .child(div().text_sm().font_medium().child("外观与快捷操作"))
             .child(div().flex().items_center().justify_between().gap_2()
-                .child(div().flex_1().child("界面主题"))
-                .child(div().debug_selector(||"settings-theme".into()).child(Button::new("theme-toggle").small().icon(if self.dark{IconName::Sun}else{IconName::Moon}).label(if self.dark{"深色 · 切换浅色"}else{"浅色 · 切换深色"})
-                    .on_click(cx.listener(|v,_,w,cx|{v.dark=!v.dark;design::apply(v.dark,Some(w),cx);v.persist_preferences(cx);cx.notify();})))))
+                .child(div().flex_1().child("深色主题").child(div().text_xs().text_color(p.muted).child("切换应用的整体配色")))
+                .child(div().debug_selector(||"settings-theme".into()).child(Switch::new("theme-toggle").checked(self.dark).small().color(p.accent).accessibility_label("深色主题").on_change(cx.listener(|v,checked:&bool,w,cx|{v.dark=*checked;design::apply(v.dark,Some(w),cx);v.persist_preferences(cx);cx.notify();})))))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("全局快捷键").child(div().text_xs().text_color(p.muted).child("切换后重启生效")))
-                .child(Button::new("shortcut-choice").small().label(format!("{}",if self.prefs.shortcut=="off"{"禁用"}else{self.prefs.shortcut.as_str()}))
-                    .on_click(cx.listener(|v,_,_,cx|{v.prefs.shortcut=match v.prefs.shortcut.as_str(){"U"=>"I","I"=>"off",_=>"U"}.into();v.persist_preferences(cx);v.status="快捷键设置已更改，重启生效".into();cx.notify();}))))
+                .child(Button::new("shortcut-choice").small().label(if self.prefs.shortcut=="off"{"禁用"}else{self.prefs.shortcut.as_str()})
+                    .dropdown_menu({
+                        let weak=cx.weak_entity();let current=self.prefs.shortcut.clone();
+                        move|menu,_,_|{
+                            let mut menu=menu;
+                            for (label,key) in [("快捷键 U","U"),("快捷键 I","I"),("禁用","off")]{
+                                let weak=weak.clone();
+                                menu=menu.item(PopupMenuItem::new(label).checked(current==key).on_click(move|_,_,cx|{let _=weak.update(cx,|v,cx|{v.prefs.shortcut=key.into();v.persist_preferences(cx);v.status="快捷键设置已更改，重启生效".into();cx.notify();});}));
+                            }
+                            menu
+                        }
+                    })))
             .child(div().h(px(1.)).bg(p.line))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("相册备份").child(div().text_xs().text_color(p.muted).child("保存本地资源索引与微缩图，不含凭据")))
@@ -75,7 +84,7 @@ impl UploadDesk {
     pub(super) fn gallery_toolbar(&self,narrow:bool,total:i64,is_demo:bool,w:&Window,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();let weak=cx.weak_entity();
         let (sort,dates,all,fav)=(self.resource.oldest,self.resource.group_dates,self.resource.all_accounts,self.resource.favorites_only);
-        let filter=Button::new("filter-menu").ghost().small().icon(IconName::SortDescending).label("筛选")
+        let filter=Button::new("filter-menu").ghost().small().icon(IconName::Settings2).label("筛选")
             .dropdown_menu(move|m,_,_|m
                 .item(action(weak.clone(),"最早优先",sort,|v,_,cx|{v.resource.oldest=true;v.persist_preferences(cx);v.reset_history(cx);}))
                 .item(action(weak.clone(),"最新优先",!sort,|v,_,cx|{v.resource.oldest=false;v.persist_preferences(cx);v.reset_history(cx);}))
@@ -87,7 +96,7 @@ impl UploadDesk {
                 .item(action(weak.clone(),"选择已加载（最多150项）",false,|v,_,cx|{v.resource.selected_ids=v.resource.assets.iter().take(150).map(|a|a.id).collect();cx.notify();})));
         let weak=cx.weak_entity();
         let mode=if !self.resource.grid_view{3}else if self.resource.masonry{2}else if self.resource.justified{1}else{0};
-        let layout=Button::new("layout-menu").ghost().small().icon(IconName::PanelRight).label(match mode{1=>"等高",2=>"瀑布流",3=>"列表",_=>"网格"})
+        let layout=Button::new("layout-menu").ghost().small().icon(IconName::LayoutDashboard).label(match mode{1=>"等高",2=>"瀑布流",3=>"列表",_=>"网格"})
             .dropdown_menu(move|m,_,_|m
                 .item(action(weak.clone(),"等宽网格",mode==0,|v,_,cx|v.set_layout(0,cx)))
                 .item(action(weak.clone(),"等高拼图",mode==1,|v,_,cx|v.set_layout(1,cx)))
@@ -107,11 +116,16 @@ impl UploadDesk {
         div().id("drop-zone").flex().flex_col().gap_2().pb_2()
             .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
             .child(div().flex().items_center().gap_3()
-                .child(div().flex_1().min_w(px(0.)).child(div().text_lg().font_semibold().child(title))
+                .child(div().flex_1().min_w(px(0.)).child(div().text_size(px(design::TITLE_SIZE)).font_semibold().child(title))
                     .child(div().text_xs().text_color(p.muted).child(format!("{} 项 · {}",total,if is_demo{"本地演示"}else{"离线预览"}))))
                 .when(!narrow,|d|d.child(div().w(px(180.)).child(Input::new(&self.resource.search_input))))
                 .child(controls))
             .when(narrow,|d|d.child(Input::new(&self.resource.search_input)))
+    }
+    pub(super) fn density_control(&self)->impl IntoElement{
+        div().flex().items_center().gap_2().text_xs().text_color(self.palette().muted)
+            .child(format!("{:.0} px",self.resource.tile_size))
+            .child(div().debug_selector(||"density-slider".into()).w(px(100.)).child(Slider::new(&self.resource.density).accessibility_label("图片尺寸").disabled(!self.resource.grid_view)))
     }
     fn set_layout(&mut self,mode:u8,cx:&mut Context<Self>){
         self.resource.grid_view=mode!=3;self.resource.justified=mode==1;self.resource.masonry=mode==2;self.persist_preferences(cx);cx.notify();

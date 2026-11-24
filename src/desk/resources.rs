@@ -312,20 +312,22 @@ impl UploadDesk {
         cx.notify();
     }
 
-    pub(super) fn copy_asset(&mut self, asset: &Asset, as_markdown: bool, cx: &mut Context<Self>) {
+    pub(super) fn copy_asset(&mut self, asset: &Asset, as_markdown: bool, window:&mut Window,cx: &mut Context<Self>) {
         let content = if as_markdown {
             format::markdown(&asset.name, &asset.url, asset.category == "image")
         } else {
             asset.url.clone()
         };
-        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content)) {
-            Ok(_) => self.status = if as_markdown {
-                "Markdown 引用已复制".to_string()
-            } else {
-                "资源链接已复制".to_string()
-            },
-            Err(error) => self.status = format!("写入剪贴板失败：{error}"),
-        }
+        use gpui_kit::component::{notification::Notification,WindowExt};
+        struct CopyFeedback;
+        let notification=match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content)) {
+            Ok(_) => {
+                self.status=if as_markdown{"Markdown 引用已复制"}else{"资源链接已复制"}.into();
+                Notification::success(self.status.clone())
+            }
+            Err(error) => {self.status=format!("写入剪贴板失败：{error}");Notification::error(self.status.clone())}
+        };
+        window.push_notification(notification.id::<CopyFeedback>(),cx);
         cx.notify();
     }
 }

@@ -96,6 +96,7 @@ struct ResourceState {
     #[cfg(feature="qa")]
     perf_preview_count:usize,
     tile_size: f32,
+    density:Entity<gpui_kit::component::slider::SliderState>,
     group_dates: bool,
     favorites_only: bool,
     favorites: std::collections::HashSet<i64>,
@@ -220,6 +221,14 @@ impl UploadDesk {
         let saved_accounts = storage.accounts().unwrap_or_default();
         let recovery_count = storage.recoverable(config.provider(), config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
         let prefs=preferences::Preferences::decode(storage.preferences().unwrap_or_default());
+        use gpui_kit::component::slider::{SliderState,SliderEvent};
+        let density=cx.new(|_|SliderState::new().min(96.).max(240.).step(4.).default_value(prefs.tile));
+        let density_subscription=cx.subscribe_in(&density,window,|v,_,event:&SliderEvent,_,cx|{
+            match event{
+                SliderEvent::Change(value)=>{v.resource.tile_size=value.start().clamp(96.,240.);cx.notify();}
+                SliderEvent::Release(value)=>{v.resource.tile_size=value.start().clamp(96.,240.);v.persist_preferences(cx);cx.notify();}
+            }
+        });
         let resize_subscription=cx.observe_window_bounds(window,|v,w,cx|{
             if w.is_maximized() || w.is_fullscreen(){return;}
             let size=w.bounds().size;
@@ -242,6 +251,7 @@ impl UploadDesk {
                 #[cfg(feature="qa")]
                 perf_preview_count:usize::MAX,
                 tile_size:prefs.tile,
+                density,
                 group_dates:prefs.dates,
                 favorites_only:prefs.favorites,
                 favorites: Default::default(),
@@ -319,7 +329,7 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             account_panel: false,
             storage,
-            _subscriptions: vec![subscription,resize_subscription],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription],
             jobs_page: false,
             inspector_open: false,
             immersive:false,
@@ -331,10 +341,14 @@ impl UploadDesk {
             backup_task:None,
 
         };
-        cx.defer_in(window, |view, _, cx| {
+        cx.defer_in(window, |view, _window, cx| {
             #[cfg(feature="qa")]
             if view.account.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && (std::env::var_os("YUQUE_QA_CAPTURE").is_some() || std::env::var_os("YUQUE_QA_PERF").is_some()) {
                 match std::env::var("YUQUE_QA_PAGE").as_deref() {
+                    Ok("notice")=>{
+                        use gpui_kit::component::{notification::Notification,WindowExt};
+                        _window.push_notification(Notification::success("演示：资源链接已复制").autohide(false),cx);
+                    }
                     Ok("settings")=>{view.account_panel=true;view.inspector_open=false;}
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}

@@ -1,4 +1,5 @@
 use super::*;
+use design::{TILE_GAP as GAP,DAY_H};
 
 #[derive(Debug,Clone,PartialEq)]
 pub(super) enum AlbumRow {
@@ -11,8 +12,8 @@ pub(super) enum AlbumRow {
 pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool)->Vec<AlbumRow>{
     let width=width.max(160.);
     let target=target.clamp(96.,240.);
-    let cols=((width+8.)/(target+8.)).floor().max(1.) as usize;
-    let equal=(width-8.*(cols-1) as f32)/cols as f32;
+    let cols=((width+GAP)/(target+GAP)).floor().max(1.) as usize;
+    let equal=(width-GAP*(cols-1) as f32)/cols as f32;
     let mut rows=Vec::new();
     let mut cursor=0;
     while cursor<assets.len(){
@@ -34,13 +35,13 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
             let start=cursor;
             while cursor<end {
                 let n=cursor-start+1;
-                if n>1 && min_width*n as f32+8.*(n-1) as f32>width {break;}
+                if n>1 && min_width*n as f32+GAP*(n-1) as f32>width {break;}
                 sum+=(ratio(cursor)*target).max(min_width);
                 cursor+=1;
-                if sum+8.*(n-1) as f32>=width{break;}
+                if sum+GAP*(n-1) as f32>=width{break;}
             }
             let count=cursor-start;
-            let usable=width-8.*(count-1) as f32;
+            let usable=width-GAP*(count-1) as f32;
             let mut lo=0.;
             let mut hi=target;
             for _ in 0..20{
@@ -65,21 +66,21 @@ pub(super) const TILE_FOOTER:f32=24.;
 /// Shortest-column packing. Each date starts a new section, not a row.
 pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,dates:bool)->MasonryPlan {
     let width=width.max(160.);
-    let cols=((width+8.)/(target.clamp(96.,240.)+8.)).floor().max(1.) as usize;
-    let w=(width-(cols-1) as f32*8.)/cols as f32;
+    let cols=((width+GAP)/(target.clamp(96.,240.)+GAP)).floor().max(1.) as usize;
+    let w=(width-(cols-1) as f32*GAP)/cols as f32;
     let mut bottom=vec![0f32;cols];let mut result=MasonryPlan::default();let mut last=None;
     for (index,a) in assets.iter().enumerate(){
         let day=a.created_at.get(..10).unwrap_or("未知日期");
         if dates && last!=Some(day){
             let y=bottom.iter().copied().fold(0.,f32::max);
-            result.days.push((day.to_owned(),y));bottom.fill(y+32.);last=Some(day);
+            result.days.push((day.to_owned(),y));bottom.fill(y+DAY_H);last=Some(day);
         }
         let col=(0..cols).min_by(|&a,&b|bottom[a].total_cmp(&bottom[b])).unwrap();
         let ratio=ratios.get(&a.id).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.).clamp(0.3,4.);
         let h=(w/ratio).clamp(60.,w*3.);
         let y=bottom[col];
-        result.tiles.push(MasonryTile{index,id:a.id,x:col as f32*(w+8.),y,width:w,height:h});
-        bottom[col]=y+h+TILE_FOOTER+8.;
+        result.tiles.push(MasonryTile{index,id:a.id,x:col as f32*(w+GAP),y,width:w,height:h});
+        bottom[col]=y+h+TILE_FOOTER+GAP;
     }
     result.height=bottom.into_iter().fold(0.,f32::max);
     result
@@ -94,9 +95,26 @@ impl MasonryPlan{
     }
 }
 
+
+// Fit the local preview within the viewport before applying user zoom.
+pub(super) fn fit_preview(width:f32,height:f32,ratio:f32,zoom:f32)->(f32,f32){
+    let ratio=if ratio.is_finite()&&ratio>0.{ratio}else{1.};
+    let w=width.min(height*ratio).max(1.);
+    (w*zoom,w/ratio*zoom)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[::core::prelude::v1::test]
+    fn preview_fits_at_one_hundred_percent(){
+        for ratio in [0.4,1.,2.4]{
+            let (w,h)=fit_preview(900.,600.,ratio,1.);
+            assert!(w<=900.01&&h<=600.01);
+            assert!((w/h-ratio).abs()<0.001);
+            assert_eq!(fit_preview(900.,600.,ratio,2.),(w*2.,h*2.));
+        }
+    }
     #[::core::prelude::v1::test]
     fn masonry_packs_shortest_column_without_overlap(){
         let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:"2026-11-24".into()}).collect::<Vec<_>>();
@@ -122,7 +140,7 @@ mod tests{
             let mut seen=Vec::new();
             for row in rows {if let AlbumRow::Tiles{items,..}=row{
                 assert!(items.iter().all(|(_,w)|*w>=96.));
-                assert!(items.iter().map(|(_,w)|w).sum::<f32>()+8.*items.len().saturating_sub(1) as f32<=800.1);
+                assert!(items.iter().map(|(_,w)|w).sum::<f32>()+GAP*items.len().saturating_sub(1) as f32<=800.1);
                 seen.extend(items.into_iter().map(|(i,_)|i));
             }}
             assert_eq!(seen,(0..10000).collect::<Vec<_>>());
