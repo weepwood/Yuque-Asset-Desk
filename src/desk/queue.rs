@@ -108,7 +108,7 @@ impl UploadDesk {
     }
 
     pub(super) fn start_upload(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if self.queue.busy || self.account.account_busy || files.is_empty() { return; }
+        if self.backup_busy || self.queue.busy || self.account.account_busy || files.is_empty() { return; }
         if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() {
             self.status = "请先配置语雀会话再上传".into(); cx.notify(); return;
         }
@@ -119,7 +119,7 @@ impl UploadDesk {
     }
 
     pub(super) fn run_jobs(&mut self, jobs: Vec<(i64, PathBuf)>, cx: &mut Context<Self>) {
-        if self.queue.busy || jobs.is_empty() || self.account.account_busy { return; }
+        if self.backup_busy || self.queue.busy || jobs.is_empty() || self.account.account_busy { return; }
         if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() { return; }
         let control = Arc::new(AtomicU8::new(0));
         self.queue.queue_control = control.clone();
@@ -225,6 +225,9 @@ impl UploadDesk {
                         view.queue.recovery_count = view.storage.recoverable(view.account.config.provider(), view.account.config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
                         view.status = format!("本批完成：新增 {} · 复用 {} · 失败 {}",
                             view.queue.succeeded, view.queue.duplicates, view.queue.failed.len());
+                    }
+                    if view.queue.queue_count==0 && view.desktop_enabled {
+                        cx.show_system_notification(SystemNotification{tag:"yuque-upload-batch".into(),title:"Yuque Asset Desk".into(),body:format!("本批结束：新增 {} · 复用 {} · 失败 {}",view.queue.succeeded,view.queue.duplicates,view.queue.failed.len()).into(),actions:vec![]});
                     }
                     view.queue.active_job = None;
                     view.refresh_jobs(cx);

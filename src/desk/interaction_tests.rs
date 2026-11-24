@@ -70,6 +70,24 @@ fn album_native_scroll_and_density_controls() {
     ui.simulate_click(bounds.center(),Modifiers::default());
     app.run_until_parked();
     assert_eq!(app.read(|cx|desk.read(cx).resource.tile_size),164.);
+    app.update(|cx|desk.update(cx,|v,cx|{v.resource.masonry=true;cx.notify();}));
+    ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
+    ui.simulate_event(ScrollEvent{position:point(px(600.),px(420.)),delta:ScrollDelta::Pixels(point(px(0.),px(-1000.))),..Default::default()});
+    app.run_until_parked();
+    ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
+    let top=app.read(|cx|-f32::from(desk.read(cx).resource.masonry_scroll.offset().y));
+    assert!(top>0.,"masonry scroll must move");
+    let anchor=app.read(|cx|desk.read(cx).resource.masonry_plan.anchor(top)).unwrap();
+    app.update(|cx|desk.update(cx,|v,cx|{v.resource.tile_size=180.;cx.notify();}));
+    ui.update(|window,cx|{window.refresh();window.draw(cx).clear(cx);});
+    let restored=app.read(|cx|{
+        let r=&desk.read(cx).resource;
+        let expected=r.masonry_plan.restore(Some(anchor)).unwrap();
+        let actual=-f32::from(r.masonry_scroll.offset().y);
+        (actual-expected).abs()
+    });
+    assert!(restored<2.,"masonry anchor drift: {restored}");
+
     drop(ui);drop(desk);drop(app);
     let _=std::fs::remove_dir_all(root);
 }

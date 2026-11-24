@@ -115,3 +115,15 @@ GitHub Actions 覆盖 Windows x64、macOS Apple Silicon 和 macOS Intel。构建
 - 相似图片：基于本地 160px 微缩图的 dHash，限同一账号，最多 150 条结果。首次检索可后台补齐已有本地微缩图的索引，无法替代语义搜索。
 - 点击左栏「备份相册」，选择应用数据目录以外的位置，生成 `YuqueAlbum-...` 文件夹。备份包含全部账号的链接、标签、收藏、任务及派生预览，不包含系统凭据库或原始上传文件。备份本身包含私人链接及本地任务路径，请妥善保护。
 - 迁移：复制备份至新目录，退出当前应用；通过 `YUQUE_DATA_DIR` 指定该新目录启动程序，例如 macOS：`YUQUE_DATA_DIR="/path/to/YuqueAlbum" YUQUE_MODE=demo ./target/debug/yuque-asset-desk`。在新机器上重新配置语雀会话；不要覆盖已有数据目录，不自动恢复上传任务。Demo 文件链接仍指向原路径，微缩图可离线查看。
+
+### 沉浸式相册和桌面操作
+紧凑顶部工具栏、等宽 / 等高 / 瀑布流 / 列表模式，瀑布流采用最短列布局、保留图片比例和滚动锚点。日常浏览仍完全读取本地微缩图。
+
+macOS / Windows 原生托盘：打开相册、主动上传剪贴板、退出。全局快捷键 macOS Cmd+Shift+U、Windows Ctrl+Shift+U 仅打开工作台，不读取剪贴板。托盘可用时关闭窗口会最小化；实际注册可能因系统快捷键冲突失败。可设置 YUQUE_DESKTOP_INTEGRATION=0 禁用。完成通知取决于系统权限；不包含图片内容或链接。
+
+本地性能复现（macOS，Python 需要 Pillow）：
+```bash
+cargo build --locked --features qa
+python3 scripts/album_perf.py
+```
+报告写入 dist/qa/album-perf.json；测试使用 10,000 个合成 JPEG 和 150 项分页。CPU 渲染耗时不等于屏幕 FPS。系统托盘和快捷键的注册冒烟不读取剪贴板、不使用真实凭据。

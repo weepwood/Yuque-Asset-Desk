@@ -56,9 +56,63 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
     rows
 }
 
+#[derive(Clone,Debug)]
+pub(super) struct MasonryTile {pub index:usize,pub id:i64,pub x:f32,pub y:f32,pub width:f32,pub height:f32}
+#[derive(Clone,Debug,Default)]
+pub(super) struct MasonryPlan {pub tiles:Vec<MasonryTile>,pub days:Vec<(String,f32)>,pub height:f32}
+pub(super) const TILE_FOOTER:f32=44.;
+
+/// Shortest-column packing. Each date starts a new section, not a row.
+pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,dates:bool)->MasonryPlan {
+    let width=width.max(160.);
+    let cols=((width+8.)/(target.clamp(96.,240.)+8.)).floor().max(1.) as usize;
+    let w=(width-(cols-1) as f32*8.)/cols as f32;
+    let mut bottom=vec![0f32;cols];let mut result=MasonryPlan::default();let mut last=None;
+    for (index,a) in assets.iter().enumerate(){
+        let day=a.created_at.get(..10).unwrap_or("未知日期");
+        if dates && last!=Some(day){
+            let y=bottom.iter().copied().fold(0.,f32::max);
+            result.days.push((day.to_owned(),y));bottom.fill(y+32.);last=Some(day);
+        }
+        let col=(0..cols).min_by(|&a,&b|bottom[a].total_cmp(&bottom[b])).unwrap();
+        let ratio=ratios.get(&a.id).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.).clamp(0.3,4.);
+        let h=(w/ratio).clamp(60.,w*3.);
+        let y=bottom[col];
+        result.tiles.push(MasonryTile{index,id:a.id,x:col as f32*(w+8.),y,width:w,height:h});
+        bottom[col]=y+h+TILE_FOOTER+8.;
+    }
+    result.height=bottom.into_iter().fold(0.,f32::max);
+    result
+}
+impl MasonryPlan{
+    pub fn anchor(&self,top:f32)->Option<(i64,f32)>{
+        self.tiles.iter().filter(|t|t.y+t.height+TILE_FOOTER>top).min_by(|a,b|a.y.total_cmp(&b.y)).map(|t|(t.id,top-t.y))
+    }
+    pub fn restore(&self,anchor:Option<(i64,f32)>)->Option<f32>{
+        let (id,delta)=anchor?;
+        self.tiles.iter().find(|t|t.id==id).map(|t|(t.y+delta).max(0.))
+    }
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[::core::prelude::v1::test]
+    fn masonry_packs_shortest_column_without_overlap(){
+        let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:"2026-11-24".into()}).collect::<Vec<_>>();
+        let ratios=items.iter().map(|a|(a.id,0.3+(a.id%23) as f32*0.16)).collect();
+        let plan=masonry(&items,&ratios,800.,148.,true);
+        assert_eq!(plan.tiles.len(),10000);
+        let mut bottoms=std::collections::HashMap::<u32,f32>::new();
+        for t in &plan.tiles{
+            assert!(t.x+t.width<=800.1);
+            assert!(t.y>=*bottoms.get(&t.x.to_bits()).unwrap_or(&0.));
+            bottoms.insert(t.x.to_bits(),t.y+t.height+TILE_FOOTER);
+        }
+        let anchor=plan.anchor(2000.).unwrap();
+        let next=masonry(&items,&ratios,620.,148.,true);
+        assert!(next.restore(Some(anchor)).is_some());
+    }
     #[::core::prelude::v1::test]
     fn rows_preserve_order_and_width(){
         let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:if i<5000{"2026-11-24"}else{"2026-11-23"}.into()}).collect::<Vec<_>>();

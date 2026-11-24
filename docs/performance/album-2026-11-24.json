@@ -1,0 +1,61 @@
+{
+  "dataset": 10000,
+  "fixture_type": "synthetic encoded JPEG, distinct files, no original source",
+  "bytes": 17514051,
+  "seed_seconds": 17.667,
+  "runs": [
+    {
+      "mode": "grid",
+      "process_seconds": 8.199,
+      "metrics": [
+        "PERF page_ready_ms=154 count=150",
+        "PERF previews_ready_ms=796 count=150",
+        "PERF render_cpu_ms p50=22.747 p95=38.063 max=46.854 samples=120"
+      ],
+      "wall_markers": [
+        {
+          "wall_ms": 689.6,
+          "message": "PERF page_ready_ms=154 count=150"
+        },
+        {
+          "wall_ms": 1330.5,
+          "message": "PERF previews_ready_ms=796 count=150"
+        },
+        {
+          "wall_ms": 8103.6,
+          "message": "PERF render_cpu_ms p50=22.747 p95=38.063 max=46.854 samples=120"
+        }
+      ],
+      "peak_sampled_rss_mib": 148.36,
+      "mean_sampled_ps_cpu_percent": 52.51,
+      "sample_count": 38
+    },
+    {
+      "mode": "masonry",
+      "process_seconds": 8.725,
+      "metrics": [
+        "PERF page_ready_ms=140 count=150",
+        "PERF previews_ready_ms=287 count=150",
+        "PERF render_cpu_ms p50=24.455 p95=28.630 max=32.103 samples=120"
+      ],
+      "wall_markers": [
+        {
+          "wall_ms": 632.0,
+          "message": "PERF page_ready_ms=140 count=150"
+        },
+        {
+          "wall_ms": 778.5,
+          "message": "PERF previews_ready_ms=287 count=150"
+        },
+        {
+          "wall_ms": 8677.2,
+          "message": "PERF render_cpu_ms p50=24.455 p95=28.630 max=32.103 samples=120"
+        }
+      ],
+      "peak_sampled_rss_mib": 139.75,
+      "mean_sampled_ps_cpu_percent": 62.23,
+      "sample_count": 39
+    }
+  ],
+  "limits": "debug QA build; 150 items per page; CPU draw time excludes GPU presentation, GPU utilization and true FPS unmeasured; first run cold app process, OS disk cache not flushed"
+}

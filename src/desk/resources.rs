@@ -12,6 +12,9 @@ impl UploadDesk {
         self.resource.ratios.clear();
         self.resource.hover_asset=None;
         self.resource.album_list.reset(0);
+        self.resource.masonry_scroll.set_offset(point(px(0.),px(0.)));
+        self.resource.masonry_plan=Default::default();
+        self.resource.masonry_signature=0;
         self.resource.thumbnails_task = None;
         self.resource.preview_task = None;
         self.resource.preview_loading = false;
@@ -75,6 +78,8 @@ impl UploadDesk {
                         view.resource.tag_catalog=tags;
                         view.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
                         view.resource.assets = items;
+                        #[cfg(feature="qa")]
+                        if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF page_ready_ms={} count={}",view.resource.perf_start.elapsed().as_millis(),view.resource.assets.len());}
                         view.resource.has_more = more;
                         view.resource.total_count = total;
                         view.refresh_thumbnails(cx);
@@ -91,25 +96,32 @@ impl UploadDesk {
         cx.notify();
     }
 
-    pub(super) fn refresh_thumbnails(&mut self, cx: &mut Context<Self>) {
-        self.resource.cached_thumbnails.clear();
-        self.resource.ratios.clear();
-        let generation = self.resource.history_generation;
-        let items = self.resource.assets.clone();
-        let storage = self.storage.clone();
-        self.resource.thumbnails_task = Some(cx.spawn(async move |this, cx| {
-            for asset in items.into_iter().filter(|a| a.category == "image") {
-                let id = asset.id;
-                let storage = storage.clone();
-                let path = cx.background_spawn(async move {
-                    preview::index_local(&storage,&asset).ok()
+    pub(super) fn refresh_thumbnails(&mut self,cx:&mut Context<Self>){
+        let generation=self.resource.history_generation;
+        let items=self.resource.assets.iter().filter(|a|a.category=="image").cloned().collect::<Vec<_>>();
+        let ids=items.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
+        self.resource.cached_thumbnails.retain(|id,_|ids.contains(id));
+        self.resource.ratios.retain(|id,_|ids.contains(id));
+        let storage=self.storage.clone();
+        self.resource.thumbnails_task=Some(cx.spawn(async move|this,cx|{
+            for batch in items.chunks(12){
+                let batch=batch.to_vec();let storage=storage.clone();
+                let found=cx.background_spawn(async move{
+                    batch.into_iter().filter_map(|a|preview::index_local(&storage,&a).ok().map(|(p,r)|(a.id,p,r))).collect::<Vec<_>>()
                 }).await;
-                let result = this.update(cx, |view, cx| {
-                    if generation != view.resource.history_generation { return false; }
-                    if let Some((path,ratio)) = path { view.resource.cached_thumbnails.insert(id, path); view.resource.ratios.insert(id,ratio); cx.notify(); }
-                    true
+                let result=this.update(cx,|v,cx|{
+                    if generation!=v.resource.history_generation{return false;}
+                    for (id,p,r) in found{
+                        v.resource.cached_thumbnails.insert(id,p);
+                        if v.resource.ratios.insert(id,r)!=Some(r){v.resource.ratio_revision+=1;}
+                    }
+                    cx.notify();true
                 });
-                if !matches!(result, Ok(true)) { break; }
+                if !matches!(result,Ok(true)){break;}
+            }
+            #[cfg(feature="qa")]
+            if std::env::var_os("YUQUE_QA_PERF").is_some(){
+                _=this.update(cx,|v,_|eprintln!("PERF previews_ready_ms={} count={}",v.resource.perf_start.elapsed().as_millis(),v.resource.cached_thumbnails.len()));
             }
         }));
     }

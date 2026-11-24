@@ -25,6 +25,10 @@ mime_guess = "2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 url = "2"
 
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = { version = "=0.26.1", default-features = false }
+global-hotkey = "=0.10.0"
+
 [profile.release]
 opt-level = 2
 lto = "thin"

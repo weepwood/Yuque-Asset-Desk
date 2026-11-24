@@ -82,6 +82,13 @@ struct ResourceState {
     search: String,
     grid_view: bool,
     justified: bool,
+    masonry: bool,
+    masonry_scroll: ScrollHandle,
+    masonry_plan: album::MasonryPlan,
+    masonry_signature: u64,
+    ratio_revision:u64,
+    #[cfg(feature="qa")]
+    perf_start:std::time::Instant,
     tile_size: f32,
     group_dates: bool,
     favorites_only: bool,
@@ -134,11 +141,27 @@ pub(crate) struct UploadDesk {
     inspector_open: bool,
     status: String,
     backup_busy: bool,
+    desktop_enabled:bool,
     backup_task: Option<Task<()>>,
 
 }
 
 impl UploadDesk {
+    pub(crate) fn desktop_status(&mut self,enabled:bool,status:String,cx:&mut Context<Self>){
+        self.desktop_enabled=enabled;self.status=status;cx.notify();
+    }
+    pub(crate) fn desktop_quick_upload(&mut self,cx:&mut Context<Self>){
+        if self.queue.busy || self.backup_busy || self.account.account_busy{
+            self.status="当前有任务正在处理，请稍后再操作".into();cx.notify();return;
+        }
+        self.paste_files(cx);
+    }
+    pub(crate) fn desktop_can_quit(&mut self,cx:&mut Context<Self>)->bool{
+        if self.queue.busy || self.backup_busy || self.account.account_busy{
+            self.status="请先等待上传或备份结束，再退出".into();cx.notify();false
+        }else{true}
+    }
+
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, config: Config, storage: Storage) -> Self {
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("搜索文件名或标签…"));
         let subscription = cx.subscribe_in(
@@ -166,6 +189,13 @@ impl UploadDesk {
                 search: String::new(),
                 grid_view: true,
                 justified: false,
+                masonry:false,
+                masonry_scroll:ScrollHandle::new(),
+                masonry_plan:Default::default(),
+                masonry_signature:0,
+                ratio_revision:0,
+                #[cfg(feature="qa")]
+                perf_start:std::time::Instant::now(),
                 tile_size: 148.,
                 group_dates: true,
                 favorites_only: false,
@@ -173,7 +203,7 @@ impl UploadDesk {
                 ratios: Default::default(),
                 hover_asset: None,
                 similar_to: None,
-                album_list: ListState::new(0,ListAlignment::Top,px(350.)),
+                album_list: ListState::new(0,ListAlignment::Top,px(180.)),
                 layout_signature: 0,
                 selected_asset: None,
                 oldest: false,
@@ -244,16 +274,18 @@ impl UploadDesk {
             inspector_open: false,
             status,
             backup_busy:false,
+            desktop_enabled:false,
             backup_task:None,
 
         };
         cx.defer_in(window, |view, _, cx| {
             #[cfg(feature="qa")]
-            if view.account.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && std::env::var_os("YUQUE_QA_CAPTURE").is_some() {
+            if view.account.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && (std::env::var_os("YUQUE_QA_CAPTURE").is_some() || std::env::var_os("YUQUE_QA_PERF").is_some()) {
                 match std::env::var("YUQUE_QA_PAGE").as_deref() {
                     Ok("tasks")=>{view.jobs_page=true;view.inspector_open=false;view.refresh_jobs(cx);}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
+                    Ok("masonry")=>{view.resource.masonry=true;}
                     Ok("dense")=>{view.resource.tile_size=96.;}
                     Ok("favorites")=>{view.resource.favorites_only=true;}
                     _=>{}

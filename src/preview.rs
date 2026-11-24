@@ -113,8 +113,12 @@ pub fn visual_hash(path:&Path) -> Result<(u64,f32)> {
 
 pub fn index_local(storage:&crate::storage::Storage,asset:&Asset) -> Result<(PathBuf,f32)> {
     let path=restore_local(storage,asset)?;
+    if storage.visual_hash(asset.id)?.is_some(){
+        let (w,h)=image::image_dimensions(&path)?;
+        return Ok((path,w as f32/h.max(1) as f32));
+    }
     let (hash,ratio)=visual_hash(&path)?;
-    if storage.visual_hash(asset.id)?.is_none(){storage.store_visual_hash(asset.id,hash)?;}
+    storage.store_visual_hash(asset.id,hash)?;
     Ok((path,ratio))
 }
 

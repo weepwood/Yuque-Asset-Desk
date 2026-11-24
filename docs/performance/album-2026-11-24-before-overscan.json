@@ -1,0 +1,33 @@
+{
+  "dataset": 10000,
+  "fixture_type": "synthetic encoded JPEG, distinct files, no original source",
+  "bytes": 17514051,
+  "seed_seconds": 5.308,
+  "runs": [
+    {
+      "mode": "grid",
+      "process_seconds": 7.602,
+      "metrics": [
+        "PERF page_ready_ms=71 count=150",
+        "PERF previews_ready_ms=765 count=150",
+        "PERF render_cpu_ms p50=21.934 p95=29.891 max=50.352 samples=120"
+      ],
+      "peak_sampled_rss_mib": 145.17,
+      "mean_sampled_ps_cpu_percent": 52.33,
+      "sample_count": 36
+    },
+    {
+      "mode": "masonry",
+      "process_seconds": 8.493,
+      "metrics": [
+        "PERF page_ready_ms=84 count=150",
+        "PERF previews_ready_ms=155 count=150",
+        "PERF render_cpu_ms p50=31.147 p95=36.871 max=45.705 samples=120"
+      ],
+      "peak_sampled_rss_mib": 145.56,
+      "mean_sampled_ps_cpu_percent": 50.41,
+      "sample_count": 40
+    }
+  ],
+  "limits": "debug QA build; 150 items per page; CPU draw time excludes GPU presentation, GPU utilization and true FPS unmeasured; first run cold app process, OS disk cache not flushed"
+}
