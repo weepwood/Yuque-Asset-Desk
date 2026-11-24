@@ -7,6 +7,7 @@ mod storage;
 mod uploader;
 mod update;
 mod preview;
+mod high_preview;
 
 mod desk;
 #[cfg(any(target_os="macos",target_os="windows"))]

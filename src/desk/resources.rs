@@ -2,6 +2,8 @@ use super::*;
 
 impl UploadDesk {
     pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+        self.clear_quality(cx);
+        self.resource.pending_preview=None;
         self.resource.tile_click_task=None;
         self.resource.page_cursors = vec![None];
         self.resource.selected_asset = None;
@@ -31,6 +33,7 @@ impl UploadDesk {
     }
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.resource.pending_preview=None;
         self.resource.page_cursors=vec![None];
         self.resource.visible_range=(0,48);
         self.resource.album_list.reset(0);
@@ -227,6 +230,8 @@ impl UploadDesk {
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_quality(cx);
+        self.resource.pending_preview=None;
         self.resource.tile_click_task=None;
         let tags = self.storage.tags(asset.id).unwrap_or_default().join(", ");
         self.resource.tag_input.update(cx, |input, cx| input.set_value(tags, window, cx));
@@ -297,6 +302,8 @@ impl UploadDesk {
     pub(super) fn open_large_preview(&mut self, window:&mut Window,cx: &mut Context<Self>) {
         let Some(asset) = self.resource.selected_asset.clone() else { return; };
         if asset.category != "image" { return; }
+        self.clear_quality(cx);
+        self.resource.pending_preview=None;
         self.resource.preview_task=None;
         let storage = self.storage.clone();
         let id = asset.id;
@@ -334,8 +341,8 @@ impl UploadDesk {
     }
 
     pub(super) fn preview_size(&self,window:&Window)->(f32,f32,f32){
-        let ratio=self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
-        ((f32::from(window.viewport_size().width)-32.).max(1.),(f32::from(window.viewport_size().height)-76.).max(1.),ratio)
+        let ratio=self.resource.quality.as_ref().map(|q|q.width as f32/q.height as f32).or_else(||self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied()).filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
+        ((f32::from(window.viewport_size().width)-32.).max(1.),(f32::from(window.viewport_size().height)-172.).max(1.),ratio)
     }
     pub(super) fn preview_neighbor(&self,forward:bool)->Option<Asset>{
         let id=self.resource.selected_asset.as_ref()?.id;
@@ -344,12 +351,61 @@ impl UploadDesk {
         else{self.resource.assets[..at].iter().rev().find(|a|a.category=="image").cloned()}
     }
     pub(super) fn step_preview(&mut self,forward:bool,window:&mut Window,cx:&mut Context<Self>){
+        if forward&&self.resource.pending_preview.is_some(){return;}
+        self.resource.pending_preview=None;
         if let Some(asset)=self.preview_neighbor(forward){
             self.select_asset(asset,window,cx);
             self.open_large_preview(window,cx);
+        }else if forward&&self.resource.has_more&&self.resource.history_error.is_none(){
+            if let Some(id)=self.resource.selected_asset.as_ref().map(|a|a.id){
+                self.resource.pending_preview=Some((id,8));
+                self.load_more(cx);cx.notify();
+            }
         }
     }
+    pub(super) fn continue_preview_page(&mut self,id:i64,left:u8,window:&mut Window,cx:&mut Context<Self>){
+        if !self.resource.large_preview_open||self.resource.selected_asset.as_ref().is_none_or(|a|a.id!=id){return;}
+        if let Some(a)=self.preview_neighbor(true){
+            self.select_asset(a,window,cx);self.open_large_preview(window,cx);
+        }else if self.resource.has_more&&self.resource.history_error.is_none()&&left>0{
+            self.resource.pending_preview=Some((id,left-1));self.load_more(cx);
+        }else{self.resource.quality_status=if self.resource.history_error.is_some(){"下一页加载失败，请返回相册重试".into()}else if self.resource.has_more{"本次已检查多页，可继续点击下一张".into()}else{"已到最后一张图片".into()};}
+        cx.notify();
+    }
+    pub(super) fn clear_quality(&mut self,cx:&mut Context<Self>){
+        self.resource.quality_generation=self.resource.quality_generation.wrapping_add(1);
+        self.resource.quality_task=None;
+        self.resource.quality_busy=false;self.resource.quality_status.clear();
+        if let Some(q)=self.resource.quality.take(){cx.drop_image(q.image,None);}
+    }
+    pub(super) fn load_quality(&mut self,remote:bool,cx:&mut Context<Self>){
+        if !self.resource.large_preview_open||self.resource.quality_busy{return;}
+        let Some(asset)=self.resource.selected_asset.clone()else{return;};
+        self.clear_quality(cx);
+        self.resource.quality_busy=true;self.resource.quality_status="正在读取高清图片…".into();
+        let generation=self.resource.quality_generation;let storage=self.storage.clone();let id=asset.id;
+        self.resource.quality_task=Some(cx.spawn(async move|this,cx|{
+            let result=cx.background_spawn(async move{crate::high_preview::load(&storage,&asset,remote)}).await;
+            let _=this.update(cx,|v,cx|{
+                if !v.resource.large_preview_open||v.resource.quality_generation!=generation||v.resource.selected_asset.as_ref().is_none_or(|a|a.id!=id){return;}
+                v.resource.quality_busy=false;
+                match result{
+                    Ok(q)=>{
+                        let source=if q.remote{"在线原图"}else{"本地原图"};
+                        v.resource.quality_status=if (q.width,q.height)==(q.shown_width,q.shown_height){format!("{source} · {}×{}",q.width,q.height)}else{format!("{source} · {}×{} · 预览 {}×{}",q.width,q.height,q.shown_width,q.shown_height)};
+                        v.resource.quality=Some(q);
+                        v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));v.resource.zoom_channel=v.resource.zoom_channel.wrapping_add(1);
+                    }
+                    Err(e)=>v.resource.quality_status=e.to_string(),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
     pub(super) fn close_preview(&mut self,cx:&mut Context<Self>){
+        self.clear_quality(cx);
+        self.resource.pending_preview=None;
         self.resource.large_preview_open=false;
         self.resource.drag_at=None;
         cx.notify();
