@@ -5,14 +5,10 @@ use tray_icon::{TrayIconBuilder,Icon,menu::{Menu,MenuItem,MenuEvent}};
 use global_hotkey::{GlobalHotKeyManager,GlobalHotKeyEvent,HotKeyState,hotkey::{HotKey,Modifiers as HotkeyModifiers,Code}};
 
 fn icon()->anyhow::Result<Icon>{
-    let mut rgba=vec![0u8;24*24*4];
-    for y in 0..24 {for x in 0..24{
-        let frame=(3..21).contains(&x)&&(4..20).contains(&y)&&(x==3||x==20||y==4||y==19);
-        let peak=(7..17).contains(&x)&&y==16-(x as i32-12).abs() as usize;
-        let sun=(14..17).contains(&x)&&(7..10).contains(&y);
-        if frame||peak||sun{let i=(y*24+x)*4;rgba[i..i+4].copy_from_slice(&[65,145,105,255]);}
-    }}
-    Ok(Icon::from_rgba(rgba,24,24)?)
+    let bytes=if cfg!(target_os="macos"){include_bytes!("../assets/branding/tray-template.png").as_slice()}else{include_bytes!("../assets/branding/tray-color.png").as_slice()};
+    let image=image::load_from_memory_with_format(bytes,image::ImageFormat::Png)?.into_rgba8();
+    let (w,h)=image.dimensions();
+    Ok(Icon::from_rgba(image.into_raw(),w,h)?)
 }
 pub fn install(window:AnyWindowHandle,desk:Entity<UploadDesk>,cx:&mut App){
     let menu=Menu::new();
@@ -21,7 +17,10 @@ pub fn install(window:AnyWindowHandle,desk:Entity<UploadDesk>,cx:&mut App){
     let quit=MenuItem::new("退出",true,None);
     let tray=(||->anyhow::Result<_>{
         menu.append(&show)?;menu.append(&paste)?;menu.append(&quit)?;
-        Ok(TrayIconBuilder::new().with_icon(icon()?).with_tooltip("Yuque Asset Desk").with_menu(Box::new(menu)).build()?)
+        let builder=TrayIconBuilder::new();
+        #[cfg(target_os="macos")] let builder=builder.with_icon_templated(icon()?);
+        #[cfg(target_os="windows")] let builder=builder.with_icon(icon()?);
+        Ok(builder.with_tooltip("Yuque Asset Desk").with_menu(Box::new(menu)).build()?)
     })();
     let shortcut=desk.read(cx).shortcut().to_owned();
     let hotkey=HotKey::new(Some(if cfg!(target_os="macos"){HotkeyModifiers::META|HotkeyModifiers::SHIFT}else{HotkeyModifiers::CONTROL|HotkeyModifiers::SHIFT}),if shortcut=="I"{Code::KeyI}else{Code::KeyU});

@@ -47,8 +47,7 @@ fn parse(body: &[u8], current: &str, target: Option<&str>) -> Result<State> {
     // Construct fixed, repository-owned links; never open arbitrary response URLs.
     let package = target.and_then(|target| {
         if !matches!(target, "aarch64-apple-darwin" | "x86_64-pc-windows-msvc") { return None; }
-        let zip = format!("yuque-asset-desk-{version}-{target}.zip");
-        let sum = format!("{zip}.sha256");
+        let extensions: &[&str] = if target=="aarch64-apple-darwin" { &["dmg","zip"] } else { &["zip"] };
         let has = |name: &str| {
             data["assets"].as_array().is_some_and(|assets| assets.iter().any(|a| {
                 a["name"].as_str() == Some(name) && a["state"].as_str() == Some("uploaded")
@@ -56,7 +55,11 @@ fn parse(body: &[u8], current: &str, target: Option<&str>) -> Result<State> {
                     && a["browser_download_url"].as_str() == Some(format!("{RELEASES}/download/{tag}/{name}").as_str())
             }))
         };
-        (has(&zip) && has(&sum)).then(|| (format!("{RELEASES}/download/{tag}/{zip}"), format!("{RELEASES}/download/{tag}/{sum}")))
+        extensions.iter().find_map(|ext|{
+            let package=format!("yuque-asset-desk-{version}-{target}.{ext}");
+            let sum=format!("{package}.sha256");
+            (has(&package)&&has(&sum)).then(||(format!("{RELEASES}/download/{tag}/{package}"),format!("{RELEASES}/download/{tag}/{sum}")))
+        })
     });
     Ok(State::Newer(Available { version: version.to_string(), page, package }))
 }
@@ -127,6 +130,19 @@ mod tests {
         let State::Newer(info)=read(release("v0.6.0"),"0.5.0",None).unwrap() else { panic!() };
         assert!(info.package.is_none());
         assert!(parse(b"not json","0.5.0",None).is_err());
+    }
+    #[test]
+    fn mac_prefers_dmg_and_preserves_zip_fallback(){
+        let mut value=release("v0.6.0");
+        let name="yuque-asset-desk-0.6.0-aarch64-apple-darwin.dmg";
+        for asset in [name.to_string(),format!("{name}.sha256")]{
+            value["assets"].as_array_mut().unwrap().push(json!({"name":asset,"size":42,"state":"uploaded","browser_download_url":format!("{RELEASES}/download/v0.6.0/{asset}")}));
+        }
+        let State::Newer(info)=read(value.clone(),"0.5.0",Some("aarch64-apple-darwin")).unwrap() else{panic!()};
+        assert!(info.package.unwrap().0.ends_with(".dmg"));
+        value["assets"].as_array_mut().unwrap().pop();
+        let State::Newer(info)=read(value,"0.5.0",Some("aarch64-apple-darwin")).unwrap() else{panic!()};
+        assert!(info.package.unwrap().0.ends_with(".zip"));
     }
     #[test]
     #[ignore = "explicit live public GitHub API smoke; no account credentials"]

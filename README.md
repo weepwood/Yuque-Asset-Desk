@@ -65,7 +65,7 @@ Windows PowerShell 使用 `$env:KEY="value"` 设置环境变量。不要把 Cook
 
 ## CI
 
-GitHub Actions 覆盖 Windows x64、macOS Apple Silicon 和 macOS Intel。构建产物是未签名 ZIP，不等同于完成终端设备验收。参见 [构建工作流](.github/workflows/build.yml)。
+GitHub Actions 仅覆盖 Windows x64、macOS Apple Silicon。V0.5.0 候选使用 Windows 便携 ZIP（未签名）与 macOS ARM64 DMG（应用 ad-hoc 签名、未经公证）；构建成功不等于完成终端设备验收。参见 [构建工作流](.github/workflows/build.yml)。
 
 更多文档：https://gpui-kit.com
 
@@ -149,4 +149,12 @@ YUQUE_VISUAL_PROFILE=release python3 scripts/visual_qa.py
 V0.4.0 已发布版本保持不变。开发分支的 V0.5.0 聚焦内容优先相册、语义主题、原生菜单和独立设置；设计文档见 [docs/ui-design.md](docs/ui-design.md)。视觉脚本使用 Python Pillow 生成隔离合成测试图片（先安装 Pillow），不使用个人数据。
 
 ### 检查更新
-在设置 → 关于与更新中手动检查 GitHub 正式版本。发现新版本后，下载适配平台的 ZIP 与 SHA256 文件，核对摘要，退出应用并替换程序文件。不会自动安装或修改本地数据。
+在设置 → 关于与更新中手动检查 GitHub 正式版本。发现新版本后，下载适配平台的 DMG 或 ZIP 与 SHA256 文件，核对摘要，退出应用并安装或替换程序文件。不会自动安装或修改本地数据。
+
+### V0.5.0 安装包与品牌资源
+
+<img src="assets/branding/app.png" alt="Yuque Asset Desk 应用图标" width="128">
+
+macOS ARM64：打开 DMG，将左侧应用拖到右侧 Applications，弹出磁盘映像，再从应用程序启动。安装包的应用图标、版本、签名和 Finder 布局由构建脚本核验。ad-hoc 签名不等于 Apple 公证。Windows x64：解压便携 ZIP，运行 EXE。两个产物均附 SHA256。旧版 v0.4.0 ZIP 保持不变。
+
+开发者可运行 `python3 scripts/generate_branding.py`（Pillow 11+，macOS 字体），重新生成自有图标和安装背景；macOS 打包使用 `python -m pip install -r scripts/requirements-dmg.txt`。

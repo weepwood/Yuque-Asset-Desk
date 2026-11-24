@@ -32,7 +32,7 @@ impl UploadDesk {
                 let page=info.page.clone();
                 section=section.child(div().rounded_md().bg(p.surface).p_3().flex().flex_col().gap_2()
                     .child(div().font_medium().text_color(p.accent).child(format!("发现新版本 v{}",info.version)))
-                    .child(div().text_xs().text_color(p.muted).child(if info.package.is_some(){"下载 ZIP 后核对 SHA256，退出应用再手动替换。"}else{"暂无适配当前平台且附校验文件的安装包，请查看发布页。"}))
+                    .child(div().text_xs().text_color(p.muted).child(if info.package.is_some(){"下载后核对 SHA256，退出应用再手动安装或替换。"}else{"暂无适配当前平台且附校验文件的安装包，请查看发布页。"}))
                     .child(div().flex().flex_wrap().items_center().gap_2()
                         .when_some(info.package.clone(),|d,(zip,sum)|d
                             .child(Button::new("download-update").small().primary().label("下载安装包").on_click(cx.listener(move|_,_,_,cx|cx.open_url(&zip))))

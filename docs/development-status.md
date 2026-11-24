@@ -126,3 +126,9 @@
 - 设置首部新增关于与更新，当前 Cargo 版本、手动检查、检查中、无更新、发现新版本、网络失败及历史版本入口。独立 reqwest 客户端仅读取固定公开 GitHub Release API，不发送语雀凭据。SemVer、防降级、拒绝草稿及预发行，按两种正式平台匹配 ZIP/SHA256；缺资产时仅提供 Release 页面。只打开下载链接，不自动安装或校验已下载的文件。
 - 本地常规 28/28、QA 34/34（各含一个默认忽略的公网测试）；显式实际公网测试 1/1 成功，返回 Current("0.4.0")，候选 0.5.0 不提示降级。深浅主题更新可用状态合成 0.6.0 截图及其他基础图共6张成功，已审查两张更新截图。未发布 0.6.0、未执行 Windows 真机或真实新版本下载安装测试。
 - 需以最新提交重新执行双平台 CI 后发布 V0.5.0，不能混用旧产物。
+
+## V0.5.0 品牌资源与 macOS DMG（基线 ebcd2d5）
+- 新增原创 1024px PNG、ICO、ICNS、macOS 单色托盘模板、Windows 彩色托盘和 640×420 Finder 背景；均在 assets/branding，可使用 scripts/generate_branding.py 再生成。Windows build.rs 嵌入 ICO/产品版本；CI 验证 PE 图标/版本资源类型及实际产品名版本。macOS Bundle 写入 ICNS 并声明 CFBundleIconFile，保留 ad-hoc 签名。
+- 采用 dmgbuild 1.6.7、ds_store 1.3.4、mac_alias 2.2.4，固定安装布局（165,205 / 475,205），Applications 指向 /Applications。正式交付改为 Windows x64 ZIP、macOS ARM64 DMG 及各自 SHA256；更新检查优先 DMG、旧 ZIP 回退；CI 加入 assets/build.rs 路径触发。修复 verify-only 重写校验摘要问题；故意错误摘要测试确认拒绝且不重写。
+- 本地 QA 35 通过、1 公网测试默认忽略；正式非 QA Release 构建通过。初次 DMG 验证脚本错误假设背景在子目录，实际为卷根 .background.png，已修复并复验 DS_Store、背景实际引用、卷图标、App 图标/版本/架构/签名及 Applications 链接。最终 DMG 8716435 bytes SHA256 d940e67bbcec6d14fe2c5c951ad846731c5e750f7dae7deba87e2e582ac2e0df。独立 verify-only 成功；本地 dist/branding-release。scripts/smoke_dmg.py 从只读 DMG 复制至隔离目录、签名、窗口 1160×832、数据库、托盘/快捷键注册通过；有已知 sandbox_extension 非致命警告。首次 smoke 未显式启用隔离桌面集成，修正测试环境后成功。没有安装至用户 Applications，没有真实账号上传。
+- macOS 屏幕录制权限未授权，未捕获真实 Finder 窗口；仅审查实际背景 PNG、主图标与挂载后布局元数据，未宣称物理拖拽安装或 Gatekeeper 公证通过。Python pip 默认信任链错误，使用系统 /etc/ssl/cert.pem 保持 TLS 验证完成安装。旧候选 ebcd2d5 双平台 CI 45445083095 均通过，新候选仍需完整双平台 CI，未发布。

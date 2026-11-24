@@ -8785,6 +8785,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "directories",
+ "embed-resource",
  "global-hotkey",
  "gpui-kit",
  "gpui-pre",

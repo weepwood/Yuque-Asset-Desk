@@ -93,3 +93,8 @@
 - 设置页「关于与更新」由 src/desk/updates.rs 实现，src/update.rs 独立读取固定 GitHub 仓库 releases/latest。仅用户主动点击时访问公开 API，独立无凭据客户端、12s 请求超时、1MiB 响应限制，不跟随重定向，不自动下载/安装。SemVer 比较，拒绝预发行和降级。
 - 仅匹配 Windows x64/macOS ARM64 对应 ZIP 及 SHA256 文件，检查 uploaded 状态、非空大小、固定仓库下载地址；缺资产时只提供 Release 页面。手动下载、手动核对 SHA256、退出后替换，不覆盖应用或数据库，不把提供校验文件视为已完成校验。
 - 测试使用合成元数据；显式运行 cargo test --locked public_release_smoke -- --ignored --nocapture 可验证公开 API，不纳入常规联网 CI。
+
+## 应用品牌与安装包规范
+- 原创品牌资源在 assets/branding，使用 scripts/generate_branding.py 生成并提交；禁止引用第三方商业品牌图标或运行时请求图标。macOS ICNS 写入 .app/Contents/Resources 和 CFBundleIconFile；Windows 使用现有锁定 embed-resource 编译 EXE 的多尺寸 ICO 和 VERSIONINFO；macOS 托盘使用透明单色模板、Windows 彩色。
+- 从 V0.5.0 起正式产物仅 Windows x64 ZIP 与 macOS ARM64 DMG，均附原始 SHA256。DMG 由锁定 dmgbuild 及依赖生成固定 Finder 布局（640×420、应用左、Applications 右、真实符号链接），不用 GUI 自动化生成布局。应用 ad-hoc 签名，未 Apple 公证；不篡改系统安全设置。
+- scripts/package_release.py --verify-only 先比较已有 SHA256，不重写校验文件；DMG 校验 hdiutil、实际挂载、Info.plist、ICNS、arm64、签名、Applications 链接和 DS_Store 坐标；Windows ZIP 校验 CRC、PE x64、图标与版本资源类型。更新检查优先 DMG，旧 macOS ZIP 回退，仅开放固定仓库完整资产组合。
