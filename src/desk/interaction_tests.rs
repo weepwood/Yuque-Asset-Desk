@@ -53,9 +53,21 @@ fn native_clicks_switch_resource_and_task_views() {
     assert!(app.read(|cx|desk.read(cx).data_usage.is_some()));
     // A pending preference snapshot must finish before destructive operations.
     app.executor().advance_clock(std::time::Duration::from_millis(250));app.run_until_parked();
+    // Native click on the new read-only account audit; no image assets in this fixture.
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let audit=ui.debug_bounds("audit-previews").unwrap();
+    ui.simulate_click(audit.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.read(|cx|{let worker=desk.read(cx).preview_worker.read(cx);!worker.busy&&worker.audit.as_ref().is_some_and(|(_,r)|r.total==0&&r.scanned==0&&!r.interrupted)}));
     // Arm, but do not confirm a destructive operation. No credentials touched.
     ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
-    let bounds=ui.debug_bounds("arm-reset").unwrap();ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
+    let mut bounds=ui.debug_bounds("arm-reset").unwrap();
+    if bounds.center().y>=px(740.){
+        ui.simulate_event(ScrollEvent{position:point(px(700.),px(650.)),delta:ScrollDelta::Pixels(point(px(0.),px(-420.))),..Default::default()});
+        app.run_until_parked();ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+        bounds=ui.debug_bounds("arm-reset").unwrap();
+    }
+    assert!(bounds.center().y<px(800.),"reset control must be reachable after scroll: {bounds:?}");
+    ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
     assert!(app.read(|cx|desk.read(cx).reset_armed));
     assert!(root.join("assets.db").exists());
     app.update(|cx|desk.update(cx,|v,cx|{v.navigate_page(Page::Account,cx);}));
@@ -1061,6 +1073,12 @@ fn upload_review_requires_confirmation_and_preserves_sources(){
     assert_eq!(read.jobs("demo","local",None).unwrap().len(),1);
     assert_eq!(read.pending_previews().unwrap(),0);
     assert!(app.read(|cx|!desk.read(cx).preview_worker.read(cx).busy));
+    std::fs::write(&thumbnail,b"corrupt again").unwrap();
+    app.update(|cx|desk.update(cx,|v,cx|v.audit_previews(true,cx)));
+    app.run_until_parked();
+    assert!(crate::preview::valid_cache(&thumbnail));
+    assert_eq!(read.pending_previews().unwrap(),0);
+    assert!(app.read(|cx|{let worker=desk.read(cx).preview_worker.read(cx);!worker.busy&&worker.audit.as_ref().is_some_and(|(_,r)|r.total==1&&r.corrupt==1&&r.scheduled==1&&!r.interrupted)}));
     app.update(|cx|desk.update(cx,|v,cx|v.review_files(vec![source.clone()],cx)));app.run_until_parked();
     app.update(|cx|desk.update(cx,|v,cx|v.apply_account(None,cx)));
     app.run_until_parked();assert!(app.read(|cx|desk.read(cx).upload_review.is_none()));

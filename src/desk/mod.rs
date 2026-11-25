@@ -369,6 +369,7 @@ impl UploadDesk {
         let preview_events=cx.subscribe(&preview_worker,|v,_,event:&preview_worker::PreviewEvent,cx|{
             match event{
                 preview_worker::PreviewEvent::Completed(item)=>v.apply_preview_completion(item,cx),
+                preview_worker::PreviewEvent::Idle=>v.refresh_jobs(cx),
                 preview_worker::PreviewEvent::Error(e)=>{v.status=format!("预览任务暂停，稍后可重试：{e}");cx.notify();},
                 preview_worker::PreviewEvent::Scheduled(n)=>{v.status=format!("已加入 {n} 个本地预览修复任务");v.refresh_jobs(cx);cx.notify();},
                 preview_worker::PreviewEvent::RepairFinished{processed,failed}=>{v.status=format!("本轮后台预览：就绪 {} · 失败 {failed}",processed.saturating_sub(*failed));cx.notify();}

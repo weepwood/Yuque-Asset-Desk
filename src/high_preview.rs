@@ -1,10 +1,9 @@
 //! Explicitly requested, single-image preview. No persistent high-resolution cache.
 use crate::storage::{Asset,Storage};
-use anyhow::{Context,Result,ensure};
+use anyhow::{Result,ensure};
 use sha2::{Digest,Sha256};
-use std::{io::{Cursor,Read},path::Path, sync::Mutex,time::Duration};
+use std::{io::Read,path::Path, sync::Mutex,time::Duration};
 const INPUT:u64=32*1024*1024;
-const PIXELS:u64=24_000_000;
 const EDGE:u32=2560;
 static WORK:Mutex<()>=Mutex::new(());
 #[cfg(test)]
@@ -25,22 +24,7 @@ fn verified(bytes:&[u8],asset:&Asset)->Result<()>{
 }
 fn decode(bytes:Vec<u8>,asset:&Asset,remote:bool)->Result<QualityImage>{
     if !remote{verified(&bytes,asset)?;}
-    crate::preview::unsupported_modern_format(&bytes)?;
-    if crate::preview::is_svg(&bytes){
-        let (decoded,width,height)=crate::preview::raster_svg(&bytes,EDGE)?;
-        let mut rgba=decoded.into_rgba8();let (shown_width,shown_height)=rgba.dimensions();
-        for p in rgba.pixels_mut(){p.0.swap(0,2);}
-        return Ok(QualityImage{image:std::sync::Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(rgba)])),width,height,shown_width,shown_height,remote});
-    }
-    let reader=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
-    let format=reader.format().context("无法识别图片格式")?;
-    ensure!(matches!(format,image::ImageFormat::Png|image::ImageFormat::Jpeg|image::ImageFormat::WebP|image::ImageFormat::Gif|image::ImageFormat::Bmp),"不支持该预览格式");
-    let (width,height)=reader.into_dimensions()?;
-    ensure!(width>0&&height>0&&width<=16384&&height<=16384&&u64::from(width)*u64::from(height)<=PIXELS,"图片超过安全解码限制（2400 万像素 / 单边 16384）");
-    let mut reader=image::ImageReader::with_format(Cursor::new(bytes),format);
-    let mut limits=image::Limits::default();limits.max_image_width=Some(16384);limits.max_image_height=Some(16384);limits.max_alloc=Some(128*1024*1024);reader.limits(limits);
-    let decoded=reader.decode()?;
-    let decoded=if width>EDGE||height>EDGE{decoded.resize(EDGE,EDGE,image::imageops::FilterType::Triangle)}else{decoded};
+    let (decoded,width,height)=crate::preview::decode_bounded(bytes,EDGE)?;
     let mut rgba=decoded.into_rgba8();
     let (shown_width,shown_height)=rgba.dimensions();
     // GPUI RenderImage expects BGRA, not RGBA.
@@ -52,7 +36,7 @@ fn read_local(path:&Path,asset:&Asset)->Result<Vec<u8>>{
     ensure!(meta.is_file()&&!meta.file_type().is_symlink()&&meta.len()<=INPUT,"非普通图片文件或过大");
     let bytes=read_bounded(std::fs::File::open(path)?)?;verified(&bytes,asset)?;Ok(bytes)
 }
-fn remote_url(raw:&str)->Result<url::Url>{
+pub(crate) fn remote_url(raw:&str)->Result<url::Url>{
     let mut u=url::Url::parse(raw).map_err(|_|anyhow::anyhow!("资源链接无效"))?;
     ensure!(u.scheme()=="https"&&u.host_str()==Some("cdn.nlark.com")&&u.port_or_known_default()==Some(443)&&u.username().is_empty()&&u.password().is_none()&&u.path().starts_with("/yuque/"),"仅支持语雀 CDN HTTPS 原图，请在浏览器打开其他链接");
     u.set_fragment(None);Ok(u)
@@ -94,6 +78,7 @@ pub fn load(storage:&Storage,asset:&Asset,remote:bool)->Result<QualityImage>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    use std::io::Cursor;
     #[test]
     fn quality_local_hash_and_bgra(){
         let _serial=TEST_LOCK.lock().unwrap();

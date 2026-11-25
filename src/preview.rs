@@ -22,6 +22,7 @@ fn legacy_path(root:&Path, asset:&Asset) -> PathBuf {
 }
 
 fn read_bounded(path:&Path) -> Result<Vec<u8>> {
+    ensure!(std::fs::symlink_metadata(path)?.file_type().is_file(),"预览来源不是普通文件");
     let mut bytes=Vec::new();
     std::fs::File::open(path)?.take(MAX_INPUT+1).read_to_end(&mut bytes)?;
     ensure!(!bytes.is_empty() && bytes.len() as u64<=MAX_INPUT,"图片超过本地预览输入限制");
@@ -75,24 +76,31 @@ pub(crate) fn raster_svg(bytes:&[u8],edge:u32)->Result<(image::DynamicImage,u32,
     let rgba=image::RgbaImage::from_raw(rw,rh,pixels.flat_map(|p|[p.red(),p.green(),p.blue(),p.alpha()]).collect()).context("SVG 像素格式无效")?;
     Ok((image::DynamicImage::ImageRgba8(rgba),w.ceil() as u32,h.ceil() as u32))
 }
-fn decode_small(bytes:Vec<u8>,edge:u32) -> Result<image::DynamicImage> {
+/// Shared bounded decode path for draft, offline thumbnail and quality viewer.
+/// Serializes expensive decodes across lanes without holding the upload worker.
+static DECODE_LOCK:std::sync::Mutex<()>=std::sync::Mutex::new(());
+pub(crate) fn decode_bounded(bytes:Vec<u8>,edge:u32)->Result<(image::DynamicImage,u32,u32)>{
+    use image::ImageDecoder;
     ensure!(!bytes.is_empty()&&bytes.len() as u64<=MAX_INPUT,"图片超过预览输入限制");
+    let _guard=DECODE_LOCK.lock().map_err(|_|anyhow::anyhow!("图片解码锁异常"))?;
     unsupported_modern_format(&bytes)?;
-    let decoded=if is_svg(&bytes){raster_svg(&bytes,edge)?.0}else{
-    let reader=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
+    if is_svg(&bytes){return raster_svg(&bytes,edge);}
+    let mut reader=image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     let format=reader.format().context("无法识别图片格式")?;
-    let (w,h)=reader.into_dimensions().context("图片格式不支持或内容损坏")?;
-    ensure!(w>0&&h>0&&w<=16384&&h<=16384&&u64::from(w)*u64::from(h)<=24_000_000,"图片超过安全解码限制（2400万像素 / 单边16384）");
-    let mut reader=image::ImageReader::with_format(Cursor::new(bytes),format);
+    ensure!(matches!(format,image::ImageFormat::Png|image::ImageFormat::Jpeg|image::ImageFormat::WebP|image::ImageFormat::Gif|image::ImageFormat::Bmp|image::ImageFormat::Tiff|image::ImageFormat::Ico),"不支持该预览格式");
     let mut limits=image::Limits::default();
-    limits.max_image_width=Some(16384);
-    limits.max_image_height=Some(16384);
-    limits.max_alloc=Some(128*1024*1024);
-    reader.limits(limits);
-    reader.decode().context("图片格式不支持、内容损坏或超出安全解码限制")?};
-    let small=if decoded.width()>edge || decoded.height()>edge {decoded.thumbnail(edge,edge)}else{decoded};
-    Ok(small)
+    limits.max_image_width=Some(16384);limits.max_image_height=Some(16384);limits.max_alloc=Some(128*1024*1024);
+    reader.limits(limits.clone());
+    let mut decoder=reader.into_decoder().context("图片格式不支持、内容损坏或尺寸超限")?;
+    let (w,h)=decoder.dimensions();
+    ensure!(w>0&&h>0&&w<=16384&&h<=16384&&u64::from(w)*u64::from(h)<=24_000_000,"图片超过安全解码限制（2400万像素 / 单边16384）");
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    let decoded=image::DynamicImage::from_decoder(decoder).context("图片内容损坏或超出安全解码限制")?;
+    let small=if w>edge||h>edge{decoded.thumbnail(edge,edge)}else{decoded};
+    Ok((small,w,h))
 }
+fn decode_small(bytes:Vec<u8>,edge:u32)->Result<image::DynamicImage>{Ok(decode_bounded(bytes,edge)?.0)}
 pub(crate) fn draft_image(bytes:Vec<u8>)->Result<std::sync::Arc<gpui_kit::RenderImage>>{
     let mut rgba=decode_small(bytes,384)?.into_rgba8();
     for p in rgba.pixels_mut(){p.0.swap(0,2);}
@@ -243,6 +251,43 @@ fn recover_remote_bytes(storage:&crate::storage::Storage,asset:&Asset,bytes:Vec<
     Ok(path)
 }
 
+#[derive(Clone,Default,Debug)]
+pub(crate) struct AuditReport{
+    pub total:usize,pub scanned:usize,pub ready:usize,pub missing:usize,pub corrupt:usize,
+    pub pending:usize,pub unsupported_link:usize,pub scheduled:usize,pub cancelled:bool,pub interrupted:bool,
+}
+impl AuditReport{
+    pub fn summary(&self)->String{
+        format!("{} {}/{} · 有效 {} · 缺失 {} · 损坏/不可读 {} · 待处理 {} · 不支持在线恢复的链接 {} · 新增修复 {}",
+            if self.interrupted{"扫描异常中断"}else if self.cancelled{"已停止"}else{"已检查"},self.scanned,self.total,self.ready,self.missing,self.corrupt,self.pending,self.unsupported_link,self.scheduled)
+    }
+}
+/// Inspect only local cache bytes. Link checks are syntactic/policy checks, not
+/// reachability checks. No source files are read or network requests made.
+pub(crate) fn audit_page(storage:&crate::storage::Storage,provider:&str,owner:&str,after:i64,upper:i64,mut report:AuditReport,cancel:&std::sync::atomic::AtomicBool,repair:bool)->Result<(i64,AuditReport,bool)>{
+    use std::sync::atomic::Ordering;
+    let rows=storage.preview_audit_page(provider,owner,after,upper)?;
+    let mut cursor=after;let mut ids=Vec::new();
+    let done=rows.len()<64;
+    for (asset,pending) in rows{
+        if cancel.load(Ordering::Relaxed){report.cancelled=true;break;}
+        cursor=asset.id;report.scanned+=1;
+        if asset.provider=="yuque"&&crate::high_preview::remote_url(&asset.url).is_err(){report.unsupported_link+=1;}
+        if pending{report.pending+=1;continue;}
+        let path=cached_path(storage.data_dir(),&asset);
+        if valid_cache(&path){report.ready+=1;continue;}
+        match std::fs::symlink_metadata(&path){
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>report.missing+=1,
+            _=>report.corrupt+=1,
+        }
+        ids.push(asset.id);
+    }
+    if cancel.load(Ordering::Relaxed){report.cancelled=true;}
+    if repair&&!report.cancelled{report.scheduled+=storage.schedule_previews(provider,owner,&ids)?;}
+    let finished=done||cursor>=upper||report.cancelled;
+    Ok((cursor,report,finished))
+}
+
 /// One durable task at a time. No network, credentials or upload retries.
 pub(crate) struct PreviewCompletion{pub id:i64,pub found:Option<(PathBuf,f32)>,pub changed:bool,pub settled:bool}
 pub(crate) fn process_next(storage:&crate::storage::Storage)->Result<Option<PreviewCompletion>>{
@@ -323,6 +368,46 @@ pub fn clear_cache(root:&Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_decode_supports_real_raster_formats_and_rejects_bad_content(){
+        for format in [image::ImageFormat::Png,image::ImageFormat::Jpeg,image::ImageFormat::WebP,image::ImageFormat::Gif,image::ImageFormat::Bmp,image::ImageFormat::Tiff,image::ImageFormat::Ico]{
+            let mut bytes=Vec::new();
+            let fixture=if format==image::ImageFormat::Ico{image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(64,32,image::Rgba([20,80,150,255])))}else{image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64,32,image::Rgb([20,80,150])))};
+            fixture.write_to(&mut Cursor::new(&mut bytes),format).unwrap();
+            let (decoded,w,h)=decode_bounded(bytes.clone(),16).unwrap();
+            assert_eq!((w,h,decoded.width(),decoded.height()),(64,32,16,8),"{format:?}");
+            assert!(draft_image(bytes).is_ok(),"{format:?}");
+        }
+        assert!(decode_bounded(vec![1,2,3],160).is_err());
+        let mut bytes=Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(16385,1)).write_to(&mut Cursor::new(&mut bytes),image::ImageFormat::Png).unwrap();
+        assert!(decode_bounded(bytes,160).is_err());
+    }
+    #[test]
+    fn account_audit_paginates_is_read_only_and_respects_cancel(){
+        use std::sync::atomic::{AtomicBool,Ordering};
+        let root=std::env::temp_dir().join(format!("yuque-audit-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=crate::storage::Storage::new(root.join("assets.db")).unwrap();
+        let make=|i,owner:&str|db.insert_or_get(&crate::storage::NewAsset{name:format!("{i}.png"),bytes:1,category:"image".into(),provider:"yuque".into(),owner_id:owner.into(),url:if i==2{"https://example.invalid/2.png".into()}else{format!("https://cdn.nlark.com/yuque/0/{i}.png")},filekey:String::new(),sha256:format!("{i:064x}")}).unwrap();
+        let assets=(1..=130).map(|i|make(i,"123")).collect::<Vec<_>>();
+        let other=make(1,"456");
+        let cache=cached_path(&root,&assets[0]);std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        image::RgbImage::new(32,16).save(&cache).unwrap();
+        std::fs::write(cached_path(&root,&assets[1]),b"bad").unwrap();
+        let (upper,total)=db.preview_audit_bounds("yuque","123").unwrap();assert_eq!(total,130);
+        let late=make(131,"123");
+        let cancel=AtomicBool::new(false);let mut report=AuditReport{total,..Default::default()};let mut cursor=0;
+        loop{let (next,r,done)=audit_page(&db,"yuque","123",cursor,upper,report,&cancel,false).unwrap();cursor=next;report=r;if done{break;}}
+        assert_eq!((report.scanned,report.ready,report.corrupt,report.missing,report.unsupported_link,report.scheduled),(130,1,1,128,1,0));
+        assert_eq!(db.pending_previews().unwrap(),0);assert_eq!(std::fs::read(cached_path(&root,&assets[1])).unwrap(),b"bad");
+        let (cursor,report,done)=audit_page(&db,"yuque","123",0,upper,AuditReport{total,..Default::default()},&cancel,true).unwrap();
+        assert!(!done);assert_eq!(report.scheduled,63);assert_eq!(db.pending_previews().unwrap(),63);
+        cancel.store(true,Ordering::Relaxed);
+        let (_,report,done)=audit_page(&db,"yuque","123",cursor,upper,report,&cancel,true).unwrap();
+        assert!(done&&report.cancelled);assert_eq!(report.scanned,64);assert_eq!(db.pending_previews().unwrap(),63);
+        assert!(!db.preview_pending(other.id).unwrap());assert!(!db.preview_pending(late.id).unwrap());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn svg_long_image_and_remote_transformed_cache_recovery(){
         let root=std::env::temp_dir().join(format!("yuque-v09-formats-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

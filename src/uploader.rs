@@ -200,7 +200,7 @@ fn detected_category(snapshot:&Path,original:&Path)->String{
 }
 pub fn asset_category(path: &Path) -> String {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "heic" | "heif" | "bmp" | "svg") {
+    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "heic" | "heif" | "bmp" | "svg" | "tif" | "tiff" | "ico") {
         "image".into()
     } else if matches!(ext.as_str(), "mp4" | "mov" | "webm") { "video".into() }
     else { "attachment".into() }
@@ -421,6 +421,45 @@ mod tests {
         assert!(!db.preview_pending(a.id).unwrap());
         let job=db.jobs("yuque","123",None).unwrap().remove(0);assert_eq!(job.state,"done");assert_eq!(job.preview.unwrap().0,"failed");
         assert!(db.recoverable("yuque","123").unwrap().is_empty());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn concurrent_upload_preview_pipeline_drains_without_orphans(){
+        use std::sync::atomic::{AtomicBool,Ordering};
+        let root=std::env::temp_dir().join(format!("yuque-concurrent-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let done=Arc::new(AtomicBool::new(false));
+        let worker_db=db.clone();let stop=done.clone();
+        let worker=std::thread::spawn(move||{
+            let mut count=0;
+            loop{
+                match crate::preview::process_next(&worker_db).unwrap(){
+                    Some(result)=>{assert!(result.found.is_some());if result.settled{count+=1;}},
+                    None if stop.load(Ordering::Acquire)&&worker_db.pending_previews().unwrap()==0=>break,
+                    None=>std::thread::sleep(std::time::Duration::from_millis(2)),
+                }
+            }
+            count
+        });
+        let cfg=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+        let start=std::time::Instant::now();
+        let result=(||->Result<()>{
+            for i in 0..120u8{
+                let path=root.join(format!("source-{i}.png"));
+                image::RgbImage::from_pixel(256,128,image::Rgb([i,80,150])).save(&path)?;
+                let job=db.enqueue("demo","local",&[path.clone()]).context("concurrent enqueue")?[0].0;db.job_state(job,"running","").context("concurrent running")?;
+                let result=upload_with_progress(&path,&cfg,&db,Arc::new(TransferProgress::default()),Some(job)).context("concurrent commit")?;
+                anyhow::ensure!(!result.duplicate,"unexpected duplicate");
+                std::fs::remove_file(path)?;
+                anyhow::ensure!(db.retained_preview_bytes()?<=128*1024*1024,"retained budget exceeded");
+            }
+            Ok(())
+        })();
+        done.store(true,Ordering::Release);let count=worker.join().unwrap();result.unwrap();
+        assert_eq!(count,120);assert_eq!(db.pending_previews().unwrap(),0);assert_eq!(db.retained_preview_bytes().unwrap(),0);
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),0);
+        assert_eq!(std::fs::read_dir(root.join("album-previews")).unwrap().count(),120);
+        eprintln!("CONCURRENT_PIPELINE count={count} elapsed_ms={}",start.elapsed().as_millis());
         drop(db);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

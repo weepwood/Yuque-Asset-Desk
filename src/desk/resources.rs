@@ -185,6 +185,11 @@ impl UploadDesk {
         if ids.is_empty(){self.status="当前可见范围没有本账号图片".into();cx.notify();return;}
         self.repair_local_previews(ids,cx);
     }
+    pub(super) fn audit_previews(&mut self,repair:bool,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy||self.account_busy(cx)||self.backup_busy||self.resetting||self.reset_pending{return;}
+        let storage=self.storage.clone();let provider=self.config.provider().to_owned();let owner=self.config.owner_id().to_owned();
+        self.preview_worker.update(cx,|v,cx|v.scan(storage,provider,owner,repair,cx));
+    }
     pub(super) fn repair_local_previews(&mut self,ids:Vec<i64>,cx:&mut Context<Self>){
         if self.preview_worker.read(cx).busy||self.account_busy(cx)||self.backup_busy||self.resetting{return;}
         let storage=self.storage.clone();let provider=self.config.provider().to_owned();let owner=self.config.owner_id().to_owned();
@@ -213,7 +218,10 @@ impl UploadDesk {
                 self.resource.preview_error=Some("本地预览生成失败，可在任务中心重试或主动恢复在线缩略图".into());
             }
         }
-        self.refresh_jobs(cx);cx.notify();
+        // Only refresh visible job history when an affected row is present.
+        // The worker emits Idle for a final refresh after the batch.
+        if self.page==Page::Jobs&&self.job_history.read(cx).jobs.iter().any(|j|j.result_asset_id==Some(id)){self.refresh_jobs(cx);}
+        cx.notify();
     }
 
     pub(super) fn apply_thumbnail_batch(&mut self,event:&thumbnail_model::ThumbnailBatch,cx:&mut Context<Self>){

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 #[derive(Debug, Clone)]
 pub struct Asset {
@@ -306,7 +306,7 @@ Restore into a NEW data directory only; see README.
 
     pub fn toggle_favorite(&self,asset:&Asset) -> Result<bool> {
         let mut conn=self.open()?;
-        let tx=conn.transaction()?;
+        let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND provider=?2 AND owner_id=?3)",params![asset.id,asset.provider,asset.owner_id],|r|r.get(0))?;
         anyhow::ensure!(exists,"资源已变化");
         let removed=tx.execute("DELETE FROM asset_favorites WHERE asset_id=?1",[asset.id])?;
@@ -373,7 +373,7 @@ Restore into a NEW data directory only; see README.
             .map(str::trim).filter(|s| !s.is_empty()).collect();
         anyhow::ensure!(tags.len() <= 20 && tags.iter().all(|s| s.chars().count() <= 40 && s.split('/').all(|part|!part.trim().is_empty())), "最多 20 个标签，每个不超过 40 字");
         let mut conn = self.open()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM asset_tags WHERE asset_id=?1", [id])?;
         for tag in tags {
             tx.execute("INSERT INTO asset_tags(asset_id,tag) VALUES(?1,?2)", params![id, tag])?;
@@ -395,7 +395,7 @@ Restore into a NEW data directory only; see README.
         let tags:std::collections::BTreeSet<_>=text.split([',','，']).map(str::trim).filter(|s|!s.is_empty()).collect();
         anyhow::ensure!(!ids.is_empty() && ids.len()<=150 && !tags.is_empty() && tags.len()<=20 && tags.iter().all(|t|t.chars().count()<=40 && t.split('/').all(|s|!s.trim().is_empty())), "标签或选中资源不符合限制");
         let mut conn=self.open()?;
-        let tx=conn.transaction()?;
+        let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (provider,owner)=scope.map_or((None,None),|(p,o)|(Some(p),Some(o)));
         for id in ids {
             let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND (?2 IS NULL OR (provider=?2 AND owner_id=?3)))",params![id,provider,owner],|r|r.get(0))?;
@@ -428,9 +428,12 @@ Restore into a NEW data directory only; see README.
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    // Acquire the writer reservation before read-then-write checks. A deferred
+    // WAL transaction can fail immediately with SQLITE_BUSY_SNAPSHOT when the
+    // preview worker commits between the check and the INSERT.
     pub fn enqueue(&self, provider: &str, owner: &str, files: &[PathBuf]) -> Result<Vec<(i64, PathBuf)>> {
         let mut conn = self.open()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut jobs = Vec::new();
         for path in files {
             let text = path.to_str().context("任务路径不是有效 UTF-8")?;
@@ -514,8 +517,18 @@ Restore into a NEW data directory only; see README.
     pub fn snapshot_referenced(&self,name:&str)->Result<bool>{
         Ok(self.open()?.query_row("SELECT EXISTS(SELECT 1 FROM preview_work WHERE snapshot=?1 UNION ALL SELECT 1 FROM receipt_preview WHERE snapshot=?1)",[name],|r|r.get(0))?)
     }
+    /// A fixed upper ID bounds the audit even while uploads append new assets.
+    pub fn preview_audit_bounds(&self,provider:&str,owner:&str)->Result<(i64,usize)>{
+        Ok(self.open()?.query_row("SELECT COALESCE(max(id),0),count(*) FROM assets WHERE provider=?1 AND owner_id=?2 AND category='image'",params![provider,owner],|r|Ok((r.get(0)?,r.get(1)?)))?)
+    }
+    pub fn preview_audit_page(&self,provider:&str,owner:&str,after:i64,upper:i64)->Result<Vec<(Asset,bool)>>{
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at,w.asset_id IS NOT NULL FROM assets a LEFT JOIN preview_work w ON w.asset_id=a.id WHERE a.provider=?1 AND a.owner_id=?2 AND a.category='image' AND a.id>?3 AND a.id<=?4 ORDER BY a.id LIMIT 64")?;
+        let rows=stmt.query_map(params![provider,owner,after,upper],|r|Ok((map_row(r)?,r.get(10)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
     pub fn schedule_previews(&self,provider:&str,owner:&str,ids:&[i64])->Result<usize>{
-        let mut conn=self.open()?;let tx=conn.transaction()?;
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut count=0;
         for id in ids.iter().take(100){
             let n=tx.execute("INSERT OR IGNORE INTO preview_work(asset_id,snapshot) SELECT id,'' FROM assets WHERE id=?1 AND provider=?2 AND owner_id=?3 AND category='image'",params![id,provider,owner])?;
@@ -530,7 +543,7 @@ Restore into a NEW data directory only; see README.
         Ok(self.open()?.query_row("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at,w.snapshot FROM preview_work w JOIN assets a ON a.id=w.asset_id ORDER BY w.asset_id LIMIT 1",[],|r|Ok((map_row(r)?,r.get(10)?))).optional()?)
     }
     pub fn finish_preview(&self,id:i64,snapshot:&str,state:&str,error:&str,hash:Option<u64>)->Result<bool>{
-        let mut conn=self.open()?;let tx=conn.transaction()?;
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let n=tx.execute("DELETE FROM preview_work WHERE asset_id=?1 AND snapshot=?2",params![id,snapshot])?;
         if n==0{return Ok(false);}
         tx.execute("INSERT INTO asset_preview_state(asset_id,state,error) VALUES(?1,?2,?3) ON CONFLICT(asset_id) DO UPDATE SET state=excluded.state,error=excluded.error",params![id,state,error])?;
@@ -576,7 +589,7 @@ Restore into a NEW data directory only; see README.
     }
     pub fn record_receipt_with_preview(&self,entry:&NewAsset,source:&std::path::Path,job:i64,snapshot:Option<&str>)->Result<()>{
         let path=source.to_str().context("来源路径不是有效 UTF-8")?;
-        let mut conn=self.open()?;let tx=conn.transaction()?;
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let n=tx.execute("INSERT INTO upload_receipts(job_id,name,bytes,category,provider,owner_id,url,filekey,sha256,source)
             SELECT id,?2,?3,?4,?5,?6,?7,?8,?9,?10 FROM upload_jobs WHERE id=?1 AND provider=?5 AND owner_id=?6 AND state='running' AND path=?10",
             params![job,entry.name,entry.bytes,entry.category,entry.provider,entry.owner_id,entry.url,entry.filekey,entry.sha256,path])?;
@@ -608,7 +621,7 @@ Restore into a NEW data directory only; see README.
         self.commit_asset_with_preview(entry,source,job,None)
     }
     pub fn commit_asset_with_preview(&self,entry:&NewAsset,source:Option<&std::path::Path>,job:Option<i64>,snapshot:Option<&str>)->Result<Asset>{
-        let mut conn=self.open()?;let tx=conn.transaction()?;
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             "INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256,filekey)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(provider,owner_id,sha256) DO NOTHING",

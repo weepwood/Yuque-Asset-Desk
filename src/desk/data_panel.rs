@@ -167,6 +167,17 @@ impl UploadDesk{
                 .child(div().flex().justify_between().child("可安全清理").child(format!("{} · {} 项",bytes(u.reclaimable),u.candidates)))
                 .child(div().text_xs().text_color(p.muted).child(format!("未完成任务 {} · 已保存账号 {}",u.unfinished,u.accounts))));
         }
+        let worker=self.preview_worker.read(cx);
+        let report=worker.audit.as_ref().filter(|((provider,owner),_)|provider==self.config.provider()&&owner==self.config.owner_id()).map(|(_,r)|r.summary());
+        panel=panel.child(div().rounded_md().bg(p.surface).p_3().flex().flex_col().gap_2()
+            .child(div().font_semibold().child("当前账号 · 全库图片诊断"))
+            .child(div().text_xs().text_color(p.muted).child("仅诊断检查本地缩略图和链接策略，不读取原图；修复尝试本地来源。均不联网、不重新上传。"))
+            .child(div().flex().flex_wrap().gap_2()
+                .child(div().debug_selector(||"audit-previews".into()).child(Button::new("audit-previews").small().label("仅诊断").disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.audit_previews(false,cx)))))
+                .child(div().debug_selector(||"audit-repair".into()).child(Button::new("audit-repair").small().label("诊断并修复").disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.audit_previews(true,cx)))))
+                .when(worker.audit_running,|d|d.child(Button::new("audit-stop").small().ghost().label("停止扫描").on_click(cx.listener(|v,_,_,cx|v.preview_worker.update(cx,|m,cx|m.stop_scan(cx)))))))
+            .when(worker.audit_running,|d|d.child(div().text_xs().text_color(p.muted).child("扫描中 · 已入队修复仍会完成")))
+            .when_some(report,|d,text|d.child(div().text_xs().child(text)).child(div().text_xs().text_color(p.muted).child("统计为扫描时状态；修复后可再次诊断。链接检查不代表远端可访问。"))));
         panel.child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("清理无引用暂存").child(div().text_xs().text_color(p.muted).child("不删除永久离线微缩图或任何已引用文件")))
                 .child(Button::new("clean-data").small().label("清理").disabled(!idle).on_click(cx.listener(|v,_,w,cx|v.confirm_cleanup(w,cx)))))

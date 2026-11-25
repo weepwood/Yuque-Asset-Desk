@@ -35,9 +35,15 @@ fn inspect(source:&Source,max:u64,show:bool)->DraftRow{
         }
     };
     let category=uploader::asset_category(std::path::Path::new(&name));
-    let modern=content.as_ref().and_then(|b|preview::unsupported_modern_format(b).err()).map(|e|e.to_string());
-    let picture=content.and_then(|b|preview::draft_image(b).ok());
-    let warning=if modern.is_some(){modern}else if show&&category=="image"&&picture.is_none(){Some("无法生成预览；确认后仍可尝试上传".into())}else{None};
+    let (picture,warning)=match content{
+        Some(b)=>{
+            let image_content=category=="image"||preview::is_svg(&b)||preview::modern_image_mime(&b).is_some()||image::guess_format(&b).is_ok();
+            if image_content{match preview::draft_image(b){Ok(p)=>(Some(p),None),Err(e)=>(None,Some(format!("{e}；仍可尝试上传")))}}
+            else{(None,None)}
+        }
+        None if show&&category=="image"=>(None,Some("图片超出预览限制或不可读；仍可尝试上传".into())),
+        None=>(None,None)
+    };
     DraftRow{name,bytes,picture,warning,valid:true}
 }
 impl UploadDesk{
