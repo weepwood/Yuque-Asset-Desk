@@ -143,6 +143,7 @@ pub(crate) struct UploadDesk {
     account: Entity<account_model::AccountModel>,
     config:Config,
     maintenance_busy:bool,
+    job_ack_task:Option<Task<()>>,
     storage: Storage,
     dark: bool,
     page: Page,
@@ -393,7 +394,7 @@ impl UploadDesk {
                 total_count: 0,
             },
             queue,
-            account,config,maintenance_busy:false,
+            account,config,maintenance_busy:false,job_ack_task:None,
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
@@ -431,6 +432,16 @@ impl UploadDesk {
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
                     Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}
+                    Ok("tasks-active")=>{
+                        view.page=Page::Jobs;view.inspector_open=false;
+                        view.queue.update(cx,|q,cx|{
+                            q.busy=true;q.queue_total=3;q.queue_count=2;q.active_job=Some(3);
+                            q.transfer.total.store(8*1024*1024,Ordering::Relaxed);
+                            q.transfer.bytes.store(8*1024*1024,Ordering::Relaxed);
+                            q.queue_control.store(1,Ordering::Relaxed);
+                            cx.notify();
+                        });
+                    }
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
                     Ok("rail")=>{view.sidebar_collapsed=true;}

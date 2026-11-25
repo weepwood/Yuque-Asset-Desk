@@ -774,3 +774,34 @@ fn browse_context_restores_query_and_clears_empty_results(){
     assert!(app.read(|cx|{let v=desk.read(cx);!v.has_browse_filters()&&v.resource.assets.len()==2&&v.resource.search_input.read(cx).value().is_empty()}));
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn acknowledging_unknown_requires_confirmation_and_does_not_upload(){
+    let root=std::env::temp_dir().join(format!("yuque-ack-ui-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let source=root.join("fixture.txt");std::fs::write(&source,b"not uploaded").unwrap();
+    let jobs=db.enqueue("demo","local",&[source.clone()]).unwrap();let id=jobs[0].0;
+    db.job_state(id,"running","").unwrap();
+    db.job_state(id,"unknown","fixture uncertain result").unwrap();
+    let read=db.clone();let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
+        v.navigate_page(Page::Jobs,cx);
+        v.acknowledge_job(id,w,cx);
+        assert!(v.maintenance_busy);
+        assert!(!v.desktop_can_quit(cx));
+        v.retry_one(id,cx);assert!(!v.queue.read(cx).busy);
+    }));
+    app.run_until_parked();
+    assert_eq!(read.jobs("demo","local",None).unwrap()[0].state,"unknown");
+    app.simulate_prompt_answer("取消");app.run_until_parked();
+    assert_eq!(read.jobs("demo","local",None).unwrap()[0].state,"unknown");
+    ui.update(|w,cx|desk.update(cx,|v,cx|v.acknowledge_job(id,w,cx)));
+    app.run_until_parked();app.simulate_prompt_answer("确认核实结果");app.run_until_parked();
+    assert_eq!(read.jobs("demo","local",None).unwrap()[0].state,"failed");
+    assert!(read.page_album(150,"","",Some(("demo","local")),None,false,None,false).unwrap().0.is_empty());
+    assert!(!app.read(|cx|{let v=desk.read(cx);v.maintenance_busy||v.queue.read(cx).busy}));
+    drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
+}

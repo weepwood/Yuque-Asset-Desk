@@ -222,3 +222,6 @@ PR #7 已通过双平台 CI 45541767866 并合并 b58ee1b（源码树等同固�
 
 ## 后续设计：浏览上下文独立分支
 V0.7合并后CI45542564057双平台成功，固定75c173b原始产物保持冻结，Windows真机门禁未解除。新分支基于5b0c33c，依据DESIGN.md第11节集中实现组合筛选可见、显式范围、准确加载/结果数、相似查询返回原条件、空态恢复、分类高亮及图标栏账号入口。62 QA pass/0 fail/1 ignored，实际720×600指针/键盘回归，8种渲染截图（最终重点复验3张），static/diff与QA build通过；未新增依赖/数据库迁移/网络功能。截图证据dist/design-research/browse-after/；不修改已验收发布候选，暂不合入main或发版。
+
+## 后续设计第二批：查看器、上传反馈与详情
+PR #8 初始934ef7a双平台CI45544055365成功；集中追加同一PR，不改变V0.7固定候选75c173b和发布门禁。DESIGN.md第12节落实相对缩放/图片序号/完整缩略图/停止等待、任务请求状态与取消优先级、原生待核实确认及窄窗详情优先操作。64 QA pass/0 fail/1 ignored，all-targets/QA build/static/diff；11种真实渲染图dist/design-research/flow-after/，活跃任务为隔离QA夹具；最小窗口实际检查。无新依赖/schema/网络功能，未做真实语雀上传、Windows真机及全量Release性能复测。
