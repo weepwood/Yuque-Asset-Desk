@@ -851,3 +851,58 @@ fn gallery_refresh_failure_clears_stale_actions_and_append_failure_keeps_selecti
     }));
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn thumbnail_lane_survives_pagination_and_pauses_on_navigation(){
+    let root=std::env::temp_dir().join(format!("yuque-thumb-lane-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let path=root.join("source.png");
+    image::RgbImage::from_pixel(48,24,image::Rgb([20,60,120])).save(&path).unwrap();
+    use sha2::Digest;
+    let bytes=std::fs::read(&path).unwrap();
+    let valid=db.insert_or_get(&crate::storage::NewAsset{name:"source.png".into(),bytes:bytes.len() as i64,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:url::Url::from_file_path(&path).unwrap().to_string(),sha256:hex::encode(sha2::Sha256::digest(&bytes)),filekey:String::new()}).unwrap();
+    for i in 0..150{
+        db.insert_or_get(&crate::storage::NewAsset{name:format!("missing-{i}.png"),bytes:10,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:format!("file:///missing-{i}.png"),sha256:format!("missing-{i}"),filekey:String::new()}).unwrap();
+    }
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let first=app.read(|cx|desk.read(cx).resource.assets[0].id);
+    assert!(app.read(|cx|desk.read(cx).thumbnails.read(cx).attempted(first)));
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.load_more(cx);
+        assert!(v.thumbnails.read(cx).attempted(first));
+        v.navigate_page(Page::Settings,cx);
+        assert!(!v.thumbnails.read(cx).busy);
+    }));
+    app.run_until_parked();
+    assert!(app.read(|cx|{let v=desk.read(cx);v.resource.assets.len()==151&&!v.thumbnails.read(cx).busy&&!v.thumbnails.read(cx).attempted(valid.id)}));
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.resource.visible_range=(150,151);
+        v.navigate_page(Page::Gallery,cx);
+    }));
+    app.run_until_parked();
+    assert!(app.read(|cx|{let v=desk.read(cx);v.thumbnails.read(cx).attempted(first)&&v.thumbnails.read(cx).attempted(valid.id)&&v.resource.cached_thumbnails.get(&valid.id).is_some_and(|p|p.is_file())&&v.resource.ratios.get(&valid.id)==Some(&2.)}));
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
+        v.click_tile(valid.clone(),1,Modifiers::default(),w,cx);
+        assert!(!v.resource.preview_loading);
+        assert_eq!(v.resource.thumbnail_path,v.resource.cached_thumbnails.get(&valid.id).cloned());
+        v.inspector_open=true;
+        cx.notify();
+    }));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert!(app.read(|cx|desk.read(cx).resource.image_cache.read(cx).len()>0));
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.apply_account(None,cx);
+        assert_eq!(v.resource.image_cache.read(cx).len(),0);
+        assert!(!v.thumbnails.read(cx).attempted(first));
+    }));
+    app.run_until_parked();
+    assert!(path.is_file());
+    assert!(preview::cached_path(&root,&valid).is_file());
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}

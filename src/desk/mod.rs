@@ -6,6 +6,7 @@ mod updates;
 mod data_panel;
 mod album;
 mod image_cache;
+mod thumbnail_model;
 pub(crate) mod preferences;
 mod preference_writer;
 mod queue;
@@ -89,8 +90,7 @@ struct ResourceState {
     layout_signature: u64,
     row_plan: std::rc::Rc<Vec<album::AlbumRow>>,
     visible_range: (usize,usize),
-    preview_attempted:std::collections::HashSet<i64>,
-    preview_loading_batch:bool,
+
     image_cache:Entity<image_cache::AlbumImageCache>,
     selected_asset: Option<Asset>,
     oldest: bool,
@@ -104,7 +104,6 @@ struct ResourceState {
     drag_at: Option<Point<Pixels>>,
     thumbnail_path: Option<PathBuf>,
     cached_thumbnails: std::collections::HashMap<i64, PathBuf>,
-    thumbnails_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
     pending_preview:Option<(i64,u8)>,
     preview_reload_pending:bool,
@@ -133,6 +132,7 @@ struct ResourceState {
 pub(crate) struct UploadDesk {
     resource: ResourceState,
     gallery_query:Entity<gallery_query::GalleryQuery>,
+    thumbnails:Entity<thumbnail_model::ThumbnailModel>,
     resource_write_busy:bool,
     resource_write_task:Option<Task<()>>,
     inspector_model:Entity<inspector_model::InspectorModel>,
@@ -323,13 +323,15 @@ impl UploadDesk {
         });
         let gallery_query=cx.new(|_|gallery_query::GalleryQuery::default());
         let gallery_events=cx.subscribe(&gallery_query,|v,_,event:&gallery_query::GalleryResult,cx|v.apply_gallery_result(event,cx));
+        let thumbnails=cx.new(|_|thumbnail_model::ThumbnailModel::default());
+        let thumbnail_events=cx.subscribe(&thumbnails,|v,_,event:&thumbnail_model::ThumbnailBatch,cx|v.apply_thumbnail_batch(event,cx));
         let account=cx.new(|cx|account_model::AccountModel::new(window,cx));
         let account_observer=cx.observe(&account,|_,_,cx|cx.notify());
         let account_events=cx.subscribe(&account,|v,_,event:&account_model::AccountEvent,cx|{
             match event{account_model::AccountEvent::Activate(creds)=>v.apply_account(Some(creds.clone()),cx)}
         });
         let mut view = Self {
-            gallery_query,
+            gallery_query,thumbnails,
             job_history,
             viewer_model,viewer_revision:0,
             inspector_model,
@@ -360,8 +362,6 @@ impl UploadDesk {
                 layout_signature: 0,
                 row_plan:Default::default(),
                 visible_range:(0,48),
-                preview_attempted:Default::default(),
-                preview_loading_batch:false,
                 image_cache:image_cache::AlbumImageCache::new(cx),
                 selected_asset: None,
                 oldest:prefs.oldest,
@@ -375,7 +375,6 @@ impl UploadDesk {
                 drag_at: None,
                 thumbnail_path: None,
                 cached_thumbnails: Default::default(),
-                thumbnails_task: None,
                 preview_task: None,
                 pending_preview:None,preview_reload_pending:false,viewer_return:None,
                 preview_loading: false,
@@ -398,7 +397,7 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,account_observer,account_events],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,account_observer,account_events],
             inspector_open: false,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),

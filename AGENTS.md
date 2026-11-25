@@ -226,3 +226,9 @@
 - GalleryQuery 新请求和 Entity Drop 发出协作式取消；仍通过 generation 拒绝过期结果。普通非追加搜索100ms debounce；追加/相似不等待。后台在分批读取、哈希、写入、匹配、元数据阶段检查取消，不中断已进入的 SQLite/文件/解码操作，已提交的派生索引保留。
 - Storage::unindexed_images 使用源账号和 keyset 分页，SQL NOT EXISTS 排除已有哈希，不做每页 COUNT 或每候选独立哈希查询；缺缩略图继续跳过。similar_assets_until 保留最多150个排名结果（距离升序、ID降序），支持扫描内取消；相似结果收藏与批量标签以源账号为准。
 - 本地 all-targets/static/diff 与完整QA 67 passed/0 failed/1 ignored。新增预取消测试、500项真实SQLite数据分页/跨账号/200项已索引候选的有界排序及扫描中止测试。首次编译发现 GPUI test 属性名冲突，改用明确 Rust 内建属性后通过。未做真实磁盘压力、全量Release性能或视觉回归，不宣称量化性能提升；无新增依赖/schema/网络或真实用户数据操作。
+
+## 后续设计：缩略图生命周期与缓存释放
+- 基于 PR #8 1e723b8，CI 45547161999 最近查询仍在运行。继续同一分支，冻结 V0.7 候选75c173b、原始产物及正式v0.5.1不变。
+- ThumbnailModel 独立 retained Entity 管理12项批次、协作式取消、代际及完成尝试；分页追加不取消、不重试已失败项；整页刷新重置，离开图库暂停，返回恢复，迟到事件二次核对代际。取消后当前单项I/O仍可能完成并保留派生文件。图库展示/选择/布局和路径/比例映射仍由shell协调。
+- 详情复用已知本地预览路径，恢复时更新比例；账号切换调用 AlbumImageCache::clear 与原生 drop_image，保持192项LRU上限。缓存清理不触及永久微缩图和用户原文件。可视范围异常边界防护。
+- 本地 all-targets、static/diff、QA build、68 QA passed/0 failed/1 ignored。新增151项真实隔离SQLite与本地图片回归：分页保留失败记录、设置暂停、返回可恢复、2:1比例、详情复用、实际GPUI渲染缓存账号切换清零，原图及JPEG保留。7张实际渲染截图保存dist/design-research/thumbnail-after/，已查看浅色图库、720×600详情和离线查看器；不是实际用户素材。未做Windows真机、Release性能、长期内存测量或真实语雀；不新增依赖/schema/网络。

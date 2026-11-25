@@ -6,10 +6,13 @@ pub(super) struct AlbumImageCache{items:HashMap<Resource,(u64,ImageCacheItem)>,c
 impl AlbumImageCache{
     #[cfg(feature="qa")]
     pub fn len(&self)->usize{self.items.len()}
+    pub fn clear(&mut self,cx:&mut App){
+        for (_,(_,item)) in self.items.drain(){if let Some(Ok(image))=item.get(){cx.drop_image(image,None);}}
+    }
     pub fn new(cx:&mut App)->Entity<Self>{
         let e=cx.new(|_|Self{items:HashMap::new(),clock:0});
         cx.observe_release(&e,|cache,cx|{
-            for (_,(_,item)) in cache.items.drain(){if let Some(Ok(image))=item.get(){cx.drop_image(image,None);}}
+            cache.clear(cx);
         }).detach();e
     }
 }
