@@ -92,6 +92,9 @@ impl UploadDesk {
                         self.resource.tag_catalog=tags;
                         if event.append {
                             let existing=self.resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
+                            if ratios.iter().any(|(id,r,_)|existing.contains(id)&&self.resource.ratios.get(id)!=Some(r)){
+                                self.resource.masonry_signature=0;
+                            }
                             self.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
                         } else {
                             self.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
@@ -106,6 +109,7 @@ impl UploadDesk {
                                 if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
                             }
                             self.resource.assets=items;
+                            self.resource.masonry_signature=0;
                             self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
                         }
                         for (id,ratio,path) in ratios{
@@ -125,6 +129,7 @@ impl UploadDesk {
                     Err(error) => {
                         if event.append{self.resource.page_cursors.pop();}else{
                             self.clear_resource_selection(cx);
+                            self.resource.masonry_signature=0;
                             self.resource.assets=Vec::new();self.resource.total_count=0;self.resource.has_more=false;
                             self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
                         }
@@ -169,7 +174,7 @@ impl UploadDesk {
         if !self.thumbnails.read(cx).current(event.generation){return;}
         for (id,path,ratio) in &event.found{
             self.resource.cached_thumbnails.insert(*id,path.clone());
-            if self.resource.ratios.insert(*id,*ratio)!=Some(*ratio){self.resource.ratio_revision+=1;}
+            if self.resource.ratios.insert(*id,*ratio)!=Some(*ratio){self.resource.ratio_revision+=1;self.resource.masonry_signature=0;}
         }
         self.refresh_thumbnails(cx);
         cx.notify();
@@ -333,7 +338,7 @@ impl UploadDesk {
                 match result {
                     Ok((path,ratio)) => {
                         view.resource.cached_thumbnails.insert(id, path.clone());
-                        if view.resource.ratios.insert(id,ratio)!=Some(ratio){view.resource.ratio_revision+=1;}
+                        if view.resource.ratios.insert(id,ratio)!=Some(ratio){view.resource.ratio_revision+=1;view.resource.masonry_signature=0;}
                         view.resource.thumbnail_path = Some(path);
                     },
                     Err(error) => view.resource.preview_error = Some(error.to_string()),
@@ -379,7 +384,7 @@ impl UploadDesk {
                     Ok((path,ratio))=>{
                         v.resource.thumbnail_path=Some(path.clone());
                         v.resource.cached_thumbnails.insert(id,path.clone());
-                        if v.resource.ratios.insert(id,ratio)!=Some(ratio){v.resource.ratio_revision+=1;}
+                        if v.resource.ratios.insert(id,ratio)!=Some(ratio){v.resource.ratio_revision+=1;v.resource.masonry_signature=0;}
                         v.resource.large_preview_path=Some(path);
                     }
                     Err(e)=>v.resource.preview_error=Some(e.to_string())

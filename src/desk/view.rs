@@ -405,16 +405,20 @@ impl UploadDesk{
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         if masonry_mode{
-            let signature=(self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),self.resource.ratio_revision,available.to_bits(),self.resource.tile_size.to_bits(),self.resource.group_dates&&self.resource.similar_to.is_none(),self.prefs.comfortable);
+            let dates=self.resource.group_dates&&self.resource.similar_to.is_none();
+            let spacing=self.spacing();
+            let signature=(available.to_bits(),self.resource.tile_size.to_bits(),dates,self.prefs.comfortable);
             let mut h=std::collections::hash_map::DefaultHasher::new();signature.hash(&mut h);let sig=h.finish();
-            if self.resource.masonry_signature!=sig{
+            if self.resource.masonry_signature!=sig || self.resource.masonry_plan.tiles.len()>self.resource.assets.len(){
                 let old_top=(-f32::from(self.resource.masonry_scroll.offset().y)).max(0.);
                 let anchor=self.resource.masonry_plan.anchor(old_top);
-                let plan=album::masonry(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.group_dates&&self.resource.similar_to.is_none(),self.spacing());
+                let plan=album::masonry(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,dates,spacing);
                 if let Some(top)=plan.restore(anchor){
                     self.resource.masonry_scroll.set_offset(point(px(0.),px(-top)));
                 }
                 self.resource.masonry_plan=plan;self.resource.masonry_signature=sig;
+            }else if self.resource.masonry_plan.tiles.len()<self.resource.assets.len(){
+                self.resource.masonry_plan.extend(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,dates,spacing);
             }
             let handle=self.resource.masonry_scroll.clone();
             let top=(-f32::from(handle.offset().y)).max(0.).min((self.resource.masonry_plan.height-f32::from(handle.bounds().size.height)).max(0.));
@@ -423,17 +427,12 @@ impl UploadDesk{
             let lo=(top-160.).max(0.);let hi=top+viewport+160.;
             let plan=&self.resource.masonry_plan;
             let mut wall=div().relative().w_full().h(px(plan.height)).flex_shrink_0();
-            for (day,y) in &plan.days{if *y+self.spacing().day>=lo && *y<=hi{
+            let day_start=plan.days.partition_point(|(_,y)|*y+spacing.day<lo);
+            for (day,y) in &plan.days[day_start..]{if *y>hi{break;}
                 wall=wall.child(div().absolute().top(px(*y)).left(px(0.)).h(px(self.spacing().day)).flex().items_center().text_size(px(self.spacing().caption)).font_medium().text_color(self.palette().muted).child(day.clone()));
-            }}
+            }
             let mut first=usize::MAX;let mut last=0;
-            // Tile start positions are monotonic; skip all earlier tiles except
-            // the longest possible overlapping card.
-            let max_height=self.resource.tile_size.max(240.)*5.+self.spacing().footer;
-            let from=plan.tiles.partition_point(|t|t.y<lo-max_height);
-            for t in &plan.tiles[from..]{
-                if t.y>hi{break;}
-                if t.y+t.height+self.spacing().footer<lo{continue;}
+            for t in plan.visible_tiles(lo,hi){
                 first=first.min(t.index);last=last.max(t.index+1);
                 if let Some(asset)=self.resource.assets.get(t.index){
                     wall=wall.child(div().absolute().left(px(t.x)).top(px(t.y)).w(px(t.width))
