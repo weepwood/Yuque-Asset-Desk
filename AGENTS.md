@@ -201,3 +201,10 @@
 - 原始 CI Windows x64 ZIP 9422058 bytes / macOS ARM64 DMG 9026105 bytes 与两份原始 SHA256 均验收，保存 dist/release-audit-v0.7.0/ci-artifacts/，四项摘要 docs/release/v0.7.0-verified-assets.json；Windows 校验文件 CRLF 导致 Mac shasum -c 路径误判，Python 独立验证及 verify-only 均通过，未改写原始文件。
 - macOS 正式候选 DMG 只读挂载、ad-hoc 签名、真实隔离启动、1160×828 窗口、空 Demo DB、tray/hotkey 注册均通过；非阻塞 sandbox_extension 警告。无 Gatekeeper 公证/真实账号/物理点选。
 - Windows CI 单测、Release、PE/ZIP 与版本元数据成功；Desktop Commander Windows 设备离线，尚未真机交互验收。按前轮发布门禁暂不创建 Tag/Release，保留原始产物、RELEASE-NOTES.md 和详细验收记录 docs/release/v0.7.0-acceptance.md。完成剩余验收（或用户明确调整门禁）后固定原候选、发布四项资产、重新下载验证与公开更新接口；不重跑已通过的全量本地测试，不扩大功能。
+
+## 后续设计深化：浏览上下文（V0.7候选冻结）
+- V0.7 固定候选75c173b与原始四资产不变，合并后main CI 45542564057 双平台成功，仍待Windows真机或明确调整门禁；未创建Tag/Release。新分支 feat/v0.8-browse-context 基于文档提交5b0c33c，不混入冻结产物；Cargo仍0.7.0，非新发布。
+- 重读锁定SpaceUI Explorer与GPUI Design Guides，新增DESIGN.md第11节。普通浏览统一账号范围/标签/组合收藏/搜索条件行；清除恢复当前账号全部资源并同步搜索输入。分类高亮独立于标签及组合收藏；标签仅真实上下文高亮，收起侧栏保留账号入口。
+- 相似查询按源资源所属账号及相似度，保留原搜索/标签/收藏/日期偏好；普通搜索及筛选禁用，排序与日期命令不显示，显式返回恢复原组合。最多150项；普通分类入口离开相似上下文。相似模式保留原生布局菜单。
+- SQL原total为账号总资源量，不进行额外筛选COUNT：有过滤且分页未完显示已加载数，最终显示实际结果数，读取中/失败不显示陈旧总数。空结果可清除/返回；不变更SQLite schema/上传/原图/永久微缩图。
+- 62 QA通过/0失败/1忽略；新增720×600真实GPUI指针与键盘路径，验证组合条件、相似结果返回、搜索输入、空结果清除、1项/0项计数。all-targets check（计数精修前）、最终QA build及static/diff通过。8种实际截图，3张上下文图最终重新捕获，修复截图发现的陈旧计数与分类高亮；保存dist/design-research/browse-after/。无真实用户数据、Windows真机、全量Release性能复测；下一批优先基于实际操作痛点检查查看器/任务反馈，而非无目的视觉修改。

@@ -265,7 +265,9 @@ impl UploadDesk {
             window,
             |this, input, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.resource.search = input.read(cx).value().to_string();
+                    let query=input.read(cx).value().to_string();
+                    if this.resource.search==query{return;}
+                    this.resource.search=query;
                     this.resource.similar_to=None;
                     this.reset_history(cx);
                     cx.notify();
@@ -438,6 +440,8 @@ impl UploadDesk {
                     Ok("compact")=>{view.prefs.comfortable=false;}
                     Ok("compact-masonry")=>{view.prefs.comfortable=false;view.resource.masonry=true;}
                     Ok("favorites")=>{view.resource.favorites_only=true;}
+                    Ok("browse-context")=>{view.resource.category="image";view.resource.favorites_only=true;view.resource.all_accounts=true;view.resource.tag_filter=Some("设计/UI".into());view.resource.tags_expanded=true;}
+                    Ok("browse-empty")=>{view.resource.category="video";view.resource.tag_filter=Some("设计/UI".into());view.resource.tags_expanded=true;}
                     _=>{}
                 }
             }

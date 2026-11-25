@@ -19,12 +19,12 @@ impl UploadDesk {
             .child(SidebarMenuItem::new("标签").icon(if self.resource.tags_expanded{IconName::ChevronDown}else{IconName::ChevronRight})
                 .on_click(cx.listener(|v,_,_,cx|{v.resource.tags_expanded=!v.resource.tags_expanded;cx.notify();})).render("tags-toggle",w,cx));
         if self.resource.tags_expanded {
-            tree=tree.child(SidebarMenuItem::new("全部标签").active(self.resource.tag_filter.is_none())
-                .on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Gallery,cx);v.resource.tag_filter=None;v.reset_history(cx);})).render("tag-all",w,cx));
+            tree=tree.child(SidebarMenuItem::new("不限标签").active(self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.tag_filter.is_none())
+                .on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Gallery,cx);v.resource.similar_to=None;v.resource.tag_filter=None;v.reset_history(cx);})).render("tag-all",w,cx));
             for (i,path) in nodes.into_iter().enumerate() {
                 let depth=path.matches('/').count().min(5);
                 let title=path.rsplit('/').next().unwrap_or(&path).to_string();
-                let selected=self.resource.tag_filter.as_ref()==Some(&path);
+                let selected=self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.tag_filter.as_ref()==Some(&path);
                 tree=tree.child(div().pl(px(depth as f32*10.+8.)).child(SidebarMenuItem::new(title).icon(IconName::FolderOpen).active(selected)
                     .on_click(cx.listener(move |v,_,_,cx|{v.navigate_page(Page::Gallery,cx);v.resource.similar_to=None;v.resource.tag_filter=Some(path.clone());v.reset_history(cx);})).render(("tag-node",i),w,cx)));
             }
@@ -390,12 +390,12 @@ impl UploadDesk{
         use std::hash::{Hash,Hasher};
         let masonry_mode=self.resource.grid_view && self.resource.masonry;
         if masonry_mode{
-            let signature=(self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),self.resource.ratio_revision,available.to_bits(),self.resource.tile_size.to_bits(),self.resource.group_dates,self.prefs.comfortable);
+            let signature=(self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),self.resource.ratio_revision,available.to_bits(),self.resource.tile_size.to_bits(),self.resource.group_dates&&self.resource.similar_to.is_none(),self.prefs.comfortable);
             let mut h=std::collections::hash_map::DefaultHasher::new();signature.hash(&mut h);let sig=h.finish();
             if self.resource.masonry_signature!=sig{
                 let old_top=(-f32::from(self.resource.masonry_scroll.offset().y)).max(0.);
                 let anchor=self.resource.masonry_plan.anchor(old_top);
-                let plan=album::masonry(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.group_dates,self.spacing());
+                let plan=album::masonry(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.group_dates&&self.resource.similar_to.is_none(),self.spacing());
                 if let Some(top)=plan.restore(anchor){
                     self.resource.masonry_scroll.set_offset(point(px(0.),px(-top)));
                 }
@@ -435,11 +435,11 @@ impl UploadDesk{
             let mut hash=std::collections::hash_map::DefaultHasher::new();
             (self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),
              if self.resource.justified{self.resource.ratio_revision}else{0},available.to_bits(),self.resource.tile_size.to_bits(),
-             self.resource.grid_view,self.resource.justified,self.resource.group_dates,self.prefs.comfortable).hash(&mut hash);
+             self.resource.grid_view,self.resource.justified,self.resource.group_dates&&self.resource.similar_to.is_none(),self.prefs.comfortable).hash(&mut hash);
             let signature=hash.finish();
             if self.resource.layout_signature!=signature {
                 let old=self.resource.album_list.logical_scroll_top();
-                let planned=album::plan_rows(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,self.resource.group_dates,self.spacing());
+                let planned=album::plan_rows(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,self.resource.group_dates&&self.resource.similar_to.is_none(),self.spacing());
                 let anchor=self.resource.row_plan.get(old.item_ix).and_then(|row|match row{album::AlbumRow::Tiles{items,..}=>items.first().map(|(i,_)|*i),album::AlbumRow::Item(i)=>Some(*i),_=>None});
                 let prefix=self.resource.row_plan.iter().zip(&planned).take_while(|(a,b)|a==b).count();
                 if self.resource.layout_signature!=0 && self.resource.album_list.item_count()==self.resource.row_plan.len() && prefix>0 {
@@ -546,12 +546,7 @@ impl Render for UploadDesk {
                     .gap_2().p(px(self.spacing().pad))
                     .child(self.gallery_toolbar(available<760.,total,is_demo,window,cx))
                     .child(self.selection_toolbar(cx))
-                    .when(self.resource.similar_to.is_some(),|d|d.child(div().flex().items_center().gap_2()
-                        .child(div().text_xs().text_color(self.palette().muted).child(format!("相似图片 · {}",self.resource.similar_to.as_ref().map(|a|a.name.as_str()).unwrap_or(""))))
-                        .child(Button::new("exit-similar").small().ghost().label("退出").on_click(cx.listener(|v,_,_,cx|{v.resource.similar_to=None;v.reset_history(cx);})))) )
-                    .when(self.resource.tag_filter.is_some(),|d|d.child(div().flex().items_center().gap_2()
-                        .child(format!("标签：{}",self.resource.tag_filter.as_deref().unwrap_or_default()))
-                        .child(Button::new("clear-tag").small().label("清除").on_click(cx.listener(|v,_,_,cx|{v.resource.tag_filter=None;v.reset_history(cx);})))) )
+                    .when(self.resource.similar_to.is_some()||self.resource.all_accounts||self.resource.tag_filter.is_some()||!self.resource.search.is_empty()||(self.resource.favorites_only&&!self.resource.category.is_empty()),|d|d.child(self.browse_context(cx)))
                     .when(self.resource.batch_tag_open&&!self.resource.selected_ids.is_empty(),|d|d.child(div().flex().gap_2().items_center()
                         .child(div().flex_1().min_w(px(0.)).child(Input::new(&self.resource.batch_tag_input)))
                         .child(Button::new("batch-add-tags").small().label("添加标签").disabled(self.resource_write_busy).on_click(cx.listener(|v,_,_,cx|v.apply_batch_tags(false,cx))))
@@ -578,13 +573,14 @@ impl Render for UploadDesk {
                                 container.child(format!("历史读取失败：{}", self.resource.history_error.as_deref().unwrap_or("")))
                             })
                             .when(self.resource.assets.is_empty() && !self.resource.loading_history && self.resource.history_error.is_none(), |container| {
-                                let initial=self.resource.search.is_empty() && self.resource.category.is_empty() && self.resource.tag_filter.is_none() && !self.resource.favorites_only && self.resource.similar_to.is_none();
+                                let initial=!self.has_browse_filters()&&self.resource.similar_to.is_none();
                                 container.child(Empty::new().header(EmptyHeader::new()
                                     .media(EmptyMedia::new().with_variant(EmptyMediaVariant::Icon).child(IconName::FolderOpen))
                                     .title(EmptyTitle::new().child(if initial{"还没有资源"}else{"没有符合条件的资源"}))
                                     .description(EmptyDescription::new().child(if initial{"拖入文件或点击上传，即可离线浏览、复制链接。"}else{"尝试调整搜索词或筛选条件。"})))
                                     .when(initial,|e|e.child(Button::new("empty-upload").small().primary().icon(IconName::Plus).label("上传文件")
-                                        .disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))))))
+                                        .disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))))
+                                    .when(!initial,|e|e.child(div().debug_selector(||"empty-clear".into()).child(Button::new("empty-clear").small().label(if self.resource.similar_to.is_some(){"返回图库"}else{"清除条件"}).on_click(cx.listener(|v,_,w,cx|{if v.resource.similar_to.is_some(){v.exit_similar(cx);}else{v.clear_browse_filters(w,cx);}}))))))
                             })
                             .overflow_hidden(),
                     )

@@ -727,3 +727,50 @@ fn sidebar_and_immersive_transition_reserve_geometry_and_reverse(){
     assert_eq!(ui.debug_bounds("nav-slot").unwrap(),wide);
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn browse_context_restores_query_and_clears_empty_results(){
+    let root=std::env::temp_dir().join(format!("yuque-browse-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let path=root.join("source.png");
+    image::RgbImage::from_pixel(64,48,image::Rgb([12,100,128])).save(&path).unwrap();
+    let mut png=std::fs::read(&path).unwrap();
+    let asset=db.insert_or_get(&crate::storage::NewAsset{name:"source.png".into(),bytes:png.len() as i64,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:url::Url::from_file_path(&path).unwrap().to_string(),sha256:hex::encode(sha2::Sha256::digest(&png)),filekey:String::new()}).unwrap();
+    use sha2::Digest;
+    db.set_tags(asset.id,"design/ui").unwrap();db.toggle_favorite(&asset).unwrap();
+    let path2=root.join("neighbor.png");png.push(0);std::fs::write(&path2,&png).unwrap();
+    let other=db.insert_or_get(&crate::storage::NewAsset{name:"neighbor.png".into(),bytes:png.len() as i64,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:url::Url::from_file_path(&path2).unwrap().to_string(),sha256:hex::encode(sha2::Sha256::digest(&png)),filekey:String::new()}).unwrap();
+    preview::index_local(&db,&asset).unwrap();preview::index_local(&db,&other).unwrap();
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let app=TestAppContext::single();app.update(gpui_kit::init);app.update(|cx|cx.set_reduce_motion(true));
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(720.),px(600.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    let draw=|ui:&mut VisualTestContext|ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
+        v.resource.category="image";v.resource.favorites_only=true;v.resource.all_accounts=true;
+        v.resource.tag_filter=Some("design/ui".into());v.resource.group_dates=true;
+        v.resource.search="source".into();v.resource.search_input.update(cx,|i,cx|i.set_value("source",w,cx));
+        v.reset_history(cx);
+    }));
+    app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();draw(&mut ui);
+    assert_eq!(app.read(|cx|desk.read(cx).resource.assets.len()),1);
+    assert_eq!(app.read(|cx|desk.read(cx).browse_count_label(2)),"1 项");
+    app.update(|cx|desk.update(cx,|v,cx|v.find_similar(asset.clone(),cx)));
+    app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.similar_to.is_some()&&r.assets.iter().any(|a|a.id==other.id)&&r.group_dates&&r.favorites_only}));
+    let back=ui.debug_bounds("browse-clear").unwrap();
+    ui.simulate_click(back.center(),Modifiers::default());
+    app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.similar_to.is_none()&&r.assets.len()==1&&r.assets[0].id==asset.id&&r.search=="source"&&r.tag_filter.as_deref()==Some("design/ui")&&r.favorites_only&&r.all_accounts&&r.group_dates}));
+    let search=ui.debug_bounds("gallery-search").unwrap();ui.simulate_click(search.center(),Modifiers::default());
+    ui.simulate_keystrokes("end x x x");
+
+    app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.assets.is_empty()));
+    assert_eq!(app.read(|cx|desk.read(cx).browse_count_label(2)),"0 项");
+    let clear=ui.debug_bounds("empty-clear").unwrap();ui.simulate_click(clear.center(),Modifiers::default());
+    app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let v=desk.read(cx);!v.has_browse_filters()&&v.resource.assets.len()==2&&v.resource.search_input.read(cx).value().is_empty()}));
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}

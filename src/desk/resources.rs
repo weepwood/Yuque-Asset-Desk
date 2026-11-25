@@ -31,6 +31,7 @@ impl UploadDesk {
         self.resource.preview_loading = false;
         self.resource.preview_error = None;
         self.resource.assets.clear();
+        self.resource.total_count=0;
         self.resource.has_more = false;
         self.reload(cx);
     }
@@ -113,7 +114,7 @@ impl UploadDesk {
                         self.refresh_thumbnails(cx);
                     }
                     Err(error) => {
-                        if event.append{self.resource.page_cursors.pop();}else{self.resource.assets.clear();self.resource.has_more=false;}
+                        if event.append{self.resource.page_cursors.pop();}else{self.resource.assets.clear();self.resource.total_count=0;self.resource.has_more=false;}
                         self.resource.history_error = Some(error.to_string());
                     }
                 }
@@ -200,10 +201,29 @@ impl UploadDesk {
 
     pub(super) fn find_similar(&mut self,asset:Asset,cx:&mut Context<Self>) {
         self.resource.similar_to=Some(asset);
-        self.resource.favorites_only=false;
-        self.resource.group_dates=false;
         self.inspector_open=false;
         self.reset_history(cx);
+    }
+
+    pub(super) fn exit_similar(&mut self,cx:&mut Context<Self>){
+        if self.resource.similar_to.take().is_some(){self.reset_history(cx);}
+    }
+
+    pub(super) fn clear_browse_filters(&mut self,w:&mut Window,cx:&mut Context<Self>){
+        self.resource.similar_to=None;
+        self.resource.category="";
+        self.resource.favorites_only=false;
+        self.resource.all_accounts=false;
+        self.resource.tag_filter=None;
+        self.resource.search.clear();
+        self.resource.search_input.update(cx,|input,cx|input.set_value("",w,cx));
+        self.persist_preferences(cx);
+        self.reset_history(cx);
+    }
+
+    pub(super) fn has_browse_filters(&self)->bool{
+        !self.resource.search.is_empty()||!self.resource.category.is_empty()||
+        self.resource.favorites_only||self.resource.all_accounts||self.resource.tag_filter.is_some()
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
