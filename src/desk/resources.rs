@@ -94,6 +94,7 @@ impl UploadDesk {
                             let existing=self.resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
                             if ratios.iter().any(|(id,r,_)|existing.contains(id)&&self.resource.ratios.get(id)!=Some(r)){
                                 self.resource.masonry_signature=0;
+                                self.resource.ratio_revision=self.resource.ratio_revision.wrapping_add(1);
                             }
                             self.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
                         } else {
@@ -109,6 +110,7 @@ impl UploadDesk {
                                 if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
                             }
                             self.resource.assets=items;
+                            self.resource.layout_signature=0;
                             self.resource.masonry_signature=0;
                             self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
                         }
@@ -119,7 +121,6 @@ impl UploadDesk {
                         if self.isolated_qa() && std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("hover"){
                             self.resource.hover_asset=self.resource.assets.first().map(|a|a.id);
                         }
-                        self.resource.ratio_revision+=1;
                         #[cfg(feature="qa")]
                         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF page_ready_ms={} count={}",self.resource.perf_start.elapsed().as_millis(),self.resource.assets.len());}
                         self.resource.has_more = more;
@@ -129,6 +130,7 @@ impl UploadDesk {
                     Err(error) => {
                         if event.append{self.resource.page_cursors.pop();}else{
                             self.clear_resource_selection(cx);
+                            self.resource.layout_signature=0;
                             self.resource.masonry_signature=0;
                             self.resource.assets=Vec::new();self.resource.total_count=0;self.resource.has_more=false;
                             self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();

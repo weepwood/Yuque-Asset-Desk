@@ -446,14 +446,27 @@ impl UploadDesk{
             div().id("masonry-scroll").flex_1().min_h(px(0.)).w_full().overflow_y_scroll().track_scroll(&handle)
                 .child(wall).into_any_element()
         }else{
+            let dates=self.resource.group_dates&&self.resource.similar_to.is_none();
+            let spacing=self.spacing();
             let mut hash=std::collections::hash_map::DefaultHasher::new();
-            (self.resource.history_generation,self.resource.assets.len(),self.resource.assets.first().map(|a|a.id),
-             if self.resource.justified{self.resource.ratio_revision}else{0},available.to_bits(),self.resource.tile_size.to_bits(),
-             self.resource.grid_view,self.resource.justified,self.resource.group_dates&&self.resource.similar_to.is_none(),self.prefs.comfortable).hash(&mut hash);
+            (if self.resource.justified{self.resource.ratio_revision}else{0},available.to_bits(),self.resource.tile_size.to_bits(),
+             self.resource.grid_view,self.resource.justified,dates,self.prefs.comfortable).hash(&mut hash);
             let signature=hash.finish();
-            if self.resource.layout_signature!=signature {
+            let planned_count=album::row_asset_count(&self.resource.row_plan);
+            let same_geometry=self.resource.layout_signature==signature;
+            if same_geometry && planned_count<self.resource.assets.len() && self.resource.album_list.item_count()==self.resource.row_plan.len() {
+                if let Some((start,suffix))=album::append_rows(&self.resource.row_plan,&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,dates,spacing){
+                    let old_len=self.resource.row_plan.len();
+                    let prefix=start+self.resource.row_plan[start..].iter().zip(&suffix).take_while(|(a,b)|a==b).count();
+                    self.resource.album_list.splice(prefix..old_len,start+suffix.len()-prefix);
+                    let rows=std::rc::Rc::make_mut(&mut self.resource.row_plan);
+                    rows.truncate(start);
+                    rows.extend(suffix);
+                }else{self.resource.layout_signature=0;}
+            }
+            if self.resource.layout_signature!=signature || album::row_asset_count(&self.resource.row_plan)!=self.resource.assets.len() {
                 let old=self.resource.album_list.logical_scroll_top();
-                let planned=album::plan_rows(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,self.resource.group_dates&&self.resource.similar_to.is_none(),self.spacing());
+                let planned=album::plan_rows(&self.resource.assets,&self.resource.ratios,available,self.resource.tile_size,self.resource.grid_view,self.resource.justified,dates,spacing);
                 let anchor=self.resource.row_plan.get(old.item_ix).and_then(|row|match row{album::AlbumRow::Tiles{items,..}=>items.first().map(|(i,_)|*i),album::AlbumRow::Item(i)=>Some(*i),_=>None});
                 let prefix=self.resource.row_plan.iter().zip(&planned).take_while(|(a,b)|a==b).count();
                 if self.resource.layout_signature!=0 && self.resource.album_list.item_count()==self.resource.row_plan.len() && prefix>0 {
@@ -490,7 +503,7 @@ impl UploadDesk{
                 });});
             });
             list(self.resource.album_list.clone(),move|i,window,app|{
-                entity.update(app,|v,cx|planned.get(i).map(|row|v.album_row(row,narrow,window,cx)).unwrap_or_else(||div().into_any_element()))
+                entity.update(app,|v,cx|v.resource.row_plan.get(i).map(|row|v.album_row(row,narrow,window,cx)).unwrap_or_else(||div().into_any_element()))
                     .unwrap_or_else(|_|div().into_any_element())
             }).flex_1().min_h(px(0.)).w_full().into_any_element()
         }
@@ -584,9 +597,9 @@ impl Render for UploadDesk {
                             .flex_col()
                             .gap_2()
                             .when(!self.resource.assets.is_empty()||self.resource.loading_history,|d|d.child(gallery))
-                            .when(self.resource.loading_history, |container| container.child("正在读取资源…"))
-                            .when(self.resource.history_error.is_some(), |container| {
-                                container.child(format!("历史读取失败：{}", self.resource.history_error.as_deref().unwrap_or("")))
+                            .when(self.resource.loading_history&&self.resource.assets.is_empty(), |container| container.child(div().text_sm().text_color(self.palette().muted).child("正在读取资源…")))
+                            .when(self.resource.history_error.is_some()&&self.resource.assets.is_empty(), |container| {
+                                container.child(div().text_sm().text_color(self.palette().error).child(format!("历史读取失败：{}", self.resource.history_error.as_deref().unwrap_or(""))))
                             })
                             .when(self.resource.assets.is_empty() && !self.resource.loading_history && self.resource.history_error.is_none(), |container| {
                                 let initial=!self.has_browse_filters()&&self.resource.similar_to.is_none();
@@ -603,7 +616,7 @@ impl Render for UploadDesk {
                     .child(div().flex().flex_col().gap(px(if self.prefs.comfortable{6.}else{self.spacing().section}))
                       .child(
                         div().h(px(30.)).flex_shrink_0().border_t_1().border_color(self.palette().line).flex().items_center().justify_between().gap_2().text_xs().text_color(self.palette().muted)
-                            .child(div().flex_1().min_w(px(0.)).truncate().opacity(feedback_opacity).child(self.status.clone()))
+                            .child(div().flex_1().min_w(px(0.)).truncate().opacity(feedback_opacity).child(if self.resource.loading_history&&!self.resource.assets.is_empty(){"正在加载更多资源…".into()}else if let Some(error)=&self.resource.history_error{format!("读取失败：{error}")}else{self.status.clone()}))
                             .when(!self.queue.read(cx).busy && self.job_history.read(cx).recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.job_history.read(cx).recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Jobs,cx);}))))
                             .when(self.resource.grid_view,|d|d.child(self.density_control()))
                             .when(self.resource.history_error.is_some(),|d|d.child(Button::new("refresh-history").small().label("重试读取")

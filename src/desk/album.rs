@@ -10,17 +10,37 @@ pub(super) enum AlbumRow {
 
 /// Stable order, no cropping; last justified row never grows beyond target height.
 pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool,spacing:Spacing)->Vec<AlbumRow>{
+    plan_rows_from(assets,ratios,width,target,grid,justified,dates,spacing,0,true)
+}
+
+/// Replan the final (possibly incomplete) row plus appended items. The date
+/// heading preceding that row stays in the retained prefix.
+pub(super) fn append_rows(rows:&[AlbumRow],assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool,spacing:Spacing)->Option<(usize,Vec<AlbumRow>)>{
+    let row=rows.last()?;
+    let cursor=match row{AlbumRow::Item(i)=>*i,AlbumRow::Tiles{items,..}=>items.first()?.0,AlbumRow::Day(_)=>return None};
+    let end=row_asset_count(rows);
+    if end>=assets.len(){return None;}
+    Some((rows.len()-1,plan_rows_from(assets,ratios,width,target,grid,justified,dates,spacing,cursor,false)))
+}
+pub(super) fn row_asset_count(rows:&[AlbumRow])->usize{
+    match rows.last(){
+        Some(AlbumRow::Item(i))=>i+1,
+        Some(AlbumRow::Tiles{items,..})=>items.last().map_or(0,|(i,_)|i+1),
+        _=>0,
+    }
+}
+fn plan_rows_from(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool,spacing:Spacing,mut cursor:usize,mut emit_day:bool)->Vec<AlbumRow>{
     let gap=spacing.gap;
     let width=width.max(160.);
     let target=target.clamp(96.,240.);
     let cols=((width+gap)/(target+gap)).floor().max(1.) as usize;
     let equal=(width-gap*(cols-1) as f32)/cols as f32;
     let mut rows=Vec::new();
-    let mut cursor=0;
     while cursor<assets.len(){
         let day=assets[cursor].created_at.get(..10).unwrap_or("未知日期");
         let end=if dates {cursor+assets[cursor..].iter().take_while(|a|a.created_at.get(..10).unwrap_or("未知日期")==day).count()}else{assets.len()};
-        if dates{rows.push(AlbumRow::Day(day.to_owned()));}
+        if dates&&emit_day{rows.push(AlbumRow::Day(day.to_owned()));}
+        emit_day=true;
         while cursor<end{
             if !grid{rows.push(AlbumRow::Item(cursor));cursor+=1;continue;}
             if !justified{
@@ -31,7 +51,7 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
             // Reserve enough horizontal space for the selection, favorite and
             // copy controls, even on narrow portrait images.
             let min_width=96.;
-            let ratio=|i:usize|ratios.get(&assets[i].id).copied().unwrap_or(1.).clamp(0.4,3.);
+            let ratio=|i:usize|ratios.get(&assets[i].id).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.).clamp(0.4,3.);
             let mut sum=0.;
             let start=cursor;
             while cursor<end {
@@ -189,6 +209,28 @@ mod tests{
                     let visible=full.visible_tiles(lo,hi).map(|t|t.id).collect::<Vec<_>>();
                     let brute=full.tiles.iter().filter(|t|t.y<=hi&&t.y+t.height+full.footer>=lo).map(|t|t.id).collect::<Vec<_>>();
                     assert_eq!(visible,brute);
+                }
+            }
+        }
+    }
+    #[::core::prelude::v1::test]
+    fn row_append_matches_full_plan_across_page_and_date_boundaries(){
+        let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:format!("2026-11-{:02}",25-i/497)}).collect::<Vec<_>>();
+        let ratios=items.iter().map(|a|(a.id,if a.id%37==0{f32::NAN}else{0.4+(a.id%20) as f32*0.13})).collect();
+        for comfortable in [false,true]{
+            let spacing=Spacing::new(comfortable);
+            for dates in [false,true]{
+                for (grid,justified) in [(false,false),(true,false),(true,true)]{
+                    let mut rows=plan_rows(&items[..150],&ratios,780.,148.,grid,justified,dates,spacing);
+                    for end in (300..10000).step_by(150).chain(std::iter::once(10000)){
+                        let (start,suffix)=append_rows(&rows,&items[..end],&ratios,780.,148.,grid,justified,dates,spacing).unwrap();
+                        assert_eq!(start,rows.len()-1);
+                        rows.truncate(start);rows.extend(suffix);
+                        if end==300||end==600||end==10000{
+                            assert_eq!(rows,plan_rows(&items[..end],&ratios,780.,148.,grid,justified,dates,spacing));
+                        }
+                        assert_eq!(row_asset_count(&rows),end);
+                    }
                 }
             }
         }
