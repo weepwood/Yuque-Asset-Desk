@@ -15,7 +15,7 @@ impl UploadDesk {
         self.job_history.update(cx,|v,_|v.first());self.refresh_jobs(cx);
     }
 
-    fn prepare_queue(&mut self,request:Prepare,cx:&mut Context<Self>){
+    pub(super) fn prepare_queue(&mut self,request:Prepare,cx:&mut Context<Self>){
         if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)||self.resetting{return;}
         if self.config.mode==Mode::Yuque&&self.config.creds.is_none(){
             self.status="请先配置语雀会话再上传".into();cx.notify();return;
@@ -53,18 +53,19 @@ impl UploadDesk {
             match entry{
                 ClipboardEntry::ExternalPaths(paths)=>sources.extend(paths.paths().iter().cloned().map(Source::Path)),
                 ClipboardEntry::Image(image) if image.bytes().len() as u64<=self.config.max_file_mb*1024*1024=>{
-                    sources.push(Source::Image(image.bytes().to_vec(),image.format().extension().to_owned()));
+                    sources.push(Source::Image(Arc::new(image.bytes().to_vec()),image.format().extension().to_owned()));
                 }
                 _=>{}
             }
         }
         if sources.is_empty(){self.status="剪贴板没有可上传的文件或图片".into();cx.notify();}
-        else{self.prepare_queue(Prepare::Enqueue(sources),cx);}
+        else{self.review_sources(sources,cx);}
     }
 
     pub(super) fn resume_jobs(&mut self,cx:&mut Context<Self>){self.prepare_queue(Prepare::Resume,cx);}
 
     pub(super) fn select_files(&mut self, cx: &mut Context<Self>) {
+        if self.review_loading(){self.navigate_page(Page::Jobs,cx);return;}
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) {
             return;
         }
@@ -79,7 +80,7 @@ impl UploadDesk {
             let _=this.update(cx,|v,cx|{
                 v.picker_pending=false;
                 match result{
-                    Ok(Ok(Some(files))) if !files.is_empty()=>v.start_upload(files,cx),
+                    Ok(Ok(Some(files))) if !files.is_empty()=>v.review_files(files,cx),
                     Ok(Ok(_))=>v.status="已取消文件选择".into(),
                     Ok(Err(_))|Err(_)=>v.status="无法打开文件选择窗口，请重试，或将文件拖入相册".into(),
                 }
@@ -88,6 +89,7 @@ impl UploadDesk {
         }));
     }
 
+    #[cfg(all(test,feature="qa"))]
     pub(super) fn start_upload(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         if files.is_empty(){return;}
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) {

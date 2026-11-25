@@ -172,6 +172,58 @@ impl UploadDesk {
         self.thumbnails.update(cx,|v,cx|v.request(storage,items,cx));
     }
 
+    pub(super) fn kick_previews(&mut self,cx:&mut Context<Self>){
+        if self.resetting||self.reset_pending||self.backup_busy{return;}
+        let storage=self.storage.clone();self.preview_worker.update(cx,|v,cx|v.kick(storage,cx));
+    }
+    pub(super) fn repair_visible_previews(&mut self,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy{self.status="缩略图后台任务正在运行".into();cx.notify();return;}
+        let (start,end)=self.resource.visible_range;
+        let lo=start.min(self.resource.assets.len());
+        let hi=end.max(start.saturating_add(24)).min(self.resource.assets.len());
+        let ids=self.resource.assets[lo..hi].iter().filter(|a|a.category=="image"&&a.provider==self.config.provider()&&a.owner_id==self.config.owner_id()).take(100).map(|a|a.id).collect::<Vec<_>>();
+        if ids.is_empty(){self.status="当前可见范围没有本账号图片".into();cx.notify();return;}
+        self.repair_local_previews(ids,cx);
+    }
+    pub(super) fn audit_previews(&mut self,repair:bool,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy||self.account_busy(cx)||self.backup_busy||self.resetting||self.reset_pending{return;}
+        let storage=self.storage.clone();let provider=self.config.provider().to_owned();let owner=self.config.owner_id().to_owned();
+        self.preview_worker.update(cx,|v,cx|v.scan(storage,provider,owner,repair,cx));
+    }
+    pub(super) fn repair_local_previews(&mut self,ids:Vec<i64>,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy||self.account_busy(cx)||self.backup_busy||self.resetting{return;}
+        let storage=self.storage.clone();let provider=self.config.provider().to_owned();let owner=self.config.owner_id().to_owned();
+        self.preview_worker.update(cx,|v,cx|v.repair(storage,provider,owner,ids,cx));
+    }
+    pub(super) fn apply_preview_completion(&mut self,item:&preview::PreviewCompletion,cx:&mut Context<Self>){
+        if !item.settled{return;}
+        let id=item.id;
+        if let Some((path,ratio))=&item.found{
+            if self.resource.assets.iter().any(|a|a.id==id){
+                self.resource.cached_thumbnails.insert(id,path.clone());
+                if self.resource.ratios.insert(id,*ratio)!=Some(*ratio){self.resource.ratio_revision+=1;self.resource.masonry_signature=0;}
+                if item.changed{self.resource.image_cache.update(cx,|cache,cx|cache.invalidate_path(path,cx));}
+            }
+            if self.resource.selected_asset.as_ref().is_some_and(|a|a.id==id){
+                self.resource.thumbnail_path=Some(path.clone());self.resource.preview_error=None;
+                if self.resource.large_preview_open{self.resource.large_preview_path=Some(path.clone());}
+            }
+        }else{
+            if let Some(path)=self.resource.cached_thumbnails.remove(&id){
+                self.resource.image_cache.update(cx,|cache,cx|cache.invalidate_path(&path,cx));
+                self.resource.ratios.remove(&id);self.resource.ratio_revision+=1;self.resource.masonry_signature=0;
+            }
+            if self.resource.selected_asset.as_ref().is_some_and(|a|a.id==id){
+                self.resource.thumbnail_path=None;self.resource.large_preview_path=None;
+                self.resource.preview_error=Some("本地预览生成失败，可在任务中心重试或主动恢复在线缩略图".into());
+            }
+        }
+        // Only refresh visible job history when an affected row is present.
+        // The worker emits Idle for a final refresh after the batch.
+        if self.page==Page::Jobs&&self.job_history.read(cx).jobs.iter().any(|j|j.result_asset_id==Some(id)){self.refresh_jobs(cx);}
+        cx.notify();
+    }
+
     pub(super) fn apply_thumbnail_batch(&mut self,event:&thumbnail_model::ThumbnailBatch,cx:&mut Context<Self>){
         if !self.thumbnails.read(cx).current(event.generation){return;}
         for (id,path,ratio) in &event.found{
@@ -183,7 +235,7 @@ impl UploadDesk {
     }
 
     pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
-        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx){return;}
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.preview_worker.read(cx).busy||self.account_busy(cx){return;}
         self.picker_pending=true;
         self.status="请选择相册备份位置…".into();cx.notify();
         let selection=cx.prompt_for_paths(PathPromptOptions{files:false,directories:true,multiple:false,prompt:Some("选择备份位置".into())});
@@ -202,6 +254,7 @@ impl UploadDesk {
     }
 
     fn export_album_to(&mut self,parent:PathBuf,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy||self.queue.read(cx).busy{self.status="请等待上传与预览任务完成后再备份".into();cx.notify();return;}
         self.backup_busy=true;
         let storage=self.storage.clone();
         self.status="正在备份链接数据库与本地微缩图…".into();
@@ -245,6 +298,20 @@ impl UploadDesk {
     pub(super) fn has_browse_filters(&self)->bool{
         !self.resource.search.is_empty()||!self.resource.category.is_empty()||
         self.resource.favorites_only||self.resource.all_accounts||self.resource.tag_filter.is_some()
+    }
+
+    pub(super) fn locate_job_asset(&mut self,id:i64,window:&mut Window,cx:&mut Context<Self>){
+        if self.account_busy(cx){return;}
+        self.resource.category="";
+        self.resource.favorites_only=false;self.resource.all_accounts=false;
+        self.resource.tag_filter=None;self.resource.similar_to=None;
+        let query=format!("id:{id}");
+        self.resource.search=query.clone();
+        self.resource.search_input.update(cx,|input,cx|input.set_value(query,window,cx));
+        self.navigate_page(Page::Gallery,cx);
+        self.reset_history(cx);self.focus_gallery_destination(window,cx);
+        self.status="已按任务关联定位资源；清空搜索可返回全部资源".into();
+        cx.notify();
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
@@ -321,7 +388,8 @@ impl UploadDesk {
         self.mutate_resource(mutations::Mutation::Tags(id,text),cx);
     }
 
-    pub(super) fn load_preview(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn load_preview(&mut self, cx: &mut Context<Self>) {self.repair_preview(false,cx);}
+    pub(super) fn repair_preview(&mut self,remote:bool,cx:&mut Context<Self>){
         let Some(asset) = self.resource.selected_asset.clone() else { return; };
         if asset.category != "image" || self.resource.preview_loading { return; }
         let storage = self.storage.clone();
@@ -330,7 +398,7 @@ impl UploadDesk {
         self.resource.preview_error = None;
         self.resource.preview_task = Some(cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
-                let path=preview::restore_local(&storage,&asset)?;
+                let path=if remote{preview::recover_remote(&storage,&asset)?}else{preview::restore_local(&storage,&asset)?};
                 let (w,h)=image::image_dimensions(&path)?;
                 Ok::<_,anyhow::Error>((path,w as f32/h.max(1) as f32))
             }).await;
@@ -341,7 +409,10 @@ impl UploadDesk {
                     Ok((path,ratio)) => {
                         view.resource.cached_thumbnails.insert(id, path.clone());
                         if view.resource.ratios.insert(id,ratio)!=Some(ratio){view.resource.ratio_revision+=1;view.resource.masonry_signature=0;}
+                        view.resource.image_cache.update(cx,|cache,cx|cache.clear(cx));
+                        if view.resource.large_preview_open{view.resource.large_preview_path=Some(path.clone());}
                         view.resource.thumbnail_path = Some(path);
+                        view.refresh_jobs(cx);
                     },
                     Err(error) => view.resource.preview_error = Some(error.to_string()),
                 }
@@ -528,11 +599,17 @@ impl UploadDesk {
         } else {
             asset.url.clone()
         };
+        self.copy_result_text(content,as_markdown,window,cx);
+    }
+    pub(super) fn copy_result_text(&mut self,content:String,as_markdown:bool,window:&mut Window,cx:&mut Context<Self>){
+        self.copy_text_feedback(content,if as_markdown{"Markdown 引用已复制"}else{"资源链接已复制"},window,cx);
+    }
+    pub(super) fn copy_text_feedback(&mut self,content:String,success:&str,window:&mut Window,cx:&mut Context<Self>){
         use gpui_kit::component::{notification::Notification,WindowExt};
         struct CopyFeedback;
         let notification=match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content)) {
             Ok(_) => {
-                self.status=if as_markdown{"Markdown 引用已复制"}else{"资源链接已复制"}.into();
+                self.status=success.into();
                 Notification::success(self.status.clone())
             }
             Err(error) => {self.status=format!("写入剪贴板失败：{error}");Notification::error(self.status.clone())}

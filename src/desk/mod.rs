@@ -7,10 +7,12 @@ mod data_panel;
 mod album;
 mod image_cache;
 mod thumbnail_model;
+mod preview_worker;
 pub(crate) mod preferences;
 mod preference_writer;
 mod queue;
 mod queue_prepare;
+mod upload_review;
 mod queue_runner;
 mod job_history;
 mod resources;
@@ -134,6 +136,7 @@ pub(crate) struct UploadDesk {
     resource: ResourceState,
     gallery_query:Entity<gallery_query::GalleryQuery>,
     thumbnails:Entity<thumbnail_model::ThumbnailModel>,
+    preview_worker:Entity<preview_worker::PreviewWorker>,
     resource_write_busy:bool,
     resource_write_task:Option<Task<()>>,
     inspector_model:Entity<inspector_model::InspectorModel>,
@@ -150,10 +153,16 @@ pub(crate) struct UploadDesk {
     page: Page,
     _subscriptions: Vec<Subscription>,
     inspector_open: bool,
+    inspector_drag:Option<(f32,f32)>,
+    sidebar_drag:Option<(f32,f32)>,
     immersive:bool,
     sidebar_collapsed:bool,
     surface_motion:design::SurfaceMotion,
     status: String,
+    upload_review: Option<upload_review::Review>,
+    review_task:Option<Task<()>>,
+    review_preview_task:Option<Task<()>>,
+    review_generation:u64,
     picker_pending: bool,
     picker_task: Option<Task<()>>,
     backup_busy: bool,
@@ -172,6 +181,7 @@ pub(crate) struct UploadDesk {
     data_scan_busy:bool,
     data_task:Option<Task<()>>,
     data_feedback:String,
+    audit_export_feedback:String,
     reset_armed:bool,
     reset_pending:bool,
     resetting:bool,
@@ -337,7 +347,15 @@ impl UploadDesk {
                 Message(s)=>v.status=s.clone(),
                 Started=>v.first_jobs(cx),
                 Refresh=>v.refresh_jobs(cx),
-                ResourceChanged=>v.reload(cx),
+                ResourceChanged=>{v.kick_previews(cx);v.reload(cx);},
+                ImageCommitted=>{
+                    v.kick_previews(cx);
+                    // Refresh promptly at the newest first page; do not jump a
+                    // user away from deep browsing or a fullscreen viewer.
+                    if v.page==Page::Gallery&&!v.resource.large_preview_open&&!v.resource.loading_history
+                        &&!v.resource.oldest&&v.resource.assets.len()<=PAGE_SIZE&&v.resource.visible_range.0<=12
+                        &&v.resource.similar_to.is_none(){v.reload(cx);}
+                },
                 Authorization=>v.account.update(cx,|a,cx|{a.session_status="上传未获授权：请在设置检查会话及 CSRF Token，再手动恢复任务".into();cx.notify();}),
                 Finished(body)=>if v.desktop_enabled{cx.show_system_notification(SystemNotification{tag:"yuque-upload-batch".into(),title:"Yuque Asset Desk".into(),body:body.clone().into(),actions:vec![]});},
             }
@@ -347,13 +365,24 @@ impl UploadDesk {
         let gallery_events=cx.subscribe(&gallery_query,|v,_,event:&gallery_query::GalleryResult,cx|v.apply_gallery_result(event,cx));
         let thumbnails=cx.new(|_|thumbnail_model::ThumbnailModel::default());
         let thumbnail_events=cx.subscribe(&thumbnails,|v,_,event:&thumbnail_model::ThumbnailBatch,cx|v.apply_thumbnail_batch(event,cx));
+        let preview_worker=cx.new(|_|preview_worker::PreviewWorker::default());
+        let preview_observer=cx.observe(&preview_worker,|_,_,cx|cx.notify());
+        let preview_events=cx.subscribe(&preview_worker,|v,_,event:&preview_worker::PreviewEvent,cx|{
+            match event{
+                preview_worker::PreviewEvent::Completed(item)=>v.apply_preview_completion(item,cx),
+                preview_worker::PreviewEvent::Idle=>v.refresh_jobs(cx),
+                preview_worker::PreviewEvent::Error(e)=>{v.status=format!("预览任务暂停，稍后可重试：{e}");cx.notify();},
+                preview_worker::PreviewEvent::Scheduled(n)=>{v.status=format!("已加入 {n} 个本地预览修复任务");v.refresh_jobs(cx);cx.notify();},
+                preview_worker::PreviewEvent::RepairFinished{processed,failed}=>{v.status=format!("本轮后台预览：就绪 {} · 失败 {failed}",processed.saturating_sub(*failed));cx.notify();}
+            }
+        });
         let account=cx.new(|cx|account_model::AccountModel::new(window,cx));
         let account_observer=cx.observe(&account,|_,_,cx|cx.notify());
         let account_events=cx.subscribe(&account,|v,_,event:&account_model::AccountEvent,cx|{
             match event{account_model::AccountEvent::Activate(creds)=>v.apply_account(Some(creds.clone()),cx)}
         });
         let mut view = Self {
-            gallery_query,thumbnails,
+            gallery_query,thumbnails,preview_worker,
             job_history,
             viewer_model,viewer_revision:0,
             inspector_model,
@@ -419,11 +448,12 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,account_observer,account_events],
-            inspector_open: false,
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,preview_observer,preview_events,account_observer,account_events],
+            inspector_open: false,inspector_drag:None,sidebar_drag:None,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
             status,
+            upload_review:None,review_task:None,review_preview_task:None,review_generation:0,
             picker_pending:false,picker_task:None,
             backup_busy:false,
             desktop_enabled:false,
@@ -432,7 +462,7 @@ impl UploadDesk {
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
-            data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
+            data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),audit_export_feedback:String::new(),
             reset_armed:false,reset_pending:false,resetting:false,
 
         };
@@ -449,9 +479,15 @@ impl UploadDesk {
                         view.update_state=crate::update::State::Newer(crate::update::Available{version:"0.6.0".into(),page:crate::update::RELEASES.into(),package:Some((crate::update::RELEASES.into(),crate::update::RELEASES.into()))});
                     }
                     Ok("data")=>{view.page=Page::Data;view.inspector_open=false;view.refresh_data(cx);}
+                    Ok("data-audit")=>{view.page=Page::Data;view.inspector_open=false;view.refresh_data(cx);view.audit_previews(false,cx);}
                     Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
+                    Ok("upload-review"|"upload-review-batch")=>{
+                        let files=std::fs::read_dir(view.storage.data_dir()).ok().into_iter().flatten().filter_map(|e|e.ok()).map(|e|e.path()).filter(|p|p.extension().is_some_and(|x|x=="png")).take(5).collect::<Vec<_>>();
+                        let files=if std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("upload-review-batch"){files.into_iter().cycle().take(105).collect()}else{files};
+                        view.review_files(files,cx);
+                    }
                     Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}
                     Ok("tasks-active")=>{
                         view.page=Page::Jobs;view.inspector_open=false;
@@ -479,6 +515,7 @@ impl UploadDesk {
             }
             view.account.update(cx,|a,cx|a.refresh_index(view.storage.clone(),cx));
             view.refresh_jobs(cx);
+            view.kick_previews(cx);
             view.reload(cx);
         });
         #[cfg(feature="qa")]

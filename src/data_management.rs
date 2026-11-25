@@ -6,10 +6,10 @@ use crate::storage::Storage;
 
 pub const REQUEST:&str=".reset-request";
 const DB_FILES:[&str;4]=["assets.db","assets.db-wal","assets.db-shm","assets.db-journal"];
-const DIRS:[&str;3]=["album-previews","thumbnails","clipboard"];
+const DIRS:[&str;4]=["album-previews","thumbnails","clipboard","upload-staging"];
 #[derive(Clone,Debug,Default)]
 pub struct Usage{
-    pub database:u64,pub previews:u64,pub legacy:u64,pub clipboard:u64,pub reclaimable:u64,pub candidates:usize,pub unfinished:u64,pub accounts:usize,
+    pub database:u64,pub previews:u64,pub legacy:u64,pub clipboard:u64,pub staging:u64,pub reclaimable:u64,pub candidates:usize,pub unfinished:u64,pub accounts:usize,
 }
 #[derive(Debug,Default)]
 pub struct Cleanup{pub count:usize,pub bytes:u64,pub failed:usize}
@@ -46,6 +46,7 @@ fn recognized(folder:&str,p:&Path)->bool{
     match folder{
         "album-previews"=>name.strip_suffix(".jpg").is_some_and(hash_name),
         "thumbnails"=>name.strip_suffix(".png").is_some_and(|s|hash_name(s.strip_prefix("large-").unwrap_or(s))),
+        "upload-staging"=>name.strip_suffix(".snapshot").and_then(|stem|stem.split_once('-')).is_some_and(|(pid,nonce)|!pid.is_empty()&&!nonce.is_empty()&&pid.bytes().all(|b|b.is_ascii_digit())&&nonce.bytes().all(|b|b.is_ascii_digit())),
         "clipboard"=>{
             let Some((stem,ext))=name.split_once('.')else{return false};
             hash_name(stem)&&(matches!(ext,"png"|"jpg"|"jpeg"|"webp"|"gif"|"svg"|"bmp"|"tiff"|"tif"|"ico"|"pnm"|"ppm"|"pgm"|"pbm")||
@@ -90,7 +91,7 @@ pub fn usage(storage:&Storage)->Result<Usage>{
     let root=root(storage)?;
     let mut u=Usage::default();
     for name in DB_FILES{u.database=u.database.saturating_add(file_bytes(&root.join(name))?);}
-    for (folder,total) in [("album-previews",&mut u.previews),("thumbnails",&mut u.legacy),("clipboard",&mut u.clipboard)]{
+    for (folder,total) in [("album-previews",&mut u.previews),("thumbnails",&mut u.legacy),("clipboard",&mut u.clipboard),("upload-staging",&mut u.staging)]{
         for p in entries(&root,folder)?{*total=total.saturating_add(file_bytes(&p)?);}
     }
     for p in candidates(storage,&root)?{u.candidates+=1;u.reclaimable=u.reclaimable.saturating_add(file_bytes(&p)?);}

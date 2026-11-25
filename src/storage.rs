@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 #[derive(Debug, Clone)]
 pub struct Asset {
@@ -23,6 +23,10 @@ pub struct Job {
     pub path: PathBuf,
     pub state: String,
     pub error: String,
+    pub preview:Option<(String,String)>,
+    pub thumbnail:Option<PathBuf>,
+    pub result_url:Option<String>,
+    pub result_asset_id:Option<i64>,
 }
 
 #[derive(Clone)]
@@ -65,6 +69,32 @@ impl Storage {
              CREATE TABLE IF NOT EXISTS asset_favorites (
                  asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE
              );
+             CREATE TABLE IF NOT EXISTS asset_sources (
+                 asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                 path TEXT NOT NULL, PRIMARY KEY(asset_id,path)
+             );
+             CREATE TABLE IF NOT EXISTS asset_preview_state (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+                 state TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS upload_job_assets (
+                 job_id INTEGER PRIMARY KEY REFERENCES upload_jobs(id) ON DELETE CASCADE,
+                 asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS upload_receipts (
+                 job_id INTEGER PRIMARY KEY REFERENCES upload_jobs(id) ON DELETE CASCADE,
+                 name TEXT NOT NULL, bytes INTEGER NOT NULL, category TEXT NOT NULL,
+                 provider TEXT NOT NULL, owner_id TEXT NOT NULL, url TEXT NOT NULL,
+                 filekey TEXT NOT NULL, sha256 TEXT NOT NULL, source TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS preview_work (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+                 snapshot TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS receipt_preview (
+                 job_id INTEGER PRIMARY KEY REFERENCES upload_receipts(job_id) ON DELETE CASCADE,
+                 snapshot TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS asset_visual (
                  asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
                  hash INTEGER NOT NULL
@@ -82,6 +112,8 @@ impl Storage {
             UPDATE upload_jobs SET state='unknown',error='上次请求结果未知，请先核实远端' WHERE provider='yuque' AND state='running';
             UPDATE upload_jobs SET state='paused' WHERE provider='demo' AND state='running';
             COMMIT;")?;
+        drop(conn);
+        storage.recover_receipts()?;
         Ok(storage)
     }
 
@@ -100,12 +132,14 @@ impl Storage {
         Ok(Self{path})
     }
     pub fn unfinished_count(&self)->Result<u64>{
-        Ok(self.open()?.query_row("SELECT count(*) FROM upload_jobs WHERE state NOT IN ('done','cancelled')",[],|r|r.get(0))?)
+        Ok(self.open()?.query_row("SELECT (SELECT count(*) FROM upload_jobs WHERE state NOT IN ('done','cancelled'))+(SELECT count(*) FROM preview_work)",[],|r|r.get(0))?)
     }
     pub fn local_references(&self)->Result<Vec<PathBuf>>{
         let conn=self.open()?;
         let mut stmt=conn.prepare("SELECT path FROM upload_jobs")?;
         let mut refs=stmt.query_map([],|r|r.get::<_,String>(0))?.map(|r|r.map(PathBuf::from)).collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt=conn.prepare("SELECT path FROM asset_sources")?;
+        refs.extend(stmt.query_map([],|r|r.get::<_,String>(0))?.map(|r|r.map(PathBuf::from)).collect::<rusqlite::Result<Vec<_>>>()?);
         let mut stmt=conn.prepare("SELECT url FROM assets WHERE provider='demo'")?;
         for row in stmt.query_map([],|r|r.get::<_,String>(0))?{
             let raw=row?;
@@ -177,11 +211,12 @@ impl Storage {
             (None, _) => "AND ?5 IS NULL",
         };
         let order = if oldest { "ASC" } else { "DESC" };
+        let exact_id=query.strip_prefix("id:").filter(|s|s.parse::<i64>().is_ok_and(|id|id>0));
+        let query_filter=if exact_id.is_some(){"id = ?1"}else{"(?1 = '' OR instr(lower(name), lower(?1)) > 0 OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id = assets.id AND instr(lower(tag), lower(?1)) > 0))"};
         let sql = format!(
             "SELECT id,name,bytes,category,provider,url,sha256,owner_id,filekey,created_at
              FROM assets
-             WHERE (?1 = '' OR instr(lower(name), lower(?1)) > 0
-                 OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id = assets.id AND instr(lower(tag), lower(?1)) > 0))
+             WHERE {query_filter}
                AND (?2 = '' OR category = ?2)
                AND (?7 IS NULL OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id=assets.id
                    AND (tag=?7 OR substr(tag,1,length(?7)+1)=?7||'/')))
@@ -190,7 +225,7 @@ impl Storage {
              ORDER BY id {order} LIMIT ?6"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![query, category,
+        let rows = stmt.query_map(params![exact_id.unwrap_or(query), category,
             provider, owner, cursor, (limit + 1) as i64, tag, favorites], map_row)?;
         let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = items.len() > limit;
@@ -218,6 +253,7 @@ impl Storage {
     /// Export a consistent SQLite snapshot plus local derivatives only. Never
     /// copies the OS credential vault or original clipboard/upload source files.
     pub fn export_album(&self,parent:&std::path::Path) -> Result<PathBuf> {
+        anyhow::ensure!(self.pending_previews()?==0,"请等待缩略图任务完成后再备份");
         let parent=parent.canonicalize()?;
         let source=self.data_dir().canonicalize()?;
         anyhow::ensure!(!parent.starts_with(&source),"请选择应用数据目录以外的备份位置");
@@ -270,7 +306,7 @@ Restore into a NEW data directory only; see README.
 
     pub fn toggle_favorite(&self,asset:&Asset) -> Result<bool> {
         let mut conn=self.open()?;
-        let tx=conn.transaction()?;
+        let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND provider=?2 AND owner_id=?3)",params![asset.id,asset.provider,asset.owner_id],|r|r.get(0))?;
         anyhow::ensure!(exists,"资源已变化");
         let removed=tx.execute("DELETE FROM asset_favorites WHERE asset_id=?1",[asset.id])?;
@@ -284,7 +320,7 @@ Restore into a NEW data directory only; see README.
     }
 
     pub fn store_visual_hash(&self,id:i64,hash:u64) -> Result<()> {
-        self.open()?.execute("INSERT OR IGNORE INTO asset_visual(asset_id,hash) VALUES(?1,?2)",params![id,hash as i64])?;
+        self.open()?.execute("INSERT INTO asset_visual(asset_id,hash) VALUES(?1,?2) ON CONFLICT(asset_id) DO UPDATE SET hash=excluded.hash",params![id,hash as i64])?;
         Ok(())
     }
 
@@ -337,7 +373,7 @@ Restore into a NEW data directory only; see README.
             .map(str::trim).filter(|s| !s.is_empty()).collect();
         anyhow::ensure!(tags.len() <= 20 && tags.iter().all(|s| s.chars().count() <= 40 && s.split('/').all(|part|!part.trim().is_empty())), "最多 20 个标签，每个不超过 40 字");
         let mut conn = self.open()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM asset_tags WHERE asset_id=?1", [id])?;
         for tag in tags {
             tx.execute("INSERT INTO asset_tags(asset_id,tag) VALUES(?1,?2)", params![id, tag])?;
@@ -359,7 +395,7 @@ Restore into a NEW data directory only; see README.
         let tags:std::collections::BTreeSet<_>=text.split([',','，']).map(str::trim).filter(|s|!s.is_empty()).collect();
         anyhow::ensure!(!ids.is_empty() && ids.len()<=150 && !tags.is_empty() && tags.len()<=20 && tags.iter().all(|t|t.chars().count()<=40 && t.split('/').all(|s|!s.trim().is_empty())), "标签或选中资源不符合限制");
         let mut conn=self.open()?;
-        let tx=conn.transaction()?;
+        let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (provider,owner)=scope.map_or((None,None),|(p,o)|(Some(p),Some(o)));
         for id in ids {
             let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND (?2 IS NULL OR (provider=?2 AND owner_id=?3)))",params![id,provider,owner],|r|r.get(0))?;
@@ -392,9 +428,12 @@ Restore into a NEW data directory only; see README.
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    // Acquire the writer reservation before read-then-write checks. A deferred
+    // WAL transaction can fail immediately with SQLITE_BUSY_SNAPSHOT when the
+    // preview worker commits between the check and the INSERT.
     pub fn enqueue(&self, provider: &str, owner: &str, files: &[PathBuf]) -> Result<Vec<(i64, PathBuf)>> {
         let mut conn = self.open()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut jobs = Vec::new();
         for path in files {
             let text = path.to_str().context("任务路径不是有效 UTF-8")?;
@@ -410,12 +449,17 @@ Restore into a NEW data directory only; see README.
 
     pub fn jobs(&self, provider: &str, owner: &str, before: Option<i64>) -> Result<Vec<Job>> {
         let conn = self.open()?;
-        let mut stmt = conn.prepare("SELECT id,path,state,error FROM upload_jobs
-            WHERE provider=?1 AND owner_id=?2 AND (?3 IS NULL OR id < ?3)
-            ORDER BY id DESC LIMIT 51")?;
+        let mut stmt = conn.prepare("SELECT j.id,j.path,j.state,j.error,CASE WHEN w.asset_id IS NOT NULL THEN 'pending' ELSE p.state END,CASE WHEN w.asset_id IS NOT NULL THEN '' ELSE p.error END,CASE WHEN r.category='image' THEN r.sha256 END,r.url,r.id FROM upload_jobs j
+            LEFT JOIN upload_job_assets a ON a.job_id=j.id LEFT JOIN assets r ON r.id=a.asset_id AND r.provider=j.provider AND r.owner_id=j.owner_id
+            LEFT JOIN asset_preview_state p ON p.asset_id=r.id LEFT JOIN preview_work w ON w.asset_id=r.id
+            WHERE j.provider=?1 AND j.owner_id=?2 AND (?3 IS NULL OR j.id < ?3)
+            ORDER BY j.id DESC LIMIT 51")?;
         let rows = stmt.query_map(params![provider, owner, before], |r| Ok(Job {
             id: r.get(0)?, path: PathBuf::from(r.get::<_,String>(1)?),
             state: r.get(2)?, error: r.get(3)?,
+            preview:r.get::<_,Option<String>>(4)?.zip(r.get::<_,Option<String>>(5)?),
+            thumbnail:r.get::<_,Option<String>>(6)?.map(|sha|crate::preview::cached_path_for(self.data_dir(),provider,owner,&sha)).filter(|p|crate::preview::valid_cache(p)),
+            result_url:r.get(7)?,result_asset_id:r.get(8)?,
         }))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -453,18 +497,73 @@ Restore into a NEW data directory only; see README.
 
     pub fn acknowledge_unknown(&self, provider:&str, owner:&str, id:i64) -> Result<()> {
         let changed = self.open()?.execute("UPDATE upload_jobs SET state='failed',error='用户已核实远端，允许手动重试'
-            WHERE provider=?1 AND owner_id=?2 AND id=?3 AND state IN ('unknown','running')", params![provider,owner,id])?;
+            WHERE provider=?1 AND owner_id=?2 AND id=?3 AND state IN ('unknown','running') AND NOT EXISTS(SELECT 1 FROM upload_receipts WHERE job_id=upload_jobs.id)", params![provider,owner,id])?;
         anyhow::ensure!(changed==1,"任务不属于当前账号或状态已变化");
         Ok(())
     }
 
+    pub fn set_preview_state(&self,id:i64,state:&str,error:&str)->Result<()>{
+        self.open()?.execute("INSERT INTO asset_preview_state(asset_id,state,error) SELECT ?1,?2,?3 WHERE ?2='remote_ready' OR NOT EXISTS(SELECT 1 FROM preview_work WHERE asset_id=?1) ON CONFLICT(asset_id) DO UPDATE SET state=excluded.state,error=excluded.error",params![id,state,error])?;Ok(())
+    }
+    pub fn preview_pending(&self,id:i64)->Result<bool>{
+        Ok(self.open()?.query_row("SELECT EXISTS(SELECT 1 FROM preview_work WHERE asset_id=?1)",[id],|r|r.get(0))?)
+    }
+    pub fn pending_previews(&self)->Result<u64>{
+        Ok(self.open()?.query_row("SELECT count(*) FROM preview_work",[],|r|r.get(0))?)
+    }
+    pub fn retained_preview_bytes(&self)->Result<u64>{
+        Ok(self.open()?.query_row("SELECT COALESCE((SELECT sum(a.bytes) FROM preview_work w JOIN assets a ON a.id=w.asset_id WHERE w.snapshot<>''),0)+COALESCE((SELECT sum(r.bytes) FROM receipt_preview p JOIN upload_receipts r ON r.job_id=p.job_id),0)",[],|r|r.get(0))?)
+    }
+    pub fn snapshot_referenced(&self,name:&str)->Result<bool>{
+        Ok(self.open()?.query_row("SELECT EXISTS(SELECT 1 FROM preview_work WHERE snapshot=?1 UNION ALL SELECT 1 FROM receipt_preview WHERE snapshot=?1)",[name],|r|r.get(0))?)
+    }
+    /// A fixed upper ID bounds the audit even while uploads append new assets.
+    pub fn preview_audit_bounds(&self,provider:&str,owner:&str)->Result<(i64,usize)>{
+        Ok(self.open()?.query_row("SELECT COALESCE(max(id),0),count(*) FROM assets WHERE provider=?1 AND owner_id=?2 AND category='image'",params![provider,owner],|r|Ok((r.get(0)?,r.get(1)?)))?)
+    }
+    pub fn preview_audit_page(&self,provider:&str,owner:&str,after:i64,upper:i64)->Result<Vec<(Asset,bool)>>{
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at,w.asset_id IS NOT NULL FROM assets a LEFT JOIN preview_work w ON w.asset_id=a.id WHERE a.provider=?1 AND a.owner_id=?2 AND a.category='image' AND a.id>?3 AND a.id<=?4 ORDER BY a.id LIMIT 64")?;
+        let rows=stmt.query_map(params![provider,owner,after,upper],|r|Ok((map_row(r)?,r.get(10)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+    pub fn schedule_previews(&self,provider:&str,owner:&str,ids:&[i64])->Result<usize>{
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut count=0;
+        for id in ids.iter().take(100){
+            let n=tx.execute("INSERT OR IGNORE INTO preview_work(asset_id,snapshot) SELECT id,'' FROM assets WHERE id=?1 AND provider=?2 AND owner_id=?3 AND category='image'",params![id,provider,owner])?;
+            if n==1{
+                tx.execute("INSERT INTO asset_preview_state(asset_id,state,error) VALUES(?1,'pending','') ON CONFLICT(asset_id) DO UPDATE SET state=CASE WHEN state='remote_ready' THEN state ELSE 'pending' END,error=''",[id])?;
+                count+=1;
+            }
+        }
+        tx.commit()?;Ok(count)
+    }
+    pub fn next_preview(&self)->Result<Option<(Asset,String)>>{
+        Ok(self.open()?.query_row("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at,w.snapshot FROM preview_work w JOIN assets a ON a.id=w.asset_id ORDER BY w.asset_id LIMIT 1",[],|r|Ok((map_row(r)?,r.get(10)?))).optional()?)
+    }
+    pub fn finish_preview(&self,id:i64,snapshot:&str,state:&str,error:&str,hash:Option<u64>)->Result<bool>{
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let n=tx.execute("DELETE FROM preview_work WHERE asset_id=?1 AND snapshot=?2",params![id,snapshot])?;
+        if n==0{return Ok(false);}
+        tx.execute("INSERT INTO asset_preview_state(asset_id,state,error) VALUES(?1,?2,?3) ON CONFLICT(asset_id) DO UPDATE SET state=excluded.state,error=excluded.error",params![id,state,error])?;
+        if let Some(hash)=hash{tx.execute("INSERT INTO asset_visual(asset_id,hash) VALUES(?1,?2) ON CONFLICT(asset_id) DO UPDATE SET hash=excluded.hash",params![id,hash as i64])?;}
+        else{tx.execute("DELETE FROM asset_visual WHERE asset_id=?1",[id])?;}
+        tx.commit()?;Ok(true)
+    }
+    pub fn preview_state(&self,id:i64)->Result<Option<(String,String)>>{
+        Ok(self.open()?.query_row("SELECT state,error FROM asset_preview_state WHERE asset_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?)
+    }
     pub fn preview_sources(&self,asset:&Asset) -> Result<Vec<PathBuf>> {
         let conn=self.open()?;
+        let mut exact=conn.prepare("SELECT path FROM asset_sources WHERE asset_id=?1 ORDER BY rowid DESC LIMIT 32")?;
+        let mut paths=exact.query_map([asset.id],|r|Ok(PathBuf::from(r.get::<_,String>(0)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stmt=conn.prepare("SELECT path FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND state='done'
             AND (substr(path,-length(?3)-1)='/'||?3 OR substr(path,-length(?3)-1)=char(92)||?3 OR path=?3)
             ORDER BY id DESC LIMIT 4")?;
         let rows=stmt.query_map(params![asset.provider,asset.owner_id,asset.name],|r|Ok(PathBuf::from(r.get::<_,String>(0)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        for path in rows{let path=path?;if !paths.contains(&path){paths.push(path);}}
+        Ok(paths)
     }
 
     pub fn find(&self, provider: &str, owner_id: &str, digest: &str) -> Result<Option<Asset>> {
@@ -482,18 +581,81 @@ Restore into a NEW data directory only; see README.
         Ok(())
     }
 
+    /// Persist a known successful remote result before the asset transaction.
+    /// Only a matching running job can accept a receipt; it contains no session credentials.
+    #[cfg(test)]
+    pub fn record_receipt(&self,entry:&NewAsset,source:&std::path::Path,job:i64)->Result<()>{
+        self.record_receipt_with_preview(entry,source,job,None)
+    }
+    pub fn record_receipt_with_preview(&self,entry:&NewAsset,source:&std::path::Path,job:i64,snapshot:Option<&str>)->Result<()>{
+        let path=source.to_str().context("来源路径不是有效 UTF-8")?;
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let n=tx.execute("INSERT INTO upload_receipts(job_id,name,bytes,category,provider,owner_id,url,filekey,sha256,source)
+            SELECT id,?2,?3,?4,?5,?6,?7,?8,?9,?10 FROM upload_jobs WHERE id=?1 AND provider=?5 AND owner_id=?6 AND state='running' AND path=?10",
+            params![job,entry.name,entry.bytes,entry.category,entry.provider,entry.owner_id,entry.url,entry.filekey,entry.sha256,path])?;
+        anyhow::ensure!(n==1,"已返回的上传结果无法保存至对应任务");
+        if let Some(name)=snapshot{anyhow::ensure!(valid_snapshot_name(name),"暂存名称无效");tx.execute("INSERT INTO receipt_preview(job_id,snapshot) VALUES(?1,?2)",params![job,name])?;}
+        tx.commit()?;Ok(())
+    }
+    fn recover_receipts(&self)->Result<()>{
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT r.job_id,r.name,r.bytes,r.category,r.provider,r.owner_id,r.url,r.filekey,r.sha256,r.source
+            FROM upload_receipts r JOIN upload_jobs j ON j.id=r.job_id AND j.provider=r.provider AND j.owner_id=r.owner_id AND j.path=r.source
+            WHERE j.state='unknown' AND r.provider='yuque' ORDER BY r.job_id")?;
+        let receipts=stmt.query_map([],|r|Ok((r.get::<_,i64>(0)?,NewAsset{name:r.get(1)?,bytes:r.get(2)?,category:r.get(3)?,provider:r.get(4)?,owner_id:r.get(5)?,url:r.get(6)?,filekey:r.get(7)?,sha256:r.get(8)?},PathBuf::from(r.get::<_,String>(9)?))))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);drop(conn);
+        for (job,entry,source) in receipts{
+            // No upload and no network. The normal commit transaction validates
+            // the matching receipt before accepting an unknown job.
+            if self.commit_asset(&entry,Some(&source),Some(job)).is_err(){
+                eprintln!("上传回执恢复未完成，任务仍待核实");
+            }
+        }
+        Ok(())
+    }
+    #[cfg(test)]
     pub fn insert_or_get(&self, entry: &NewAsset) -> Result<Asset> {
-        let conn = self.open()?;
-        conn.execute(
+        self.commit_asset(entry,None,None)
+    }
+    pub fn commit_asset(&self,entry:&NewAsset,source:Option<&std::path::Path>,job:Option<i64>)->Result<Asset>{
+        self.commit_asset_with_preview(entry,source,job,None)
+    }
+    pub fn commit_asset_with_preview(&self,entry:&NewAsset,source:Option<&std::path::Path>,job:Option<i64>,snapshot:Option<&str>)->Result<Asset>{
+        let mut conn=self.open()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
             "INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256,filekey)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(provider,owner_id,sha256) DO NOTHING",
             params![entry.name, entry.bytes, entry.category, entry.provider,
                     entry.owner_id, entry.url, entry.sha256, entry.filekey],
         )?;
-        drop(conn);
-        self.find(&entry.provider, &entry.owner_id, &entry.sha256)?
-            .context("SQLite 写入后找不到资源")
+        let asset=tx.query_row("SELECT id,name,bytes,category,provider,url,sha256,owner_id,filekey,created_at FROM assets WHERE provider=?1 AND owner_id=?2 AND sha256=?3",params![entry.provider,entry.owner_id,entry.sha256],map_row)?;
+        if let Some(source)=source{
+            tx.execute("INSERT OR IGNORE INTO asset_sources(asset_id,path) VALUES(?1,?2)",params![asset.id,source.to_str().context("来源路径不是有效 UTF-8")?])?;
+        }
+        if let Some(job)=job{
+            let n=tx.execute("UPDATE upload_jobs SET state='done',error='' WHERE id=?1 AND provider=?2 AND owner_id=?3 AND (state='running' OR (state='unknown' AND EXISTS(SELECT 1 FROM upload_receipts r WHERE r.job_id=?1 AND r.provider=?2 AND r.owner_id=?3 AND r.sha256=?4 AND r.url=?5 AND r.source=upload_jobs.path)))",params![job,entry.provider,entry.owner_id,entry.sha256,entry.url])?;
+            anyhow::ensure!(n==1,"任务与资源账号不一致或状态已变化");
+            tx.execute("INSERT INTO upload_job_assets(job_id,asset_id) VALUES(?1,?2) ON CONFLICT(job_id) DO UPDATE SET asset_id=excluded.asset_id",params![job,asset.id])?;
+            if asset.category=="image"{
+                let receipt:Option<String>=tx.query_row("SELECT snapshot FROM receipt_preview WHERE job_id=?1",[job],|r|r.get(0)).optional()?;
+                let name=receipt.as_deref().or(snapshot).unwrap_or("");
+                anyhow::ensure!(name.is_empty()||valid_snapshot_name(name),"暂存名称无效");
+                let inserted=tx.execute("INSERT OR IGNORE INTO preview_work(asset_id,snapshot) VALUES(?1,?2)",params![asset.id,name])?;
+                if inserted==1{
+                    tx.execute("INSERT INTO asset_preview_state(asset_id,state,error) VALUES(?1,'pending','') ON CONFLICT(asset_id) DO UPDATE SET state=CASE WHEN state='remote_ready' THEN state ELSE 'pending' END,error=''",[asset.id])?;
+                }else if !name.is_empty(){
+                    // Upgrade a source-only recovery task; never replace a retained snapshot.
+                    tx.execute("UPDATE preview_work SET snapshot=?2 WHERE asset_id=?1 AND snapshot=''",params![asset.id,name])?;
+                }
+            }
+            tx.execute("DELETE FROM upload_receipts WHERE job_id=?1",[job])?;
+        }
+        tx.commit()?;Ok(asset)
     }
+}
+
+pub(crate) fn valid_snapshot_name(name:&str)->bool{
+    name.strip_suffix(".snapshot").and_then(|s|s.split_once('-')).is_some_and(|(a,b)|!a.is_empty()&&!b.is_empty()&&a.bytes().all(|c|c.is_ascii_digit())&&b.bytes().all(|c|c.is_ascii_digit()))
 }
 
 pub struct NewAsset {
@@ -519,6 +681,70 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn v08_schema_migrates_and_backup_restores_without_original(){
+        use sha2::{Digest,Sha256};
+        let root=std::env::temp_dir().join(format!("yuque-v08-migration-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let data=root.join("data");std::fs::create_dir_all(&data).unwrap();
+        let source=root.join("legacy.png");image::RgbImage::from_pixel(320,160,image::Rgb([40,80,120])).save(&source).unwrap();
+        let bytes=std::fs::read(&source).unwrap();let sha=hex::encode(Sha256::digest(&bytes));
+        let path=data.join("assets.db");let conn=Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS assets (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               name TEXT NOT NULL,
+               bytes INTEGER NOT NULL,
+               category TEXT NOT NULL,
+               provider TEXT NOT NULL,
+               owner_id TEXT NOT NULL,
+               url TEXT NOT NULL,
+               sha256 TEXT NOT NULL,
+               filekey TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+               UNIQUE(provider, owner_id, sha256)
+             );
+             CREATE INDEX IF NOT EXISTS idx_asset_recent ON assets(id DESC);
+             CREATE INDEX IF NOT EXISTS idx_asset_scope_recent ON assets(provider, owner_id, id DESC);
+             CREATE TABLE IF NOT EXISTS upload_jobs (
+                id INTEGER PRIMARY KEY, provider TEXT NOT NULL, owner_id TEXT NOT NULL,
+                path TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT ''
+             );
+             CREATE INDEX IF NOT EXISTS idx_upload_jobs_scope ON upload_jobs(provider, owner_id, state, id);
+             CREATE TABLE IF NOT EXISTS desk_preferences (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS saved_accounts (owner_id TEXT PRIMARY KEY NOT NULL);
+             CREATE TABLE IF NOT EXISTS asset_favorites (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS asset_visual (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+                 hash INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS asset_tags (
+                 asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                 tag TEXT NOT NULL, PRIMARY KEY(asset_id, tag)
+             );"
+        ).unwrap();
+        conn.execute("INSERT INTO assets(id,name,bytes,category,provider,owner_id,url,sha256,filekey) VALUES(42,'legacy.png',?1,'image','yuque','123','https://cdn.nlark.com/yuque/0/legacy.png',?2,'old-key')",params![bytes.len() as i64,sha]).unwrap();
+        conn.execute("INSERT INTO upload_jobs(id,provider,owner_id,path,state) VALUES(7,'yuque','123',?1,'done')",[source.to_str().unwrap()]).unwrap();
+        conn.execute("INSERT INTO asset_favorites VALUES(42)",[]).unwrap();
+        conn.execute("INSERT INTO asset_tags VALUES(42,'legacy')",[]).unwrap();
+        drop(conn);
+        let db=Storage::new(path).unwrap();let a=db.find("yuque","123",&sha).unwrap().unwrap();
+        assert_eq!(a.id,42);assert_eq!(a.filekey,"old-key");assert_eq!(db.pending_previews().unwrap(),0);
+        assert_eq!(db.schedule_previews("yuque","123",&[42]).unwrap(),1);
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        let backup=db.export_album(&root).unwrap();
+        assert!(!backup.join("upload-staging").exists());
+        std::fs::remove_file(&source).unwrap();
+        let restored=Storage::new(backup.join("assets.db")).unwrap();
+        let a=restored.find("yuque","123",&sha).unwrap().unwrap();
+        assert_eq!(a.id,42);assert_eq!(restored.jobs("yuque","123",None).unwrap()[0].state,"done");
+        assert_eq!(restored.open().unwrap().query_row("SELECT count(*) FROM asset_favorites WHERE asset_id=42",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(restored.open().unwrap().query_row("SELECT tag FROM asset_tags WHERE asset_id=42",[],|r|r.get::<_,String>(0)).unwrap(),"legacy");
+        assert!(crate::preview::restore_local(&restored,&a).is_ok());
+        drop(restored);drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn album_favorites_similarity_backup_and_large_pagination() {
         let root=std::env::temp_dir().join(format!("yuque-album-storage-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

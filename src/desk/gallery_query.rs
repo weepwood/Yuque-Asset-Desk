@@ -92,7 +92,7 @@ fn execute_blocking(storage:&Storage,request:GalleryRequest,cancellation:&QueryC
     for a in page.0.iter().filter(|a|a.category=="image"){
         cancellation.check()?;
         let path=preview::cached_path(storage.data_dir(),a);
-        if let Ok((w,h))=image::image_dimensions(&path){ratios.push((a.id,w as f32/h.max(1) as f32,path));}
+        if preview::valid_cache(&path){if let Ok((w,h))=image::image_dimensions(&path){ratios.push((a.id,w as f32/h.max(1) as f32,path));}}
     }
     let tags=storage.tag_catalog(scope)?;
     cancellation.check()?;

@@ -1,8 +1,9 @@
 //! Blocking preparation operations; never execute these on the UI thread.
 use super::*;
+#[derive(Clone)]
 pub(super) enum Source {
     Path(PathBuf),
-    Image(Vec<u8>,String),
+    Image(Arc<Vec<u8>>,String),
 }
 pub(super) enum Prepare {
     Enqueue(Vec<Source>),

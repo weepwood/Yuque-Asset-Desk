@@ -7,6 +7,9 @@ impl UploadDesk{
         self.apply_account(creds,cx);
     }
     pub(super) fn apply_account(&mut self,creds:Option<YuqueCredentials>,cx:&mut Context<Self>){
+        self.cancel_upload_review(cx);
+        self.audit_export_feedback.clear();
+        self.preview_worker.update(cx,|v,cx|v.stop_scan(cx));
         self.resource.image_cache.update(cx,|cache,cx|cache.clear(cx));
         self.config.mode = if creds.is_some() { Mode::Yuque } else { Mode::Demo };
         self.config.creds = creds;

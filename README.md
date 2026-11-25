@@ -3,6 +3,7 @@
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
 > **当前正式版本：[v0.8.0](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.8.0)。**
+> **体验版本：[v0.9.0 Preview](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.9.0)。** 真实语雀上传尚未验收，不进入稳定自动更新。
 > V0.7.0 与 V0.8.0 均已正式发布；Windows 真机仍待补充验收，双平台 CI 与原始发布包校验已通过。
 
 ## 技术架构

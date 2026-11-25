@@ -13,6 +13,7 @@ use crate::storage::{Asset, NewAsset, Storage};
 pub struct UploadResult {
     pub item: Asset,
     pub duplicate: bool,
+    pub preview_error: Option<String>,
 }
 
 /// Bytes pulled by the HTTP body reader, not acknowledged by the remote server.
@@ -76,10 +77,14 @@ pub fn failure_state(progress: &TransferProgress) -> &'static str {
 
 #[cfg(test)]
 pub fn upload(path: &Path, cfg: &Config, storage: &Storage) -> Result<UploadResult> {
-    upload_with_progress(path, cfg, storage, Arc::new(TransferProgress::default()))
+    upload_with_progress(path, cfg, storage, Arc::new(TransferProgress::default()),None)
 }
 
-pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progress: Arc<TransferProgress>) -> Result<UploadResult> {
+pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progress: Arc<TransferProgress>,job:Option<i64>) -> Result<UploadResult> {
+    upload_with_transport(path,cfg,storage,progress,job,upload_yuque)
+}
+fn upload_with_transport(path:&Path,cfg:&Config,storage:&Storage,progress:Arc<TransferProgress>,job:Option<i64>,
+    transport:impl FnOnce(&Path,&str,&str,&Config,Arc<TransferProgress>)->Result<(String,String)>)->Result<UploadResult>{
     // Fail before hashing large files when the account is not configured.
     if cfg.mode == Mode::Yuque && cfg.creds.is_none() {
         bail!("未配置语雀会话，请设置 YUQUE_USER_ID、YUQUE_CTOKEN 和 YUQUE_COOKIE");
@@ -92,8 +97,9 @@ pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progre
         bail!("文件超过 {} MB 上限", cfg.max_file_mb);
     }
     let file_name = path.file_name().and_then(|v| v.to_str()).context("文件名不是有效 UTF-8")?.to_string();
-    let category = asset_category(path);
-    let digest = sha256_file_controlled(path, Some(&progress))?;
+    let mut snapshot=UploadSnapshot::create(storage,path,metadata.len(),&progress)?;
+    let category = detected_category(&snapshot.path,path);
+    let digest = snapshot.digest.clone();
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), "上传已取消");
     if let Some(mut existing) = storage.find(cfg.provider(), cfg.owner_id(), &digest)? {
         // Demo links refer to real local files. Repair stale links when the same
@@ -112,8 +118,12 @@ pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progre
                 existing.url = local;
             }
         }
-        if existing.category=="image" { if crate::preview::persist_source(storage.data_dir(),&existing,path).is_ok(){let _=crate::preview::index_local(storage,&existing);} }
-        return Ok(UploadResult { item: existing, duplicate: true });
+        let entry=NewAsset{name:existing.name.clone(),bytes:existing.bytes,category:existing.category.clone(),provider:existing.provider.clone(),owner_id:existing.owner_id.clone(),url:existing.url.clone(),filekey:existing.filekey.clone(),sha256:existing.sha256.clone()};
+        let name=snapshot.preview_name(storage,&entry,job);
+        let existing=storage.commit_asset_with_preview(&entry,Some(path),job,name.as_deref())?;
+        snapshot.retain_if_referenced(storage,name.as_deref());
+        let preview_error=if job.is_none(){crate::preview::persist_upload(storage,&existing,&snapshot.path)}else{None};
+        return Ok(UploadResult { item: existing, duplicate: true,preview_error });
     }
     let (url, filekey) = match cfg.mode {
         Mode::Demo => {
@@ -122,20 +132,75 @@ pub fn upload_with_progress(path: &Path, cfg: &Config, storage: &Storage, progre
                 .map_err(|_| anyhow::anyhow!("无法生成本机文件 URL"))?;
             (local.to_string(), String::new())
         }
-        Mode::Yuque => upload_yuque(path, &file_name, &category, cfg, progress)?,
+        Mode::Yuque => transport(&snapshot.path, &file_name, &category, cfg, progress.clone())?,
     };
-    let item = storage.insert_or_get(&NewAsset {
+    let entry=NewAsset {
         name: file_name, bytes: metadata.len() as i64, category,
         provider: cfg.provider().to_string(), owner_id: cfg.owner_id().to_string(),
         url, filekey, sha256: digest,
-    })?;
-    if item.category=="image" { if crate::preview::persist_source(storage.data_dir(),&item,path).is_ok(){let _=crate::preview::index_local(storage,&item);} }
-    Ok(UploadResult { item, duplicate: false })
+    };
+    let name=snapshot.preview_name(storage,&entry,job);
+    if cfg.mode==Mode::Yuque {
+        if let Some(job)=job{
+            storage.record_receipt_with_preview(&entry,path,job,name.as_deref()).context("远端已返回结果，但回执保存失败；请核实远端，勿直接重传")?;
+            // The receipt owns the snapshot even if the following commit fails.
+            snapshot.retain=name.is_some();
+        }
+    }
+    let item=storage.commit_asset_with_preview(&entry,Some(path),job,name.as_deref()).context("上传结果已返回，但本地资源提交失败；请核实远端，勿直接重传")?;
+    snapshot.retain_if_referenced(storage,name.as_deref());
+    let preview_error=if job.is_none(){crate::preview::persist_upload(storage,&item,&snapshot.path)}else{None};
+    Ok(UploadResult { item, duplicate: false,preview_error })
 }
 
+// The same immutable snapshot is hashed, transmitted and decoded. It is
+// private transient data, never an original, and removed on every normal exit.
+struct UploadSnapshot{path:std::path::PathBuf,digest:String,retain:bool}
+impl Drop for UploadSnapshot{fn drop(&mut self){if !self.retain{let _=std::fs::remove_file(&self.path);}}}
+impl UploadSnapshot{
+    // Bound retained original bytes independently of the upload size limit.
+    // If the budget is full, the durable task uses hash-verified source paths.
+    fn preview_name(&self,storage:&Storage,entry:&NewAsset,job:Option<i64>)->Option<String>{
+        if job.is_none()||entry.category!="image"||entry.bytes<=0||entry.bytes>32*1024*1024{return None;}
+        if storage.retained_preview_bytes().ok()?.saturating_add(entry.bytes as u64)>128*1024*1024{return None;}
+        if std::fs::OpenOptions::new().write(true).open(&self.path).and_then(|f|f.sync_all()).is_err(){return None;}
+        self.path.file_name()?.to_str().map(str::to_owned)
+    }
+    fn retain_if_referenced(&mut self,storage:&Storage,name:Option<&str>){
+        if let Some(name)=name{self.retain=storage.snapshot_referenced(name).unwrap_or(true);}
+    }
+    fn create(storage:&Storage,source:&Path,expected:u64,progress:&TransferProgress)->Result<Self>{
+        use std::io::Write;
+        let dir=storage.data_dir().join("upload-staging");std::fs::create_dir_all(&dir)?;
+        anyhow::ensure!(std::fs::symlink_metadata(&dir)?.file_type().is_dir(),"暂存目录不是普通目录");
+        let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path=dir.join(format!("{}-{nonce}.snapshot",std::process::id()));
+        let mut options=std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let output=options.open(&path)?;
+        let mut snapshot=Self{path,digest:String::new(),retain:false};
+        let mut output=output;
+        let mut input=File::open(source)?.take(expected+1);
+        let mut hash=Sha256::new();let mut total=0;let mut buf=[0u8;65536];
+        loop{anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed),"上传已取消");
+            let n=input.read(&mut buf)?;if n==0{break;}
+            total+=n as u64;anyhow::ensure!(total<=expected,"文件在读取期间变大");
+            output.write_all(&buf[..n])?;hash.update(&buf[..n]);
+        }
+        anyhow::ensure!(total==expected,"文件在读取期间发生变化");
+        output.flush()?;drop(output);snapshot.digest=hex::encode(hash.finalize());Ok(snapshot)
+    }
+}
+fn detected_category(snapshot:&Path,original:&Path)->String{
+    let mut prefix=Vec::new();
+    if File::open(snapshot).and_then(|f|f.take(64*1024).read_to_end(&mut prefix)).is_ok()&&(crate::preview::is_svg(&prefix)||crate::preview::modern_image_mime(&prefix).is_some()){return "image".into();}
+    if image::ImageReader::open(snapshot).and_then(|r|r.with_guessed_format()).ok().and_then(|r|r.format()).is_some(){return "image".into();}
+    asset_category(original)
+}
 pub fn asset_category(path: &Path) -> String {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "svg") {
+    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "heic" | "heif" | "bmp" | "svg" | "tif" | "tiff" | "ico") {
         "image".into()
     } else if matches!(ext.as_str(), "mp4" | "mov" | "webm") { "video".into() }
     else { "attachment".into() }
@@ -159,8 +224,11 @@ fn sha256_file_controlled(path: &Path, progress: Option<&TransferProgress>) -> R
 }
 
 fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config, progress: Arc<TransferProgress>) -> Result<(String, String)> {
+    upload_yuque_to("https://www.yuque.com/api/upload/attach",path,filename,category,cfg,progress)
+}
+fn upload_yuque_to(endpoint:&str,path:&Path,filename:&str,category:&str,cfg:&Config,progress:Arc<TransferProgress>)->Result<(String,String)>{
     let auth = cfg.creds.as_ref().context("缺少语雀账号凭据，请设置环境变量 YUQUE_USER_ID / YUQUE_CTOKEN / YUQUE_COOKIE")?;
-    let url = reqwest::Url::parse_with_params("https://www.yuque.com/api/upload/attach", &[
+    let url = reqwest::Url::parse_with_params(endpoint, &[
         ("attachable_type", "User"),
         ("attachable_id", &auth.user_id),
         ("type", category),
@@ -178,7 +246,11 @@ fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config, progr
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert("x-requested-with", HeaderValue::from_static("XMLHttpRequest"));
 
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    let detected=image::ImageReader::open(path).and_then(|r|r.with_guessed_format()).ok().and_then(|r|r.format());
+    let fallback=mime_guess::from_path(filename).first_or_octet_stream();
+    let mut prefix=Vec::new();
+    let svg=File::open(path).and_then(|f|f.take(64*1024).read_to_end(&mut prefix)).is_ok()&&crate::preview::is_svg(&prefix);
+    let mime=if svg{"image/svg+xml"}else{crate::preview::modern_image_mime(&prefix).or_else(||detected.map(|f|f.to_mime_type())).unwrap_or(fallback.essence_str())};
     let file = File::open(path).context("打开待上传文件失败")?;
     let length = file.metadata()?.len();
     anyhow::ensure!(length > 0 && length <= cfg.max_file_mb * 1024 * 1024, "文件大小已变化或超过限制");
@@ -188,11 +260,15 @@ fn upload_yuque(path: &Path, filename: &str, category: &str, cfg: &Config, progr
     let reader = MeteredReader { inner: file.take(length), progress: progress.clone(), bytes_per_second, started: std::time::Instant::now() };
     let part = multipart::Part::reader_with_length(reader, length)
         .file_name(filename.to_string())
-        .mime_str(mime.essence_str())?;
+        .mime_str(mime)?;
     let form = multipart::Form::new().part("file", part);
     let transfer_seconds = if bytes_per_second == 0 { 0 } else { length.div_ceil(bytes_per_second) };
     anyhow::ensure!(transfer_seconds <= 23*3600, "文件过大或限速过低，预计传输超过 23 小时");
-    let client = Client::builder()
+    let builder=Client::builder();
+    #[cfg(test)]
+    let builder=if url.host_str()==Some("127.0.0.1"){builder.no_proxy()}else{builder};
+    let client = builder
+        .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120 + transfer_seconds))
         .retry(reqwest::retry::never())
         .redirect(reqwest::redirect::Policy::none())
@@ -204,7 +280,7 @@ fn send_multipart(client:Client,url:reqwest::Url,headers:HeaderMap,form:multipar
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), "上传已取消");
     progress.remote_started.store(true, Ordering::Release);
     let response = client.post(url).headers(headers).multipart(form).send()
-        .map_err(|_| anyhow::anyhow!("语雀上传请求失败：网络超时、代理异常或接口无法访问"))?;
+        .map_err(|e| anyhow::anyhow!(if e.is_timeout(){"语雀上传请求超时；远端结果待核实"}else if e.is_connect(){"语雀连接失败（DNS/TLS/代理或网络）；请检查网络"}else if e.is_body(){"上传请求体读取失败；远端结果待核实"}else{"语雀上传请求失败；远端结果待核实"}))?;
     let status = response.status();
     progress.http_status.store(status.as_u16(),Ordering::Release);
     if !status.is_success() {
@@ -215,6 +291,9 @@ fn send_multipart(client:Client,url:reqwest::Url,headers:HeaderMap,form:multipar
             bail!("语雀返回 HTTP {status}：请检查账号授权、Cookie 和 CSRF Token");
         }
         if status.as_u16() == 429 { bail!("语雀限制了上传频率（HTTP 429），请稍后手动重试"); }
+        if status.is_redirection(){bail!("语雀返回 HTTP {status} 跳转；可能需要重新登录，未自动跟随或重传");}
+        if status.as_u16()==413{bail!("语雀返回 HTTP 413：服务端拒绝该文件大小");}
+        if status.as_u16()==415{bail!("语雀返回 HTTP 415：服务端不接受该媒体格式");}
         bail!("语雀返回 HTTP {status}：请检查接口是否变更或文件是否符合限制");
     }
     if response.content_length().unwrap_or_default() > 1024 * 1024 {
@@ -239,38 +318,24 @@ fn parse_upload_payload(body:&[u8])->Result<(String,String)>{
             bail!("语雀返回非成功业务状态码");
         }
     }
-    let asset_url = find_url(&payload, 0).context("上传响应中没有 HTTPS 文件地址；语雀可能修改了返回格式")?;
+    let (asset_url,filekey) = find_asset(&payload, 0).context("上传响应中没有 HTTPS 文件地址；语雀可能修改了返回格式")?;
     let parsed = url::Url::parse(&asset_url)?;
-    if parsed.scheme() != "https" || parsed.host_str().is_none() { bail!("语雀返回的文件地址并非有效 HTTPS URL"); }
-    let filekey = find_string(&payload, &["filekey", "fileKey"], 0).unwrap_or_default();
+    if parsed.scheme() != "https" || parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() { bail!("语雀返回的文件地址并非有效 HTTPS URL"); }
     Ok((asset_url, filekey))
 }
 
-fn find_url(node: &Value, depth: usize) -> Option<String> {
-    if depth > 5 { return None; }
-    let object = node.as_object()?;
-    for key in ["url", "download_url", "downloadUrl", "src"] {
-        if let Some(url) = object.get(key).and_then(Value::as_str) {
-            if url.starts_with("https://") { return Some(url.to_string()); }
-        }
+fn find_asset(node:&Value,depth:usize)->Option<(String,String)>{
+    if depth>5{return None;}
+    let object=node.as_object()?;
+    if object.get("success").and_then(Value::as_bool)==Some(false){return None;}
+    if let Some(code)=object.get("code"){if !(code==0||code==200||code=="0"||code=="200"){return None;}}
+    for key in ["data","result","attachment","file"]{
+        if let Some(link)=object.get(key).and_then(|inner|find_asset(inner,depth+1)){return Some(link);}
     }
-    for key in ["data", "result", "attachment", "file"] {
-        if let Some(inner) = object.get(key) {
-            if let Some(link) = find_url(inner, depth + 1) { return Some(link); }
-        }
-    }
-    None
-}
-
-fn find_string(node: &Value, keys: &[&str], depth: usize) -> Option<String> {
-    if depth > 5 { return None; }
-    let object = node.as_object()?;
-    for key in keys {
-        if let Some(value) = object.get(*key).and_then(Value::as_str) { return Some(value.to_string()); }
-    }
-    for key in ["data", "result", "attachment", "file"] {
-        if let Some(inner) = object.get(key) {
-            if let Some(v) = find_string(inner, keys, depth + 1) { return Some(v); }
+    for key in ["url","download_url","downloadUrl","src"]{
+        if let Some(url)=object.get(key).and_then(Value::as_str).filter(|u|u.starts_with("https://")){
+            let filekey=["filekey","fileKey"].iter().find_map(|k|object.get(*k).and_then(Value::as_str)).unwrap_or_default();
+            return Some((url.to_string(),filekey.to_string()));
         }
     }
     None
@@ -279,6 +344,176 @@ fn find_string(node: &Value, keys: &[&str], depth: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn real_png_mock_http_upload_receipt_preview_and_recovery(){
+        use std::io::Write;
+        let root=std::env::temp_dir().join(format!("yuque-v09-upload-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let path=root.join("photo.dat");let mut bytes=Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(640,480,image::Rgb([30,80,120]))).write_to(&mut std::io::Cursor::new(&mut bytes),image::ImageFormat::Png).unwrap();
+        std::fs::write(&path,&bytes).unwrap();
+        let renamed=root.join("renamed.png");std::fs::write(&renamed,&bytes).unwrap();
+        let cfg=Config{mode:Mode::Yuque,creds:Some(crate::config::YuqueCredentials::validated("123".into(),"fixture".into(),"session=fixture".into()).unwrap()),max_file_mb:25};
+        let job=db.enqueue("yuque","123",&[path.clone()]).unwrap()[0].0;db.job_state(job,"running","").unwrap();
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let endpoint=format!("http://{}/fixture",listener.local_addr().unwrap());
+        let sent=bytes.clone();
+        let server=std::thread::spawn(move||{
+            let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request=Vec::new();let mut chunk=[0u8;4096];
+            while !request.windows(4).any(|w|w==b"\r\n\r\n"){let n=stream.read(&mut chunk).unwrap();assert!(n>0);request.extend_from_slice(&chunk[..n]);}
+            let header_end=request.windows(4).position(|w|w==b"\r\n\r\n").unwrap()+4;
+            let headers=String::from_utf8_lossy(&request[..header_end]);
+            assert!(headers.starts_with("POST /fixture?attachable_type=User&attachable_id=123&type=image&ctoken=fixture "));
+            let length=headers.lines().find_map(|l|l.split_once(':').filter(|(k,_)|k.eq_ignore_ascii_case("content-length")).and_then(|(_,v)|v.trim().parse::<usize>().ok())).unwrap();
+            while request.len()<header_end+length{let n=stream.read(&mut chunk).unwrap();assert!(n>0);request.extend_from_slice(&chunk[..n]);}
+            assert!(request[header_end..].windows(sent.len()).any(|w|w==sent));
+            let body=String::from_utf8_lossy(&request[header_end..]);assert!(body.contains("filename=\"photo.dat\""));assert!(body.contains("image/png"));
+            let response=r#"{"success":true,"data":{"url":"https://cdn.nlark.com/yuque/0/fixture.png","filekey":"fixture"}}"#;
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+        });
+        let result=upload_with_transport(&path,&cfg,&db,Arc::new(TransferProgress::default()),Some(job),|snapshot,name,category,cfg,progress|{
+            // A user editing the source after preparation must not alter transmitted bytes.
+            std::fs::write(&path,b"changed original").unwrap();
+            upload_yuque_to(&endpoint,snapshot,name,category,cfg,progress)
+        }).unwrap();
+        server.join().unwrap();
+        assert_eq!(result.item.category,"image");assert_eq!(result.item.sha256,hex::encode(Sha256::digest(&bytes)));
+        assert!(result.preview_error.is_none());
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].state,"done");
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].preview.as_ref().unwrap().0,"pending");
+        assert!(!crate::preview::cached_path(&root,&result.item).exists());
+        assert_eq!(db.pending_previews().unwrap(),1);
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),1);
+        // Restart with the original already changed: only the immutable
+        // snapshot can produce the expected preview. No network replay.
+        drop(db);let db=Storage::new(root.join("assets.db")).unwrap();
+        assert_eq!(crate::preview::cleanup_staging(&db).unwrap(),0);
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        assert!(crate::preview::process_next(&db).unwrap().is_none());
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].preview.as_ref().unwrap().0,"ready");
+        assert_eq!(image::image_dimensions(crate::preview::cached_path(&root,&result.item)).unwrap(),(160,120));
+        let duplicate=upload_with_transport(&renamed,&cfg,&db,Arc::new(TransferProgress::default()),None,|_,_,_,_,_|panic!("duplicate must not upload")).unwrap();
+        assert!(duplicate.duplicate);assert_eq!(duplicate.item.id,result.item.id);
+        let cache=crate::preview::cached_path(&root,&result.item);std::fs::write(&cache,b"corrupt").unwrap();
+        assert_eq!(crate::preview::restore_local(&db,&result.item).unwrap(),cache);
+        assert_eq!(image::image_dimensions(&cache).unwrap(),(160,120));
+        std::fs::remove_file(&renamed).unwrap();drop(db);
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        assert_eq!(crate::preview::restore_local(&db,&result.item).unwrap(),cache);
+        assert_eq!(std::fs::read(&path).unwrap(),b"changed original");
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),0);
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn receipt_replays_after_restart_and_preview_failure_is_independent(){
+        let root=std::env::temp_dir().join(format!("yuque-v09-receipt-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let path=root.join("unsupported.avif");std::fs::write(&path,b"unsupported fixture").unwrap();
+        let job=db.enqueue("yuque","123",&[path.clone()]).unwrap()[0].0;db.job_state(job,"running","").unwrap();
+        let entry=NewAsset{name:"unsupported.avif".into(),bytes:19,category:"image".into(),provider:"yuque".into(),owner_id:"123".into(),url:"https://cdn.nlark.com/yuque/0/fixture.avif".into(),filekey:"fixture".into(),sha256:sha256_file(&path).unwrap()};
+        db.record_receipt(&entry,&path,job).unwrap();
+        assert!(db.find("yuque","123",&entry.sha256).unwrap().is_none());
+        drop(db);let db=Storage::new(root.join("assets.db")).unwrap();
+        let a=db.find("yuque","123",&entry.sha256).unwrap().unwrap();
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].state,"done");
+        assert!(db.preview_pending(a.id).unwrap());
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_none());
+        assert!(!db.preview_pending(a.id).unwrap());
+        let job=db.jobs("yuque","123",None).unwrap().remove(0);assert_eq!(job.state,"done");assert_eq!(job.preview.unwrap().0,"failed");
+        assert!(db.recoverable("yuque","123").unwrap().is_empty());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn oversized_image_upload_finishes_without_retaining_preview_snapshot(){
+        let root=std::env::temp_dir().join(format!("yuque-large-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let path=root.join("large.png");
+        image::RgbImage::new(32,32).save(&path).unwrap();
+        // A real PNG prefix plus trailing bytes exercises the input limit
+        // without allocating a giant fixture in the test process.
+        let bytes=33*1024*1024;
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(bytes).unwrap();
+        let cfg=Config{mode:Mode::Demo,creds:None,max_file_mb:40};
+        let job=db.enqueue("demo","local",&[path.clone()]).unwrap()[0].0;db.job_state(job,"running","").unwrap();
+        let result=upload_with_progress(&path,&cfg,&db,Arc::new(TransferProgress::default()),Some(job)).unwrap();
+        assert_eq!(result.item.bytes,bytes as i64);assert_eq!(db.pending_previews().unwrap(),1);assert_eq!(db.retained_preview_bytes().unwrap(),0);
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),0);
+        let completion=crate::preview::process_next(&db).unwrap().unwrap();assert!(completion.settled&&completion.found.is_none());
+        let jobs=db.jobs("demo","local",None).unwrap();assert_eq!(jobs[0].state,"done");assert_eq!(jobs[0].preview.as_ref().unwrap().0,"failed");
+        assert_eq!(db.pending_previews().unwrap(),0);assert_eq!(std::fs::metadata(&path).unwrap().len(),bytes);
+        assert!(!crate::preview::cached_path(&root,&result.item).exists());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn concurrent_upload_preview_pipeline_drains_without_orphans(){
+        use std::sync::atomic::{AtomicBool,Ordering};
+        let root=std::env::temp_dir().join(format!("yuque-concurrent-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let done=Arc::new(AtomicBool::new(false));
+        let worker_db=db.clone();let stop=done.clone();
+        let worker=std::thread::spawn(move||{
+            let mut count=0;
+            loop{
+                match crate::preview::process_next(&worker_db).unwrap(){
+                    Some(result)=>{assert!(result.found.is_some());if result.settled{count+=1;}},
+                    None if stop.load(Ordering::Acquire)&&worker_db.pending_previews().unwrap()==0=>break,
+                    None=>std::thread::sleep(std::time::Duration::from_millis(2)),
+                }
+            }
+            count
+        });
+        let cfg=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+        let start=std::time::Instant::now();
+        let result=(||->Result<()>{
+            for i in 0..120u8{
+                let path=root.join(format!("source-{i}.png"));
+                image::RgbImage::from_pixel(256,128,image::Rgb([i,80,150])).save(&path)?;
+                let job=db.enqueue("demo","local",&[path.clone()]).context("concurrent enqueue")?[0].0;db.job_state(job,"running","").context("concurrent running")?;
+                let result=upload_with_progress(&path,&cfg,&db,Arc::new(TransferProgress::default()),Some(job)).context("concurrent commit")?;
+                anyhow::ensure!(!result.duplicate,"unexpected duplicate");
+                std::fs::remove_file(path)?;
+                anyhow::ensure!(db.retained_preview_bytes()?<=128*1024*1024,"retained budget exceeded");
+            }
+            Ok(())
+        })();
+        done.store(true,Ordering::Release);let count=worker.join().unwrap();result.unwrap();
+        assert_eq!(count,120);assert_eq!(db.pending_previews().unwrap(),0);assert_eq!(db.retained_preview_bytes().unwrap(),0);
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),0);
+        assert_eq!(std::fs::read_dir(root.join("album-previews")).unwrap().count(),120);
+        eprintln!("CONCURRENT_PIPELINE count={count} elapsed_ms={}",start.elapsed().as_millis());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn receipt_snapshot_survives_commit_gap_and_repair_is_scoped(){
+        let root=std::env::temp_dir().join(format!("yuque-v09-preview-work-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let path=root.join("source.png");image::RgbImage::from_pixel(240,120,image::Rgb([10,20,30])).save(&path).unwrap();
+        let bytes=std::fs::metadata(&path).unwrap().len();
+        let mut snapshot=UploadSnapshot::create(&db,&path,bytes,&TransferProgress::default()).unwrap();
+        let name=snapshot.path.file_name().unwrap().to_str().unwrap().to_owned();
+        let job=db.enqueue("yuque","123",&[path.clone()]).unwrap()[0].0;db.job_state(job,"running","").unwrap();
+        let entry=NewAsset{name:"source.png".into(),bytes:bytes as i64,category:"image".into(),provider:"yuque".into(),owner_id:"123".into(),url:"https://cdn.nlark.com/yuque/0/fixture.png".into(),filekey:"fixture".into(),sha256:snapshot.digest.clone()};
+        db.record_receipt_with_preview(&entry,&path,job,Some(&name)).unwrap();snapshot.retain=true;drop(snapshot);
+        assert!(db.acknowledge_unknown("yuque","123",job).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(root.join("upload-staging/1-1.snapshot"),b"orphan").unwrap();
+        std::fs::write(root.join("upload-staging/keep.txt"),b"unmanaged").unwrap();
+        drop(db);let db=Storage::new(root.join("assets.db")).unwrap();
+        assert_eq!(crate::preview::cleanup_staging(&db).unwrap(),1);
+        assert!(root.join("upload-staging/keep.txt").exists());
+        let a=db.find("yuque","123",&entry.sha256).unwrap().unwrap();
+        assert_eq!(db.pending_previews().unwrap(),1);
+        assert!(db.export_album(root.parent().unwrap()).is_err());
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        assert!(!root.join("upload-staging").join(&name).exists());
+        assert_eq!(db.schedule_previews("yuque","other",&[a.id]).unwrap(),0);
+        assert_eq!(db.schedule_previews("yuque","123",&[a.id]).unwrap(),1);
+        assert_eq!(db.schedule_previews("yuque","123",&[a.id]).unwrap(),0);
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].state,"done");
+        assert_eq!(db.pending_previews().unwrap(),0);
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn local_http_failures_do_not_assume_success() {
         use std::io::Write;
@@ -395,8 +630,8 @@ mod tests {
         let cfg = Config { mode: Mode::Demo, creds: None, max_file_mb: 1 };
         let first = base.join("first.png");
         let second = base.join("second.png");
-        std::fs::write(&first, b"same image bytes").unwrap();
-        std::fs::write(&second, b"same image bytes").unwrap();
+        image::RgbImage::from_pixel(32,24,image::Rgb([15,40,90])).save(&first).unwrap();
+        let fixture=std::fs::read(&first).unwrap();std::fs::write(&second,&fixture).unwrap();
         let uploaded = upload(&first, &cfg, &db).unwrap();
         assert!(!uploaded.duplicate);
         assert!(uploaded.item.url.starts_with("file:"));
@@ -411,7 +646,7 @@ mod tests {
         // prefix. Compare canonical filesystem paths, not their URL spelling.
         let repaired_path = url::Url::parse(&repaired.item.url).unwrap().to_file_path().unwrap();
         assert_eq!(repaired_path.canonicalize().unwrap(), second.canonicalize().unwrap());
-        assert_eq!(std::fs::read(&repaired_path).unwrap(), b"same image bytes");
+        assert_eq!(std::fs::read(&repaired_path).unwrap(), fixture);
         assert_eq!(sha256_file(&repaired_path).unwrap(), repaired.item.sha256);
         let empty = base.join("empty.png");
         std::fs::write(&empty, []).unwrap();
@@ -427,13 +662,22 @@ mod tests {
     #[test]
     fn payload_extracts_nested_https_only() {
         let data = serde_json::json!({"data": {"url": "https://cdn.example.org/photo.png", "filekey":"foo"}});
-        assert_eq!(find_url(&data, 0).as_deref(), Some("https://cdn.example.org/photo.png"));
-        assert_eq!(find_string(&data, &["filekey"], 0).as_deref(), Some("foo"));
-        assert!(find_url(&serde_json::json!({"url":"http://untrusted"}), 0).is_none());
+        assert_eq!(find_asset(&data,0),Some(("https://cdn.example.org/photo.png".into(),"foo".into())));
+        assert!(find_asset(&serde_json::json!({"url":"http://untrusted"}),0).is_none());
     }
     #[test]
     fn category_is_extension_based() {
         assert_eq!(asset_category(Path::new("photo.webp")), "image");
         assert_eq!(asset_category(Path::new("backup.zip")), "attachment");
+        assert_eq!(asset_category(Path::new("photo.heic")), "image");
+        let avif=b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00avifmif1";
+        let heic=b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00heicmif1";
+        let mp4=b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00mp41isom";
+        assert_eq!(crate::preview::modern_image_mime(avif),Some("image/avif"));
+        assert_eq!(crate::preview::modern_image_mime(heic),Some("image/heic"));
+        assert_eq!(crate::preview::modern_image_mime(mp4),None);
+        assert!(crate::preview::unsupported_modern_format(avif).unwrap_err().to_string().contains("AVIF"));
+        assert!(crate::preview::unsupported_modern_format(heic).unwrap_err().to_string().contains("HEIC"));
+        assert_eq!(crate::preview::modern_image_mime(&avif[..20]),None);
     }
 }

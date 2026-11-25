@@ -1,0 +1,22 @@
+[
+  {
+    "name": "yuque-asset-desk-0.9.0-aarch64-apple-darwin.dmg",
+    "size": 9100123,
+    "sha256": "d1c86ab9bfe2b21d8651dd0b21372debabd42f47bb4ef4ab69fce72eecea0ce0"
+  },
+  {
+    "name": "yuque-asset-desk-0.9.0-aarch64-apple-darwin.dmg.sha256",
+    "size": 114,
+    "sha256": "69a5a6215a7dd24f73a28f84248beb23b3f0f2363ce8e3555587832a708d141b"
+  },
+  {
+    "name": "yuque-asset-desk-0.9.0-x86_64-pc-windows-msvc.zip",
+    "size": 9493756,
+    "sha256": "875e2e8139eae7176920c22a4dd0c579307fb1e180ee4a644b865619b17f793d"
+  },
+  {
+    "name": "yuque-asset-desk-0.9.0-x86_64-pc-windows-msvc.zip.sha256",
+    "size": 117,
+    "sha256": "b2c076b991a0566ed9218f8a584a4737ed7bf9cb465084bfe550a4d04e021a2e"
+  }
+]

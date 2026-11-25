@@ -1,6 +1,6 @@
 [package]
 name = "yuque-asset-desk"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "Lightweight cross-platform Yuque asset uploader powered by GPUI Kit"
 license = "MIT"
@@ -22,7 +22,8 @@ hex = "0.4"
 directories = "6"
 arboard = { version = "3", default-features = false }
 mime_guess = "2"
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+resvg = { version = "=0.46.0", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
 url = "2"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]

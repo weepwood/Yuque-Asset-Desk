@@ -2,7 +2,7 @@
 use gpui_kit::*;
 use gpui_kit::component::theme::{Theme,ThemeMode};
 
-pub(super) const CONTROL_RADIUS:f32=6.;
+pub(super) const CONTROL_RADIUS:f32=7.;
 pub(super) const FEEDBACK_MS:u64=160;
 pub(super) const HOVER_MS:u64=120;
 pub(super) const SURFACE_MS:u64=180;
@@ -48,15 +48,15 @@ impl Spacing{
 }
 #[derive(Clone,Copy)]
 pub(super) struct Palette {
-    pub canvas:Rgba,pub sidebar:Rgba,pub surface:Rgba,pub subtle:Rgba,pub line:Rgba,
+    pub canvas:Rgba,pub sidebar:Rgba,pub surface:Rgba,pub subtle:Rgba,pub line:Rgba,pub stage:Rgba,
     pub text:Rgba,pub muted:Rgba,pub accent:Rgba,pub accent_soft:Rgba,pub error:Rgba,
 }
 impl Palette {
     pub fn new(dark:bool)->Self {
         let c=|a,b|rgb(if dark{a}else{b});
-        Self{canvas:c(0x18191b,0xffffff),sidebar:c(0x202124,0xf4f5f6),surface:c(0x25272b,0xf9fafb),
-            subtle:c(0x2b2d32,0xe8eaed),line:c(0x2d3035,0xe3e4e6),text:c(0xe8e9ed,0x25272b),
-            muted:c(0xa1a5af,0x60656f),accent:c(0x8bc9b5,0x28745e),accent_soft:c(0x263e37,0xdceee7),
+        Self{canvas:c(0x1b1c1e,0xfdfdfd),sidebar:c(0x232426,0xf3f4f5),surface:c(0x27292c,0xf5f6f7),
+            subtle:c(0x303236,0xe9ecee),line:c(0x35373a,0xdfe2e4),stage:c(0x121315,0xe8eaec),text:c(0xeff0f1,0x24272b),
+            muted:c(0xa6a9ae,0x646a71),accent:c(0x91cdb8,0x28745e),accent_soft:c(0x2a4038,0xe1eee8),
             error:c(0xf2ad9e,0x9f392b)}
     }
 }

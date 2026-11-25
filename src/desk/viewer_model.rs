@@ -18,6 +18,15 @@ impl ViewerModel{
         if let Some(q)=self.quality.take(){image_cache::release_images(vec![q.image],cx);}
         cx.notify();
     }
+    // Cancel only the pending request. Keep the last successfully decoded
+    // source visible; generation guards late completion after cancellation.
+    pub fn cancel_load(&mut self,cx:&mut Context<Self>){
+        if !self.busy{return;}
+        self.generation=self.generation.wrapping_add(1);
+        self.task=None;self.busy=false;
+        self.status="已停止等待，保留当前预览".into();
+        cx.notify();
+    }
     pub fn feedback(&mut self,status:String,cx:&mut Context<Self>){self.status=status;cx.notify();}
     pub fn load(&mut self,asset:Asset,storage:Storage,remote:bool,cx:&mut Context<Self>){
         if self.busy{return;}
@@ -25,7 +34,7 @@ impl ViewerModel{
         if self.quality.as_ref().is_some_and(|q|q.remote==remote){return;}
         self.generation=self.generation.wrapping_add(1);
         self.task=None;self.asset=Some(asset.id);self.busy=true;
-        self.status=if remote{"正在读取在线原图…".into()}else{"正在读取本地原图…".into()};
+        self.status=if remote{"正在读取在线图片…".into()}else{"正在读取本地原图…".into()};
         let generation=self.generation;let id=asset.id;
         self.task=Some(cx.spawn(async move|this,cx|{
             let result=cx.background_spawn(async move{crate::high_preview::load(&storage,&asset,remote)}).await;
