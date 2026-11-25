@@ -2,8 +2,8 @@
 
 ## 当前交接入口（优先于后续历史记录）
 - 正式版本 v0.5.1；V0.7.0 固定候选 75c173bf0630d6eed2cdcb07d1a6fa3f6e4de996，冻结的 main 和原始产物不改。Windows 真机离线，门禁未完成。
-- PR #8 分支 feat/v0.8-browse-context 已完成九批后续架构、交互与性能工作，本轮收口版本元数据至 V0.8.0，未正式发布。当前验收清单 [docs/release/v0.8.0-acceptance.md](docs/release/v0.8.0-acceptance.md)；历史候选 [docs/release/v0.7.0-acceptance.md](docs/release/v0.7.0-acceptance.md)。
-- 仅处理真实发布阻塞或有证据的缺陷，不继续扩张功能或机械拆分；先确认最新 PR SHA 与 CI，再依据清单核实候选产物。遵守用户数据保护、中文提交、隔离 Demo 测试。
+- PR #8 分支 feat/v0.8-browse-context 已完成九批后续架构、交互与性能工作，本轮收口版本元数据至 V0.8.0，未正式发布。固定 V0.8.0 代码候选 aec2446fa46c172840f38066e87e564c6422799e，CI 45553650482 双平台通过，原始产物与 Mac 隔离启动通过；Windows 真机仍阻塞。当前验收清单 [docs/release/v0.8.0-acceptance.md](docs/release/v0.8.0-acceptance.md)；历史候选 [docs/release/v0.7.0-acceptance.md](docs/release/v0.7.0-acceptance.md)。
+- 仅处理真实发布阻塞，不再扩张功能或机械拆分；不得用文档更新后的 SHA 替换已核验代码候选或重新生成发布包。遵守用户数据保护、中文提交、隔离 Demo 测试。
 - 下文历史记录中的版本、CI、平台策略以本节及对应版本验收清单为准；当前 CI 仅 Windows x64 与 macOS ARM64，不能把历史 x64 Mac 构建当成本轮门禁。
 
 ## 项目定位
@@ -265,3 +265,13 @@
 - ef31fce CI 45552122688 success；窄窗分页状态栏优先错误与重试，新增真实GPUI几何不变及重试点击回归，完整QA 71通过/0失败/1忽略，全目标编译、Release QA、static/diff通过。Cargo.toml/Cargo.lock仅修改自身版本0.8.0，无依赖或schema变化。
 - 11张实际Release截图生成，人工审查最小窗口图库/任务/设置/详情4张。顺序执行10k合成JPEG性能基准，均未超时，192缓存上限；完整指标及剩余门禁见docs/release/v0.8.0-acceptance.md。报告与截图位于dist/design-research/v0.8-closeout/。不宣称真实用户上传、Windows真机、全量视觉审查或长期内存验收。
 - 当前阶段停止扩大开发范围，待本提交CI及最终候选原始产物核验；仍保持V0.7固定候选、main及正式v0.5.1不变。仅修复发布实际阻塞。
+
+## V0.8.0 固定候选验收
+
+## 最终固定候选与原始 CI 产物（2026-11-25）
+
+- 固定代码候选：aec2446fa46c172840f38066e87e564c6422799e；PR #8，CI 45553650482（headSha 一致，双平台 success）。之后仅允许验收文档更新，不改变此候选的源代码和原始产物。
+- 原始 Windows x64 ZIP 9439257 bytes、macOS ARM64 DMG 9040235 bytes，及各自原始 SHA256 文件均从该次 CI 下载，保存于 dist/release-audit-v0.8.0/ci-artifacts/；四项完整摘要见 [v0.8.0-verified-assets.json](v0.8.0-verified-assets.json)。校验前后均比对原始摘要，不重新打包或覆盖校验文件。V0.7 四项原始文件也重新核对，保持不变。
+- Windows：ZIP CRC、x64 PE、图标/版本资源、INSTALL.txt 和原始 SHA256 通过；CI 原生 ProductName/ProductVersion 检查通过。实际 Windows 设备仍离线，不宣称运行、托盘或文件选择验收通过。
+- macOS：复用 dist/dmg-venv，原始 DMG CRC、只读挂载、ARM64、应用版本/图标/标识、ad-hoc 签名、Finder 安装布局通过。隔离复制后实际启动，Demo SQLite 初始化为空、1160×828 窗口、DESKTOP tray=true hotkey=true；测试进程已退出。默认 Python 缺少 ds_store，切换既有打包虚拟环境后通过；hdiutil 弃用及 sandbox_extension 警告不阻塞本次启动。未安装到 Applications、未验证 Gatekeeper 公证、未触发物理快捷键/真实上传。
+- 完整验收日志与 smoke.json 保存在 dist/release-audit-v0.8.0/。正式版本仍为 v0.5.1。V0.7 固定候选优先收口，Windows 真机门禁未完成，不合并 PR #8，不创建 Tag/Release，不改变发布顺序。
