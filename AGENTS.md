@@ -167,3 +167,12 @@
 ## UI 设计规范（V0.7）
 修改任何 UI 前必须阅读根目录 DESIGN.md 与 docs/design-references.md。历史 docs/ui-design.md 只作变更记录；以真实参考规范、操作契约、实际截图和 GPUI Kit 0.9.0 API 为准。不得以堆叠边框、留白或动画替代工作流设计。保留用户数据、异步文件选择及离线架构。
 - V0.7 后续迭代入口：docs/development-status.md 的「V0.7 设计重构第一批」。PR 未成功时先收口该 PR；成功并审查后再独立分支推进剩余设计/架构差距。无实际证据不得声称验收完成。
+
+## V0.7 交互核心第二批
+- PR #4 已合并 main 5782dd0（原 PR CI 45480921070、main CI 45532340902 均 success）。历史 #1/#2 已关闭并保留分支；GPUI 迁移/原生拖放/持久队列/多选 Markdown 已替代旧实现，专用本批链接入口未原样保留。当前 feat/v0.7-interaction-core，正式 Tag 仍 v0.5.1；Cargo 版本暂 0.6.0，不提前发布。
+- ViewerModel 独立 Entity 拥有高清任务/代际/asset id/RenderImage，clear 丢弃过期结果并 drop_image；observer 仅新高清成功时复位缩放。InspectorModel 标签错误及重试。Gallery/Queue/Account 仍内部状态，不声称全量 Entity 化。
+- mutations.rs 单资源写入通道：收藏、单项标签、批量标签离开 UI 线程，持有 task 直至完成；resource_write_busy 在账号、上传入口、备份、清理和退出路径检查。不可把这些异步写入 detach 后允许重置。队列、账号索引、偏好等仍有同步 I/O，需后续按实际锁与生命周期迁移。
+- 原生 Gallery Action/context 仅图库焦点路径，方向键按 row/masonry 几何，Shift/Cmd/Ctrl 与多选预览返回统一；显式详情命令一致。独立 settings_view，顶部账号入口、固定设置分组、单一状态栏，视频/附件图标、多选详情。图片仍完整 contain，不裁剪原始内容。
+- inspector-slot 保留退出空间，180ms keyed tween，关闭时禁用所有内部控件且拦截鼠标/键盘，结束释放布局；不逐帧重排图库。快速反向和 reduce_motion 用真实渲染测试验证；侧栏/沉浸完整退出未完成。
+- 55 passed/0 failed/1 ignored，all-targets check、QA/debug及release QA build、static/diff check；SQLite BEGIN IMMEDIATE 真实写锁测试 UI dispatch <1s 并验证门禁/最终持久化；多选预览恢复、几何和实际面板反向。15张真实截图（含720×600本地原图与源缺失回退、深浅/账号/设置/详情/任务）；8步原生注入截图与状态 trace，ignored dist/design-research/core-after/、path/operation-path.gif。Release 10000合成JPEG 各120 CPU draw 样本 grid p50 2.199 p95 5.590ms RSS148.12MiB，masonry 4.550/6.332ms RSS142.16MiB，300 loaded/cache192或191。非实际显示FPS；未与同版本相同工况作受控对照，不宣称性能提升。证据 docs/performance/v0.7-interaction-release.json 与 v0.7-interaction-path.log。
+- 后续：真正 Gallery/Queue/Account Entity、队列/账号/偏好异步写入与清理互锁、面板退出焦点与全菜单路径、侧栏/沉浸完整动画、真实设备及性能回归、正式发布。禁止把部分落实表述为全部完成。先验收本 PR，勿扩展新业务。

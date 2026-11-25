@@ -45,7 +45,8 @@ fn main() -> Result<()> {
             let config = config.clone();
             let storage = storage.clone();
             let narrow = std::env::var("YUQUE_QA_NARROW").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && config.mode == config::Mode::Demo;
-            let bounds = Bounds::centered(None, size(px(if narrow {780.} else {prefs.width}), px(if narrow {640.} else {prefs.height})), cx);
+            let minimum=cfg!(feature="qa")&&std::env::var_os("YUQUE_QA_MINIMUM").is_some()&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&config.mode==config::Mode::Demo;
+            let bounds = Bounds::centered(None, size(px(if minimum{720.}else if narrow {780.} else {prefs.width}), px(if minimum{600.}else if narrow {640.} else {prefs.height})), cx);
             let (window_handle,desk)=open_window(WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), window_min_size: Some(size(px(720.),px(600.))), ..Default::default() }, cx, move |window, cx| {
                 window.set_window_title("Yuque Asset Desk");
                 #[cfg(feature="qa")]

@@ -195,3 +195,10 @@
 - 真实渲染 QA 14 张；实际 GPUI 注入操作8阶段通过，dist/design-research/path/operation-path.gif（逐帧渲染，不是物理鼠标录屏）；状态证据 docs/performance/v0.7-design-path.log。10000合成 JPEG debug 采样：grid CPU draw p50 9.675/p95 12.938ms RSS154.38MiB；masonry 9.797/11.412ms RSS158.44MiB；各120样本、各300已加载、解码缓存192。原生回调无样本，不等于 FPS；不能直接与历史 release 比较。详见 docs/performance/v0.7-design-debug.json。
 - 剩余：继续以真实截图做布局精修，独立 Gallery/Viewer/Queue/Account Entity 与设置页拆离 inspector；写操作仍同步，必须先确保数据清理、退出和账号切换串行安全；统一原生 GPUI Action/key context、真正几何方向导航、焦点/菜单完整路径、宽度过渡与中断验证。当前窄窗与舒适/紧凑已作本地验证，仍需 Windows 真机及 release 性能对照。不得宣称全部六专项完成。
 - 后续集中迭代：先检查本批 PR 固定 head CI；仅通过且审查无阻塞才合并；失败仅修复实际错误；每轮一批原子提交，优先上述剩余问题，不增加业务功能，不修改已发布 tag，不绕过分支保护。避免重复开启 PR、并行修改同一路径、覆盖用户本地未提交代码。
+
+## V0.7 交互核心与设计规范第二批（基线 main 5782dd0）
+- PR #4 固定 427868b 双平台 CI 45480921070 success，合并 5782dd0；main CI 45532340902 success。审查 PR #1 GPUI 迁移和 #2 原生拖放/批量 Markdown 后关闭重复历史 PR，保留分支与说明（专用本批复制按钮未原样保留，现相册多选复制）。独立 feat/v0.7-interaction-core。
+- 独立 ViewerModel Entity 持有高清请求/图片/状态和代际，InspectorModel 错误与重试；收藏/标签/批量写移入 mutations.rs 后台任务，resource_write_busy 阻止冲突操作。原生 GPUI Action、网格/拼图/列表及瀑布流几何方向键、多选预览返回恢复。设置从 inspector 拆离、固定常规/账号/存储；顶部账号入口、选择指引、状态合并、文件类型区分、多选详情。检查器保留固定空间退出，禁用输入，反向可中断，结束单次重排。保持原上传、凭据、原始文件及永久微缩图，无依赖或数据库迁移。
+- 55项完整 QA 通过（1公网默认忽略）；实际 SQLite 写锁及 UI dispatch <1s、互锁与持久化，面板实际宽度/反向/减少动态效果，选择与高清生命周期。cargo check --locked --all-targets、静态检查、QA debug/release build 通过。最终15张真实渲染截图，实际检查720×600图库/设置/高清成功及离线回退、浅色图库/账号和详情；8阶段注入鼠标/键盘 compositor 截图/状态均通过。不是物理录屏。证据 dist/design-research/core-after/、path/、docs/performance/v0.7-interaction-path.log。
+- Release QA 万级合成JPEG（本地、无网络）grid P50/P95 2.199/5.590ms、RSS148.12MiB、cache192；masonry 4.550/6.332ms、RSS142.16MiB、cache191；各120 CPU draw样本、300 loaded、未超时。非显示FPS；相比历史 V0.5.0 的 P95 更高，版本/系统负载不同，不能归因或宣称提升。记录 docs/performance/v0.7-interaction-release.json。
+- 剩余：Gallery、Queue、Account 完整独立 Entity 及统一全部 SQLite 写入（任务索引、凭据索引、偏好仍同步）；完整侧栏/沉浸空间过渡、全键盘与原生浮层路径、真实 Windows 真机/真实语雀、正式包与受控性能对照。仍开发候选（Cargo 0.6.0，V0.7 尚未发布），不声称七项全部完成。未改真实数据/凭据或已发布 Tag。

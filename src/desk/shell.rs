@@ -1,5 +1,17 @@
 //! Navigation and shared commands. A single primary destination, independent panels.
 use super::*;
+gpui_kit::actions!(yuque_gallery,[GalleryPreview,GalleryClear,GallerySelectAll,GalleryInspector]);
+pub(super) fn bind_gallery(cx:&mut App){
+    cx.bind_keys([
+        KeyBinding::new("space",GalleryPreview,Some("YuqueGallery")),
+        KeyBinding::new("escape",GalleryClear,Some("YuqueGallery")),
+        KeyBinding::new("ctrl-a",GallerySelectAll,Some("YuqueGallery")),
+        KeyBinding::new("cmd-a",GallerySelectAll,Some("YuqueGallery")),
+        KeyBinding::new("ctrl-i",GalleryInspector,Some("YuqueGallery")),
+        KeyBinding::new("cmd-i",GalleryInspector,Some("YuqueGallery")),
+    ]);
+}
+
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub(super) enum Page { #[default] Gallery, Jobs, Settings, Account, Data }
 impl Page {

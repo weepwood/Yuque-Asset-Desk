@@ -434,6 +434,19 @@ fn preview_double_click_keyboard_zoom_and_sidebar(){
     assert_eq!(app.read(|cx|desk.read(cx).resource.selected_ids.len()),1);
     assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
     eprintln!("PATH modifier-toggle one item");
+    // Enter from multiple selection and move the viewer independently.
+    ui.simulate_click(pos,Modifiers::default());app.run_until_parked();draw(&mut ui);
+    ui.simulate_click(point(second.center().x,second.top()+px(35.)),Modifiers{shift:true,..Default::default()});
+    app.run_until_parked();draw(&mut ui);
+    let before=app.read(|cx|{let r=&desk.read(cx).resource;(r.selected_ids.clone(),r.selected_asset.as_ref().unwrap().id,r.selection_anchor)});
+    assert_eq!(before.0.len(),2);
+    ui.simulate_keystrokes("space");app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.large_preview_open));
+    ui.simulate_keystrokes("right");app.run_until_parked();draw(&mut ui);
+    ui.simulate_keystrokes("escape");app.run_until_parked();draw(&mut ui);
+    assert_eq!(app.read(|cx|{let r=&desk.read(cx).resource;(r.selected_ids.clone(),r.selected_asset.as_ref().unwrap().id,r.selection_anchor)}),before);
+    ui.simulate_click(pos,Modifiers::default());app.run_until_parked();draw(&mut ui);
+
     ui.simulate_keystrokes("space");app.run_until_parked();draw(&mut ui);
     assert!(app.read(|cx|desk.read(cx).resource.large_preview_open));
     ui.simulate_keystrokes("escape");app.run_until_parked();draw(&mut ui);
@@ -457,25 +470,25 @@ fn preview_double_click_keyboard_zoom_and_sidebar(){
     app.run_until_parked();draw(&mut ui);
     assert!(app.read(|cx|desk.read(cx).resource.large_preview_open));
     assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
-    assert!(app.read(|cx|desk.read(cx).resource.quality.is_none()));
+    assert!(app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.is_none()));
     let load=ui.debug_bounds("local-quality").unwrap();
     ui.simulate_click(load.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
-    assert!(app.read(|cx|desk.read(cx).resource.quality.as_ref().is_some_and(|q|q.width==640&&q.height==480&&!q.remote)));
-    let quality_id=app.read(|cx|desk.read(cx).resource.quality.as_ref().unwrap().image.id);
+    assert!(app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.as_ref().is_some_and(|q|q.width==640&&q.height==480&&!q.remote)));
+    let quality_id=app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.as_ref().unwrap().image.id);
     // A rejected alternate source must not replace the current render image.
     app.update(|cx|desk.update(cx,|v,cx|v.load_quality(true,cx)));
     app.run_until_parked();draw(&mut ui);
-    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.quality.as_ref().is_some_and(|q|q.image.id==quality_id)&&!r.quality_status.is_empty()&&!r.quality_busy}));
+    assert!(app.read(|cx|{let r=desk.read(cx).viewer_model.read(cx);r.quality.as_ref().is_some_and(|q|q.image.id==quality_id)&&!r.status.is_empty()&&!r.busy}));
     let offline=ui.debug_bounds("offline-quality").unwrap();
     ui.simulate_click(offline.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
-    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.quality.is_none()&&r.large_preview_path.is_some()&&r.quality_status.is_empty()}));
+    assert!(app.read(|cx|{let v=desk.read(cx);let r=v.viewer_model.read(cx);r.quality.is_none()&&v.resource.large_preview_path.is_some()&&r.status.is_empty()}));
     let load=ui.debug_bounds("local-quality").unwrap();
     ui.simulate_click(load.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
-    assert!(app.read(|cx|desk.read(cx).resource.quality.is_some()));
+    assert!(app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.is_some()));
     let strip=ui.debug_bounds("preview-strip-2").unwrap();
     ui.simulate_click(strip.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
     assert_eq!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),2);
-    assert!(app.read(|cx|desk.read(cx).resource.quality.is_none()));
+    assert!(app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.is_none()));
     ui.simulate_keystrokes("left");app.run_until_parked();draw(&mut ui);
     ui.simulate_keystrokes("right");app.run_until_parked();draw(&mut ui);
     assert_ne!(app.read(|cx|desk.read(cx).resource.selected_asset.as_ref().unwrap().id),id);
@@ -541,5 +554,76 @@ fn preview_next_crosses_filtered_page_and_can_return(){
     ui.simulate_keystrokes("escape");app.run_until_parked();
     assert!(app.read(|cx|{let r=&desk.read(cx).resource;!r.large_preview_open&&!r.preview_reload_pending&&r.assets.len()==150}));
     assert!(root.join("fixture-0.png").exists()&&root.join("fixture-150.png").exists());
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn resource_write_lock_does_not_block_shell_and_interlocks(){
+    let root=std::env::temp_dir().join(format!("yuque-mutation-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let asset=db.insert_or_get(&crate::storage::NewAsset{name:"fixture.txt".into(),bytes:10,category:"attachment".into(),provider:"demo".into(),owner_id:"local".into(),url:"file:///fixture.txt".into(),sha256:"fixture".into(),filekey:String::new()}).unwrap();
+    let read=db.clone();
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let conn=rusqlite::Connection::open(root.join("assets.db")).unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let start=std::time::Instant::now();
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.toggle_favorite(&asset,cx);
+        assert!(v.resource_write_busy);
+        assert!(!v.desktop_can_quit(cx));
+        v.select_files(cx);
+        assert!(!v.picker_pending);
+        v.export_album(cx);
+        assert!(!v.picker_pending);
+        v.navigate_page(Page::Data,cx);
+        assert!(!v.data_scan_busy);
+        v.navigate_page(Page::Jobs,cx);
+        assert_eq!(v.page,Page::Jobs);
+        // A second write must not replace the task.
+        v.toggle_favorite(&asset,cx);
+        assert!(v.resource_write_busy);
+    }));
+    assert!(start.elapsed()<std::time::Duration::from_secs(1),"UI dispatch blocked by SQLite lock");
+    conn.execute_batch("COMMIT").unwrap();
+    app.run_until_parked();
+    assert!(app.read(|cx|{let v=desk.read(cx);!v.resource_write_busy&&v.resource.favorites.contains(&asset.id)}));
+    assert!(read.favorite_ids(Some(("demo","local"))).unwrap().contains(&asset.id));
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    drop(conn);drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn inspector_exit_reserves_space_until_finished_and_reverses(){
+    let root=std::env::temp_dir().join(format!("yuque-inspector-motion-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let app=TestAppContext::single();app.update(gpui_kit::init);app.update(|cx|cx.set_reduce_motion(false));
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    let draw=|ui:&mut VisualTestContext|ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let advance=|n|app.executor().advance_clock(std::time::Duration::from_millis(n));
+    draw(&mut ui);
+    let toggle=|ui:&mut VisualTestContext|{let pos=ui.debug_bounds("toggle-inspector").unwrap().center();ui.simulate_click(pos,Modifiers::default());};
+    assert!(ui.debug_bounds("inspector-slot").is_none());
+    toggle(&mut ui);draw(&mut ui);advance(250);draw(&mut ui);
+    let slot=ui.debug_bounds("inspector-slot").unwrap();
+    toggle(&mut ui);draw(&mut ui);advance(60);draw(&mut ui);
+    assert!(!app.read(|cx|desk.read(cx).inspector_open));
+    assert_eq!(ui.debug_bounds("inspector-slot").unwrap(),slot);
+    toggle(&mut ui);draw(&mut ui);advance(250);draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).inspector_open));
+    assert_eq!(ui.debug_bounds("inspector-slot").unwrap(),slot);
+    toggle(&mut ui);draw(&mut ui);advance(250);draw(&mut ui);
+    assert!(ui.debug_bounds("inspector-slot").is_none());
+    app.update(|cx|cx.set_reduce_motion(true));
+    toggle(&mut ui);draw(&mut ui);
+    assert!(ui.debug_bounds("inspector-slot").is_some());
+    toggle(&mut ui);draw(&mut ui);
+    assert!(ui.debug_bounds("inspector-slot").is_none());
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }

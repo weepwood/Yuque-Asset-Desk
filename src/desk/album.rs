@@ -172,3 +172,46 @@ mod tests{
         }
     }
 }
+
+/// Navigate by spatial geometry, not source index, in masonry.
+pub(super) fn masonry_neighbor(plan:&MasonryPlan,index:usize,key:&str)->Option<usize>{
+    let from=plan.tiles.iter().find(|t|t.index==index)?;
+    let (x,y)=(from.x+from.width/2.,from.y+from.height/2.);
+    plan.tiles.iter().filter(|t|t.index!=index).filter_map(|t|{
+        let dx=t.x+t.width/2.-x;let dy=t.y+t.height/2.-y;
+        let (primary,cross)=match key{"left"=>(-dx,dy),"right"=>(dx,dy),"up"=>(-dy,dx),"down"=>(dy,dx),_=>return None};
+        if primary<=0.5{return None;}
+        Some((t.index,primary+cross.abs()*3.))
+    }).min_by(|a,b|a.1.total_cmp(&b.1)).map(|a|a.0)
+}
+/// Left/right within row; up/down select nearest horizontal center in next row.
+pub(super) fn row_neighbor(rows:&[AlbumRow],index:usize,key:&str,gap:f32)->Option<usize>{
+    fn centers(row:&AlbumRow,gap:f32)->Vec<(usize,f32)>{
+        match row{
+            AlbumRow::Tiles{items,..}=>{let mut x=0.;items.iter().map(|(i,w)|{let c=x+w/2.;x+=w+gap;(*i,c)}).collect()},
+            AlbumRow::Item(i)=>vec![(*i,0.)],AlbumRow::Day(_)=>vec![],
+        }
+    }
+    let (r,items)=rows.iter().enumerate().find_map(|(r,row)|{
+        let items=centers(row,gap);items.iter().any(|(i,_)|*i==index).then_some((r,items))
+    })?;
+    let at=items.iter().position(|(i,_)|*i==index)?;
+    match key{
+        "left"=>at.checked_sub(1).map(|i|items[i].0),
+        "right"=>items.get(at+1).map(|t|t.0),
+        "up"|"down"=>{
+            let row=if key=="up"{rows[..r].iter().rev().find(|row|!matches!(row,AlbumRow::Day(_)))}else{rows[r+1..].iter().find(|row|!matches!(row,AlbumRow::Day(_)))}?;
+            centers(row,gap).into_iter().min_by(|a,b|(a.1-items[at].1).abs().total_cmp(&(b.1-items[at].1).abs())).map(|t|t.0)
+        }
+        _=>None
+    }
+}
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn spatial_navigation_uses_rows_and_columns(){
+    let rows=vec![AlbumRow::Tiles{items:vec![(0,100.),(1,100.),(2,100.)],height:100.},AlbumRow::Day("next".into()),AlbumRow::Tiles{items:vec![(3,150.),(4,150.)],height:100.}];
+    assert_eq!(row_neighbor(&rows,1,"down",10.),Some(4));
+    assert_eq!(row_neighbor(&rows,2,"down",10.),Some(4));
+    assert_eq!(row_neighbor(&rows,1,"left",10.),Some(0));
+    assert_eq!(row_neighbor(&rows,2,"right",10.),None);
+}

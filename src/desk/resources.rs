@@ -4,6 +4,7 @@ impl UploadDesk {
     pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
         self.clear_quality(cx);
         self.resource.preview_reload_pending=false;
+        self.resource.viewer_return=None;
         self.resource.pending_preview=None;
         self.resource.selection_anchor=None;self.resource.batch_tag_open=false;
         self.inspector_model.update(cx,|model,cx|model.reset(cx));
@@ -195,7 +196,7 @@ impl UploadDesk {
     }
 
     pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
-        if self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy{return;}
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy{return;}
         self.picker_pending=true;
         self.status="请选择相册备份位置…".into();cx.notify();
         let selection=cx.prompt_for_paths(PathPromptOptions{files:false,directories:true,multiple:false,prompt:Some("选择备份位置".into())});
@@ -229,13 +230,7 @@ impl UploadDesk {
     }
 
     pub(super) fn toggle_favorite(&mut self,asset:&Asset,cx:&mut Context<Self>) {
-        match self.storage.toggle_favorite(asset) {
-            Ok(true)=>{self.resource.favorites.insert(asset.id);self.status="已收藏".into();}
-            Ok(false)=>{self.resource.favorites.remove(&asset.id);self.status="已取消收藏".into();}
-            Err(e)=>{self.status=e.to_string();}
-        }
-        if self.resource.favorites_only {self.reload(cx);}
-        cx.notify();
+        self.mutate_resource(mutations::Mutation::Favorite(asset.clone()),cx);
     }
 
     pub(super) fn find_similar(&mut self,asset:Asset,cx:&mut Context<Self>) {
@@ -247,6 +242,7 @@ impl UploadDesk {
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.resource.large_preview_open&&self.resource.selected_asset.as_ref().is_some_and(|a|a.id==asset.id)&&self.inspector_model.read(cx).ready{return;}
         self.clear_quality(cx);
         self.resource.pending_preview=None;
         let storage=self.storage.clone();let id=asset.id;
@@ -262,7 +258,7 @@ impl UploadDesk {
         cx.notify();
     }
     pub(super) fn show_asset_details(&mut self,asset:Asset,window:&mut Window,cx:&mut Context<Self>){
-        self.select_asset(asset,window,cx);self.immersive=false;self.inspector_open=true;cx.notify();
+        if !self.resource.selected_ids.contains(&asset.id){self.resource.selected_ids.clear();self.resource.selected_ids.insert(asset.id);self.resource.selection_anchor=Some(asset.id);}self.select_asset(asset,window,cx);self.immersive=false;self.inspector_open=true;cx.notify();
     }
     pub(super) fn click_tile(&mut self,asset:Asset,count:usize,modifiers:Modifiers,window:&mut Window,cx:&mut Context<Self>){
         let order=self.resource.assets.iter().map(|a|a.id).collect::<Vec<_>>();
@@ -277,15 +273,18 @@ impl UploadDesk {
         if !self.resource.gallery_focus.is_focused(w){return;}
         let m=e.keystroke.modifiers;
         let key=e.keystroke.key.as_str();
-        if m.platform||m.control{
-            match key{"a"=>self.command(Command::SelectAll,w,cx),"i"=>self.command(Command::ToggleInspector,w,cx),_=>return}
-        }else if !m.alt{
+        if !m.platform&&!m.control&&!m.alt{
             match key{
-                "space"=>self.command(Command::Preview,w,cx),
-                "escape"=>self.command(Command::ClearSelection,w,cx),
                 "left"|"right"|"up"|"down"=>{
                     let at=self.resource.selected_asset.as_ref().and_then(|a|self.resource.assets.iter().position(|x|x.id==a.id));
-                    let next=match at{Some(i) if key=="left"||key=="up"=>i.saturating_sub(1),Some(i)=>(i+1).min(self.resource.assets.len().saturating_sub(1)),None=>0};
+                    let next=if let Some(i)=at{
+                        let spacing=self.spacing();
+                        if self.resource.masonry&&self.resource.grid_view{
+                            album::masonry_neighbor(&self.resource.masonry_plan,i,key).unwrap_or(i)
+                        }else{
+                            album::row_neighbor(&self.resource.row_plan,i,key,spacing.gap).unwrap_or(i)
+                        }
+                    }else{0};
                     if let Some(asset)=self.resource.assets.get(next).cloned(){
                         self.click_tile(asset,1,m,w,cx);
                         if self.resource.masonry&&self.resource.grid_view{
@@ -310,10 +309,7 @@ impl UploadDesk {
         if !model.ready||self.account.account_busy{return;}
         let Some(id)=self.resource.selected_asset.as_ref().map(|a|a.id)else{return;};
         let text=model.input.read(cx).value().to_string();
-        // Keep this bounded existing write synchronous until mutation/cleanup
-        // serialization is separated from the shell.
-        self.status=match self.storage.set_tags(id,&text){Ok(())=>"标签已保存".into(),Err(_)=>"标签保存失败，请重试".into()};
-        self.reload(cx);cx.notify();
+        self.mutate_resource(mutations::Mutation::Tags(id,text),cx);
     }
 
     pub(super) fn load_preview(&mut self, cx: &mut Context<Self>) {
@@ -346,6 +342,9 @@ impl UploadDesk {
     pub(super) fn open_large_preview(&mut self, window:&mut Window,cx: &mut Context<Self>) {
         let Some(asset) = self.resource.selected_asset.clone() else { return; };
         if asset.category != "image" { return; }
+        if self.resource.viewer_return.is_none()&&self.resource.selected_ids.len()>1{
+            self.resource.viewer_return=Some((asset.clone(),self.resource.selected_ids.clone(),self.resource.selection_anchor));
+        }
         self.clear_quality(cx);
         self.resource.pending_preview=None;
         self.resource.preview_task=None;
@@ -389,16 +388,12 @@ impl UploadDesk {
     pub(super) fn apply_batch_tags(&mut self, remove:bool,cx:&mut Context<Self>) {
         let ids=self.resource.assets.iter().filter(|a|self.resource.selected_ids.contains(&a.id)).map(|a|a.id).collect::<Vec<_>>();
         let text=self.resource.batch_tag_input.read(cx).value().to_string();
-        let scope=(!self.resource.all_accounts).then(||(self.account.config.provider(),self.account.config.owner_id()));
-        self.status=match self.storage.batch_tags(&ids,scope,&text,remove) {
-            Ok(())=>format!("已更新 {} 项资源标签",ids.len()), Err(e)=>e.to_string()
-        };
-        self.reload(cx);
-        cx.notify();
+        let scope=(!self.resource.all_accounts).then(||(self.account.config.provider().to_owned(),self.account.config.owner_id().to_owned()));
+        if !ids.is_empty(){self.mutate_resource(mutations::Mutation::Batch(ids,scope,text,remove),cx);}
     }
 
-    pub(super) fn preview_size(&self,window:&Window)->(f32,f32,f32){
-        let ratio=self.resource.quality.as_ref().map(|q|q.width as f32/q.height as f32).or_else(||self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied()).filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
+    pub(super) fn preview_size(&self,window:&Window,cx:&App)->(f32,f32,f32){
+        let ratio=self.viewer_model.read(cx).quality.as_ref().map(|q|q.width as f32/q.height as f32).or_else(||self.resource.selected_asset.as_ref().and_then(|a|self.resource.ratios.get(&a.id)).copied()).filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.);
         ((f32::from(window.viewport_size().width)-32.).max(1.),(f32::from(window.viewport_size().height)-200.).max(1.),ratio)
     }
     pub(super) fn preview_strip(&self)->Vec<&Asset>{
@@ -436,40 +431,20 @@ impl UploadDesk {
             self.select_asset(a,window,cx);self.open_large_preview(window,cx);
         }else if self.resource.has_more&&self.resource.history_error.is_none()&&left>0{
             self.resource.pending_preview=Some((id,left-1));self.load_more(cx);
-        }else{self.resource.quality_status=if self.resource.history_error.is_some(){"下一页加载失败，请返回相册重试".into()}else if self.resource.has_more{"本次已检查多页，可继续点击下一张".into()}else{"已到最后一张图片".into()};}
+        }else{
+            let status=if self.resource.history_error.is_some(){"下一页加载失败，请返回相册重试".into()}else if self.resource.has_more{"本次已检查多页，可继续点击下一张".into()}else{"已到最后一张图片".into()};
+            self.viewer_model.update(cx,|v,cx|v.feedback(status,cx));
+        }
         cx.notify();
     }
     pub(super) fn clear_quality(&mut self,cx:&mut Context<Self>){
-        self.resource.quality_generation=self.resource.quality_generation.wrapping_add(1);
-        self.resource.quality_task=None;
-        self.resource.quality_busy=false;self.resource.quality_status.clear();
-        if let Some(q)=self.resource.quality.take(){cx.drop_image(q.image,None);}
+        self.viewer_model.update(cx,|v,cx|v.clear(cx));
     }
     pub(super) fn load_quality(&mut self,remote:bool,cx:&mut Context<Self>){
-        if !self.resource.large_preview_open||self.resource.quality_busy{return;}
+        if !self.resource.large_preview_open{return;}
         let Some(asset)=self.resource.selected_asset.clone()else{return;};
-        if self.resource.quality.as_ref().is_some_and(|q|q.remote==remote){return;}
-        self.resource.quality_generation=self.resource.quality_generation.wrapping_add(1);
-        self.resource.quality_task=None;
-        self.resource.quality_busy=true;self.resource.quality_status=if remote{"正在读取在线原图…".into()}else{"正在读取本地原图…".into()};
-        let generation=self.resource.quality_generation;let storage=self.storage.clone();let id=asset.id;
-        self.resource.quality_task=Some(cx.spawn(async move|this,cx|{
-            let result=cx.background_spawn(async move{crate::high_preview::load(&storage,&asset,remote)}).await;
-            let _=this.update(cx,|v,cx|{
-                if !v.resource.large_preview_open||v.resource.quality_generation!=generation||v.resource.selected_asset.as_ref().is_none_or(|a|a.id!=id){return;}
-                v.resource.quality_busy=false;
-                match result{
-                    Ok(q)=>{
-                        v.resource.quality_status.clear();
-                        if let Some(old)=v.resource.quality.replace(q){cx.drop_image(old.image,None);}
-                        v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));v.resource.zoom_channel=v.resource.zoom_channel.wrapping_add(1);
-                    }
-                    Err(e)=>v.resource.quality_status=e.to_string(),
-                }
-                cx.notify();
-            });
-        }));
-        cx.notify();
+        let storage=self.storage.clone();
+        self.viewer_model.update(cx,|v,cx|v.load(asset,storage,remote,cx));
     }
     pub(super) fn close_preview(&mut self,window:&mut Window,cx:&mut Context<Self>){
         self.clear_quality(cx);
@@ -477,7 +452,9 @@ impl UploadDesk {
         self.resource.large_preview_open=false;
         self.resource.drag_at=None;
         self.resource.gallery_focus.focus(window,cx);
-        if let Some(a)=&self.resource.selected_asset{self.resource.selected_ids.clear();self.resource.selected_ids.insert(a.id);self.resource.selection_anchor=Some(a.id);}
+        if let Some((a,ids,anchor))=self.resource.viewer_return.take(){
+            self.select_asset(a,window,cx);self.resource.selected_ids=ids;self.resource.selection_anchor=anchor;
+        }else if let Some(a)=&self.resource.selected_asset{self.resource.selected_ids.clear();self.resource.selected_ids.insert(a.id);self.resource.selection_anchor=Some(a.id);}
         if self.resource.preview_reload_pending{self.reload(cx);}else{self.refresh_thumbnails(cx);}
         cx.notify();
     }
@@ -487,7 +464,7 @@ impl UploadDesk {
         cx.notify();
     }
     pub(super) fn zoom_at(&mut self,delta:f32,position:Point<Pixels>,window:&Window,cx:&mut Context<Self>){
-        let (w,h,ratio)=self.preview_size(window);
+        let (w,h,ratio)=self.preview_size(window,cx);
         let old=self.resource.displayed_zoom;
         let new=(old+delta).clamp(1.,4.);
         let anchor=(f32::from(position.x)-16.-w*0.5,f32::from(position.y)-60.-h*0.5);
@@ -500,7 +477,7 @@ impl UploadDesk {
     }
     pub(super) fn drag_preview(&mut self,position:Point<Pixels>,window:&Window,cx:&mut Context<Self>){
         if let Some(prev)=self.resource.drag_at{
-            let d=position-prev;let (w,h,ratio)=self.preview_size(window);
+            let d=position-prev;let (w,h,ratio)=self.preview_size(window,cx);
             let pan=album::clamp_pan((w,h),album::fit_preview(w,h,ratio,self.resource.displayed_zoom),(f32::from(self.resource.pan.x+d.x),f32::from(self.resource.pan.y+d.y)));
             self.resource.pan=point(px(pan.0),px(pan.1));
             self.resource.drag_at=Some(position);cx.notify();
@@ -508,7 +485,7 @@ impl UploadDesk {
     }
     pub(super) fn open_selected_resource(&mut self,cx:&mut Context<Self>) {
         let Some(asset)=self.resource.selected_asset.as_ref() else{return;};
-        let Ok(url)=url::Url::parse(&asset.url) else {self.status="资源链接无效".into();if self.resource.large_preview_open{self.resource.quality_status=self.status.clone();}cx.notify();return;};
+        let Ok(url)=url::Url::parse(&asset.url) else {self.status="资源链接无效".into();if self.resource.large_preview_open{self.viewer_model.update(cx,|v,cx|v.feedback(self.status.clone(),cx));}cx.notify();return;};
         if asset.provider=="demo" && url.scheme()=="file" {
             if let Ok(path)=url.to_file_path() {
                 if path.is_file(){cx.open_with_system(&path);return;}
@@ -517,7 +494,7 @@ impl UploadDesk {
             cx.open_url(url.as_str());return;
         }
         self.status="资源不存在或链接不受支持".into();
-        if self.resource.large_preview_open{self.resource.quality_status=self.status.clone();}
+        if self.resource.large_preview_open{self.viewer_model.update(cx,|v,cx|v.feedback(self.status.clone(),cx));}
         cx.notify();
     }
 
