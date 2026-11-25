@@ -1,19 +1,27 @@
 use super::*;
 
 impl UploadDesk {
-    pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_resource_selection(&mut self,cx:&mut Context<Self>){
         self.clear_quality(cx);
-        self.resource.preview_reload_pending=false;
+        self.resource.selected_ids.clear();
+        self.resource.selected_asset=None;
+        self.resource.selection_anchor=None;
+        self.resource.batch_tag_open=false;
         self.resource.viewer_return=None;
         self.resource.pending_preview=None;
-        self.resource.selection_anchor=None;self.resource.batch_tag_open=false;
-        self.inspector_model.update(cx,|model,cx|model.reset(cx));
+        self.resource.large_preview_open=false;
+        self.resource.large_preview_path=None;
+        self.resource.thumbnail_path=None;
+        self.resource.preview_task=None;
+        self.resource.preview_loading=false;
+        self.resource.preview_error=None;
+        self.inspector_model.update(cx,|m,cx|m.reset(cx));
+    }
+
+    pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+        self.clear_resource_selection(cx);
+        self.resource.preview_reload_pending=false;
         self.resource.page_cursors = vec![None];
-        self.resource.selected_asset = None;
-        self.resource.selected_ids.clear();
-        self.resource.large_preview_open = false;
-        self.resource.large_preview_path = None;
-        self.resource.thumbnail_path = None;
         self.resource.cached_thumbnails.clear();
         self.resource.preview_attempted.clear();
         self.resource.preview_loading_batch=false;
@@ -92,8 +100,15 @@ impl UploadDesk {
                             self.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
                         } else {
                             self.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
-                            if self.resource.selected_asset.as_ref().is_some_and(|a|!items.iter().any(|x|x.id==a.id)){
-                                self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));
+                            if self.resource.selected_asset.as_ref().is_some_and(|a|!self.resource.selected_ids.contains(&a.id)){
+                                // A refresh can remove the primary item; do not keep a
+                                // disconnected selection or expose actions for an old asset.
+                                self.clear_resource_selection(cx);
+                            }else{
+                                if self.resource.selection_anchor.is_some_and(|id|!items.iter().any(|a|a.id==id)){
+                                    self.resource.selection_anchor=self.resource.selected_asset.as_ref().map(|a|a.id);
+                                }
+                                if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
                             }
                             self.resource.assets=items;
                             self.resource.cached_thumbnails.clear();self.resource.ratios.clear();
@@ -114,7 +129,11 @@ impl UploadDesk {
                         self.refresh_thumbnails(cx);
                     }
                     Err(error) => {
-                        if event.append{self.resource.page_cursors.pop();}else{self.resource.assets.clear();self.resource.total_count=0;self.resource.has_more=false;}
+                        if event.append{self.resource.page_cursors.pop();}else{
+                            self.clear_resource_selection(cx);
+                            self.resource.assets.clear();self.resource.total_count=0;self.resource.has_more=false;
+                            self.resource.cached_thumbnails.clear();self.resource.ratios.clear();
+                        }
                         self.resource.history_error = Some(error.to_string());
                     }
                 }
@@ -249,7 +268,7 @@ impl UploadDesk {
         let order=self.resource.assets.iter().map(|a|a.id).collect::<Vec<_>>();
         selection::click(&mut self.resource.selected_ids,&order,&mut self.resource.selection_anchor,asset.id,modifiers.shift,modifiers.platform||modifiers.control);
         if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
-        if self.resource.selected_ids.contains(&asset.id){self.select_asset(asset.clone(),window,cx);}else if let Some(a)=self.resource.assets.iter().find(|a|self.resource.selected_ids.contains(&a.id)).cloned(){self.select_asset(a,window,cx);}else{self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));}
+        if self.resource.selected_ids.contains(&asset.id){self.select_asset(asset.clone(),window,cx);}else if let Some(a)=self.resource.assets.iter().find(|a|self.resource.selected_ids.contains(&a.id)).cloned(){self.select_asset(a,window,cx);}else{self.clear_resource_selection(cx);}
         self.resource.gallery_focus.focus(window,cx);
         if count>=2&&!modifiers.shift&&!modifiers.platform&&!modifiers.control&&asset.category=="image"{self.open_large_preview(window,cx);}
         cx.notify();

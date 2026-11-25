@@ -199,7 +199,7 @@ impl UploadDesk {
     pub(super) fn selection_toolbar(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();let n=self.resource.selected_ids.len();let weak=cx.weak_entity();
         div().h(px(30.)).flex_shrink_0().flex().items_center().gap_2()
-            .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(if n>0{format!("已选择 {n} 项")}else{"Space 预览 · Shift 多选".into()}))
+            .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(if n==selection::LIMIT{format!("已选择 {n} 项（已达上限）")}else if n>0{format!("已选择 {n} 项")}else{"Space 预览 · Shift 多选".into()}))
             .when(n>0,|d|d
                 .child(Button::new("selection-copy").small().ghost().icon(IconName::Copy).label("复制链接").on_click(cx.listener(|v,_,_,cx|v.copy_selected(false,cx))))
                 .child(Button::new("selection-more").small().ghost().label("更多").dropdown_menu(move|m,_,_|m

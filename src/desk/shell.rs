@@ -38,8 +38,10 @@ impl UploadDesk{
                 if self.resource.selected_asset.as_ref().is_none_or(|a|!self.resource.selected_ids.contains(&a.id)){
                     if let Some(a)=self.resource.assets.first().cloned(){self.select_asset(a,window,cx);}
                 }
+                self.resource.selection_anchor=self.resource.selected_asset.as_ref().map(|a|a.id);
+                if self.resource.selected_ids.is_empty(){self.clear_resource_selection(cx);}
             },
-            Command::ClearSelection=>{self.resource.selected_ids.clear();self.resource.selection_anchor=None;self.resource.batch_tag_open=false;self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));},
+            Command::ClearSelection=>self.clear_resource_selection(cx),
             Command::Preview=>self.open_large_preview(window,cx),
         }
         cx.notify();

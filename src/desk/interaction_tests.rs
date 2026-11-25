@@ -805,3 +805,49 @@ fn acknowledging_unknown_requires_confirmation_and_does_not_upload(){
     assert!(!app.read(|cx|{let v=desk.read(cx);v.maintenance_busy||v.queue.read(cx).busy}));
     drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
 }
+
+#[::core::prelude::v1::test]
+fn gallery_refresh_failure_clears_stale_actions_and_append_failure_keeps_selection(){
+    let root=std::env::temp_dir().join(format!("yuque-refresh-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    for i in 0..2{
+        db.insert_or_get(&crate::storage::NewAsset{name:format!("fixture-{i}.txt"),bytes:10,category:"attachment".into(),provider:"demo".into(),owner_id:"local".into(),url:format!("file:///fixture-{i}.txt"),sha256:format!("fixture-{i}"),filekey:String::new()}).unwrap();
+    }
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
+        let a=v.resource.assets[0].clone();
+        v.click_tile(a,1,Modifiers::default(),w,cx);
+        v.resource.batch_tag_open=true;
+        v.resource.page_cursors.push(Some(v.resource.assets[1].id));
+        let generation=v.resource.history_generation;
+        v.apply_gallery_result(&gallery_query::GalleryResult{generation,append:true,result:Err("fixture append failure".into())},cx);
+        assert_eq!(v.resource.assets.len(),2);
+        assert_eq!(v.resource.selected_ids.len(),1);
+        assert!(v.resource.selected_asset.is_some());
+        assert_eq!(v.resource.page_cursors.len(),1);
+        v.apply_gallery_result(&gallery_query::GalleryResult{generation,append:false,result:Err("fixture refresh failure".into())},cx);
+        assert!(v.resource.assets.is_empty()&&v.resource.selected_ids.is_empty()&&v.resource.selected_asset.is_none());
+        assert!(v.resource.selection_anchor.is_none()&&!v.resource.batch_tag_open&&v.resource.thumbnail_path.is_none());
+        assert!(v.resource.history_error.is_some());
+        v.reload(cx);
+    }));
+    app.run_until_parked();
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
+        assert_eq!(v.resource.assets.len(),2);
+        assert!(v.resource.history_error.is_none());
+        let a=v.resource.assets[0].clone();
+        let b=v.resource.assets[1].clone();
+        v.click_tile(b.clone(),1,Modifiers::default(),w,cx);
+        v.click_tile(a,1,Modifiers{control:true,..Default::default()},w,cx);
+        assert_eq!(v.resource.selected_ids.len(),2);
+        let generation=v.resource.history_generation;
+        v.apply_gallery_result(&gallery_query::GalleryResult{generation,append:false,result:Ok(((vec![b],false,1),vec![],Default::default(),vec![]))},cx);
+        assert!(v.resource.selected_ids.is_empty()&&v.resource.selected_asset.is_none());
+        assert!(v.resource.selection_anchor.is_none());
+    }));
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}

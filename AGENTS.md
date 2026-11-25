@@ -215,3 +215,8 @@
 - QueueRunner.activity_label/transfer_label共享真实请求状态，准备/暂停/取消/中止/请求体读完等待结果，批次和单文件反馈分层。中止使用fetch_max(1)，不能将已请求取消2降级为暂停1。重复命令禁用；当前文件不显示继续按钮。远端待核实操作新增原生确认，maintenance_busy持有至确认结果，取消不改变状态、确认仅Acknowledge且不自动上传，SQL继续核对当前账号和原状态。
 - 详情对象名称/本地化类型置顶，复制链接主按钮，打开/Markdown/收藏/相似动作优先，标签右侧保存；窄窗144px预览及明确返回图库。保留低频技术属性、原图和永久微缩图；无新增依赖/schema/网络功能。
 - 64 QA passed/0 failed/1 ignored，all-targets、QA build、static/diff；新增命令优先级及请求体读完不等于成功回归、待核实原生确认平台模拟回调（取消保留unknown、确认failed、未上传、互锁退出/重试）。11种不同真实渲染截图（两轮重点复验，深浅及720×600；活跃任务是隔离QA状态夹具非真实上传）；dist/design-research/flow-after/。最终查看器/详情和活跃任务最小窗口已实际审查。未执行真实语雀、Windows真机、完整Release性能复测、完整物理交互；继续保留发布门禁。
+
+## 后续设计：图库选择与读取恢复
+- PR #8 的 f0d9f27 双平台 CI 45546108736 成功，冻结 V0.7 候选及其原始产物不变。继续在同一后续开发分支提交，不提前合入 main 或发布。
+- selection.rs 双向范围超过150项时保留点击端点附近连续150项，追加选择不驱逐已有项；工具栏显示上限。SelectAll 同步主选项锚点。resources.rs 共用 clear_resource_selection，取消选择、查询重置和整页读取失败统一释放详情/预览状态；主选项刷新后消失则保守清空整个选择，追加页失败保留既有结果及选择，重试游标回退。
+- 本地 macOS all-targets check、static/diff check、范围专项及 GPUI 状态注入刷新失败/追加失败/恢复测试通过；完整 QA 65 passed/0 failed/1 ignored。未重新采集截图、运行真实 Windows、真实语雀或 Release 性能。未新增依赖、迁移、网络或用户数据操作。
