@@ -549,11 +549,14 @@ impl UploadDesk {
         self.copy_result_text(content,as_markdown,window,cx);
     }
     pub(super) fn copy_result_text(&mut self,content:String,as_markdown:bool,window:&mut Window,cx:&mut Context<Self>){
+        self.copy_text_feedback(content,if as_markdown{"Markdown 引用已复制"}else{"资源链接已复制"},window,cx);
+    }
+    pub(super) fn copy_text_feedback(&mut self,content:String,success:&str,window:&mut Window,cx:&mut Context<Self>){
         use gpui_kit::component::{notification::Notification,WindowExt};
         struct CopyFeedback;
         let notification=match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content)) {
             Ok(_) => {
-                self.status=if as_markdown{"Markdown 引用已复制"}else{"资源链接已复制"}.into();
+                self.status=success.into();
                 Notification::success(self.status.clone())
             }
             Err(error) => {self.status=format!("写入剪贴板失败：{error}");Notification::error(self.status.clone())}

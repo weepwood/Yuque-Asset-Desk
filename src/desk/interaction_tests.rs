@@ -432,6 +432,16 @@ fn preview_double_click_keyboard_zoom_and_sidebar(){
     assert_eq!(ui.debug_bounds("tile-3").unwrap(),tile);
     assert_eq!(app.read(|cx|desk.read(cx).resource.selected_ids.len()),1);
     eprintln!("PATH single-select stable tile={tile:?}");
+    // Real overlay hit targets must not bubble into the tile's click handler.
+    let overlay=ui.debug_bounds("grid-select-3").unwrap().center();
+    ui.simulate_click(overlay,Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|desk.read(cx).resource.selected_ids.is_empty()));
+    ui.simulate_mouse_move(pos,None,Modifiers::default());app.run_until_parked();draw(&mut ui);
+    let quick=ui.debug_bounds("tile-preview-3").unwrap().center();
+    ui.simulate_click(quick,Modifiers::default());app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let r=&desk.read(cx).resource;r.large_preview_open&&r.selected_ids.len()==1&&r.selected_asset.as_ref().is_some_and(|a|a.id==id)}));
+    ui.simulate_keystrokes("escape");app.run_until_parked();draw(&mut ui);
+    assert_eq!(ui.debug_bounds("tile-3").unwrap(),tile);
     let second=ui.debug_bounds("tile-2").unwrap();
     ui.simulate_click(point(second.center().x,second.top()+px(35.)),Modifiers{shift:true,..Default::default()});
     app.run_until_parked();draw(&mut ui);
@@ -509,6 +519,15 @@ fn preview_double_click_keyboard_zoom_and_sidebar(){
     ui.simulate_click(load.center(),Modifiers::default());app.run_until_parked();draw(&mut ui);
     assert!(app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.as_ref().is_some_and(|q|q.width==640&&q.height==480&&!q.remote)));
     let quality_id=app.read(|cx|desk.read(cx).viewer_model.read(cx).quality.as_ref().unwrap().image.id);
+    // Stop a pending alternate request before its completion. The current
+    // quality image remains visible and stale completion cannot replace it.
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.load_quality(true,cx);
+        assert!(v.viewer_model.read(cx).busy);
+        v.viewer_model.update(cx,|m,cx|m.cancel_load(cx));
+    }));
+    app.run_until_parked();draw(&mut ui);
+    assert!(app.read(|cx|{let m=desk.read(cx).viewer_model.read(cx);!m.busy&&m.quality.as_ref().is_some_and(|q|q.image.id==quality_id)&&m.status.contains("已停止等待")}));
     // A rejected alternate source must not replace the current render image.
     app.update(|cx|desk.update(cx,|v,cx|v.load_quality(true,cx)));
     app.run_until_parked();draw(&mut ui);

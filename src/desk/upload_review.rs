@@ -13,7 +13,7 @@ pub(super) struct DraftRow{
 }
 pub(super) struct Review{
     scope:(String,String),sources:Vec<Source>,rows:Vec<DraftRow>,loading:bool,selected:usize,
-    preview_loading:bool,preview_cancel:Option<Arc<AtomicBool>>,
+    preview_loading:bool,preview_cancel:Option<Arc<AtomicBool>>,preview_done:usize,
 }
 impl Drop for Review{fn drop(&mut self){if let Some(cancel)=&self.preview_cancel{cancel.store(true,Ordering::Relaxed);}}}
 fn inspect(source:&Source,max:u64,show:bool)->DraftRow{
@@ -57,7 +57,7 @@ impl UploadDesk{
         self.review_generation=self.review_generation.wrapping_add(1);
         let generation=self.review_generation;
         self.stop_review_preview(cx);
-        let review=self.upload_review.get_or_insert_with(||Review{scope,sources:vec![],rows:vec![],loading:false,selected:0,preview_loading:false,preview_cancel:None});
+        let review=self.upload_review.get_or_insert_with(||Review{scope,sources:vec![],rows:vec![],loading:false,selected:0,preview_loading:false,preview_cancel:None,preview_done:0});
         review.loading=true;
         let max=self.config.max_file_mb*1024*1024;
         self.navigate_page(Page::Jobs,cx);
@@ -84,7 +84,7 @@ impl UploadDesk{
         self.review_preview_task=None;
         if let Some(r)=self.upload_review.as_mut(){
             if let Some(cancel)=r.preview_cancel.take(){cancel.store(true,Ordering::Relaxed);}
-            r.preview_loading=false;
+            r.preview_loading=false;r.preview_done=0;
             image_cache::release_images(r.rows.iter_mut().filter_map(|row|row.picture.take()).collect(),cx);
         }
     }
@@ -96,22 +96,36 @@ impl UploadDesk{
         if r.loading||r.rows.is_empty(){return;}
         let start=r.selected/PAGE_SIZE*PAGE_SIZE;
         let end=(start+PAGE_SIZE).min(r.sources.len());
-        let sources=r.sources[start..end].to_vec();
+        let selected=r.selected;
+        // Selected image first, then small batches. One decode at a time,
+        // no unbounded producer queue or waiting for the slowest file.
+        let mut order=vec![selected];
+        order.extend((start..end).filter(|i|*i!=selected));
+        let mut sources=order.into_iter().map(|i|(i,r.sources[i].clone())).collect::<std::collections::VecDeque<_>>();
         let max=self.config.max_file_mb*1024*1024;
         let cancel=Arc::new(AtomicBool::new(false));
         r.preview_cancel=Some(cancel.clone());r.preview_loading=true;
         self.review_preview_task=Some(cx.spawn(async move|this,cx|{
-            let rows=cx.background_spawn(async move{
-                sources.iter().take_while(|_|!cancel.load(Ordering::Relaxed)).map(|s|inspect(s,max,true)).collect::<Vec<_>>()
-            }).await;
-            let _=this.update(cx,|v,cx|{
-                if v.review_generation!=generation{return;}
-                if let Some(r)=v.upload_review.as_mut(){
-                    for (row,updated) in r.rows.iter_mut().skip(start).zip(rows){*row=updated;}
-                    r.preview_loading=false;r.preview_cancel=None;
-                }
-                cx.notify();
-            });
+            let mut first=true;
+            while !sources.is_empty()&&!cancel.load(Ordering::Relaxed){
+                let n=if first{1}else{3};first=false;
+                let batch=(0..n).filter_map(|_|sources.pop_front()).collect::<Vec<_>>();
+                let token=cancel.clone();
+                let rows=cx.background_spawn(async move{
+                    batch.into_iter().take_while(|_|!token.load(Ordering::Relaxed)).map(|(i,s)|(i,inspect(&s,max,true))).collect::<Vec<_>>()
+                }).await;
+                if cancel.load(Ordering::Relaxed){break;}
+                let finished=sources.is_empty();
+                let applied=this.update(cx,|v,cx|{
+                    if v.review_generation!=generation{return false;}
+                    let Some(r)=v.upload_review.as_mut()else{return false;};
+                    r.preview_done+=rows.len();
+                    for (i,row) in rows{if let Some(slot)=r.rows.get_mut(i){*slot=row;}}
+                    if finished{r.preview_loading=false;r.preview_cancel=None;}
+                    cx.notify();true
+                }).unwrap_or(false);
+                if !applied{break;}
+            }
         }));
         cx.notify();
     }
@@ -202,7 +216,9 @@ impl UploadDesk{
                 .child(Button::new("review-cancel").small().ghost().label("取消").on_click(cx.listener(|v,_,_,cx|v.cancel_upload_review(cx)))))
             .child(div().text_xs().text_color(p.muted).child(if review.scope.0=="demo"{"本地演示 · 不会发送至语雀".into()}else{format!("语雀账号 {} · 确认后才发送",review.scope.1)}))
             .child(div().flex().items_center().justify_between().gap_2().child(div().text_sm().font_medium().child(format!("{} 项可上传 / {} 项 · {}",ready,review.rows.len(),file_size(bytes.min(i64::MAX as u64) as i64))))
-                .child(div().text_xs().text_color(p.muted).child(if review.loading{"检查中…"}else{"可继续拖入文件"})))
+                .child(div().flex().items_center().gap_2().text_xs().text_color(p.muted)
+                    .when(wide&&!review.loading&&!review.rows.is_empty(),|d|d.child(div().w(px(64.)).h(px(3.)).rounded_full().bg(p.subtle).child(div().h_full().rounded_full().bg(p.accent).w(relative((review.preview_done as f32/(end-start).max(1) as f32).clamp(0.,1.))))))
+                    .child(if review.loading{"检查中…".into()}else if review.rows.is_empty(){"可继续拖入文件".into()}else{format!("本页预览 {} / {}",review.preview_done,end-start)})))
             .when(pages>1,|d|d.child(div().flex_shrink_0().flex().items_center().gap_2().text_xs().text_color(p.muted)
                 .child(div().flex_1().min_w(px(0.)).truncate().child(format!("第 {}–{} 项 / {} · {}",start+1,end,review.rows.len(),if review.preview_loading{"读取预览中"}else{"按页预览"})))
                 .child(div().debug_selector(||"review-prev-page".into()).child(Button::new("review-prev-page").xsmall().ghost().icon(IconName::ChevronLeft).tooltip("上一页").disabled(review.loading||page==0).on_click(cx.listener(|v,_,_,cx|v.page_review(false,cx)))))
