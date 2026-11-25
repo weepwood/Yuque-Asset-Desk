@@ -375,3 +375,13 @@ PR #8 原 head f0d9f27 双平台 CI 45546108736 success。修复正反向范围�
 - 33MiB带真实PNG前缀的合成超限输入，Demo入库完成、预览失败独立记录、无受管快照和残留暂存、原始文件保留。macOS Debug 独立测试 /usr/bin/time -l：1.71秒，maximum resident set size 22020096 bytes（21MiB），非GUI/真实网络/大像素解码或长时RSS结论。
 - 最终 QA 84通过/0失败/1忽略（公开GitHub在线更新测试）；all-targets、静态检查、diff、Debug QA构建通过。实际深/浅色诊断截图已审查：11张演示图片中9有效、1缺失、1损坏，两个操作行完整可见。证据 dist/design-research/v0.9-audit-report/（本地忽略目录）。Cargo全局缓存清理权限警告非编译失败。
 - 剩余：真实授权语雀上传、多格式服务端契约、AVIF/HEIC安全跨平台解码、Windows真机、长时/大像素/RSS压力验收。保持同一PR，不发布候选、不读取真实Cookie、不重复构建安装包。
+
+## V0.9.0 预发行版发布记录（2026-11-26）
+
+- 用户要求按当前进度发布。由于真实语雀上传仍未验收，选择 GitHub Pre-release，不进入稳定版自动更新；正式稳定版仍为 V0.8.0。PR #9 保持开放，main 未合并。
+- 固定 Tag v0.9.0 指向 2c3ba28422a40a82865a30258b97035d6a29f8c4；CI 45602861451 双平台成功，原始构建产物不重新打包。
+- [发布页面](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.9.0) 已发布，非草稿；远端四项资产名称、大小、SHA256 与原始 CI 文件一致。详见 docs/release/v0.9.0-verified-assets.json。远端 latest 仍为 v0.8.0。
+- macOS ARM64 DMG 9100123 bytes：原始 SHA256、DMG CRC、只读挂载、应用版本/图标/架构、ad-hoc 签名及 Finder 安装布局通过；隔离 Demo 启动、空数据库、1160×828 窗口、托盘/快捷键注册通过。未安装到 Applications，未进行公证或物理快捷键验收。
+- Windows x64 ZIP 9493756 bytes：原始 SHA256、ZIP CRC、x64 PE、图标/版本资源及 INSTALL.txt 通过，CI Windows 产品元数据检查通过；未签名，未进行 Windows 真机运行。
+- 本地 QA 84 通过、0 失败、1 忽略；真实语雀上传、AVIF/HEIC 本地解码及长时压力测试仍未完成。建议先备份 V0.8 数据再体验，不保证降级兼容。
+- 证据 dist/release-audit-v0.9.0/。保留 V0.7/V0.8 发布产物；冻结 v0.9.0 Tag，不移动或覆盖。后续若需要修复已发布代码，使用新版本号。
