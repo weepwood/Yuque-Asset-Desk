@@ -36,7 +36,7 @@ impl UploadDesk {
         div().flex().items_center().gap_3().px_3().py_2().rounded(px(design::CONTROL_RADIUS)).border_1().border_color(p.line).bg(p.surface)
             .child(div().size(px(34.)).rounded(px(6.)).bg(p.accent_soft).text_color(p.accent).flex().items_center().justify_center().child(IconName::File))
             .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
-                .child(div().text_xs().text_color(p.text).child(if self.upload_review.is_some(){"待确认上传 · 尚未发送".into()}else{self.queue.read(cx).activity_label()}))
+                .child(div().text_xs().text_color(p.text).child(if self.upload_review.is_some(){"待确认上传 · 尚未发送".into()}else if !self.queue.read(cx).busy&&total>0{let q=self.queue.read(cx);format!("本批结果 · 新增 {} · 复用 {} · 异常 {} · 未完成 {}",q.succeeded,q.duplicates,q.failed.len(),total.saturating_sub(q.succeeded+q.duplicates+q.failed.len()))}else{self.queue.read(cx).activity_label()}))
                 .when(self.queue.read(cx).active_job.is_some(),|d|d.child(div().text_xs().text_color(p.muted).child(self.queue.read(cx).transfer_label())))
                 .when(self.queue.read(cx).busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
             .child(Button::new("view-upload-jobs").small().ghost().label(if self.upload_review.is_some(){"继续确认"}else{"查看任务"}).on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))
@@ -58,7 +58,7 @@ impl UploadDesk {
             .child(Button::new("rail-jobs").ghost().icon(IconName::File).tooltip("上传任务").selected(self.page==Page::Jobs).on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))
             .child(Button::new("rail-settings").ghost().icon(IconName::Settings).tooltip("设置").selected(self.page.settings()).on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Settings),w,cx);})))
     }
-    pub(super) fn navigation(&self,narrow:bool,w:&mut Window,cx:&mut Context<Self>)->impl IntoElement{
+    pub(super) fn navigation(&self,narrow:bool,width:f32,w:&mut Window,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
         let section=|label:&str|div().px_2().pt_3().pb_1().text_xs().font_medium().text_color(p.muted).child(label.to_owned());
         let rows=[("nav-all","全部资源","",false,IconName::FolderOpen),("nav-images","图片","image",false,IconName::GalleryVerticalEnd),("nav-favorites","收藏","",true,IconName::Star),("nav-videos","视频","video",false,IconName::Play),("nav-attachments","附件","attachment",false,IconName::File)];
@@ -68,7 +68,7 @@ impl UploadDesk {
             nav=nav.child(div().debug_selector(move||id.into()).child(SidebarMenuItem::new(label).icon(icon).active(active)
                 .on_click(cx.listener(move|v,_,w,cx|v.navigate(cat,fav,w,cx))).render(id,w,cx)));
         }
-        div().id("navigation-sidebar").w(px(self.spacing().sidebar_width(narrow))).flex_shrink_0().h_full()
+        div().id("navigation-sidebar").w(px(width)).flex_shrink_0().h_full()
             .flex().flex_col().p(px(self.spacing().nav_pad)).bg(p.sidebar).border_r_1().border_color(p.line)
             .child(div().flex().items_center().gap(px(self.spacing().nav)).px_2().py_2()
                 .child(div().size(px(26.)).rounded(px(7.)).bg(p.accent_soft).text_color(p.accent).flex().items_center().justify_center().child(IconName::FolderOpen))

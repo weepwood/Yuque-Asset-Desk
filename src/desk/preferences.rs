@@ -2,10 +2,10 @@ use serde_json::{Value,json};
 #[derive(Clone,Debug,PartialEq)]
 pub(crate) struct Preferences {
     pub comfortable:bool,pub dark:bool,pub layout:String,pub tile:f32,pub oldest:bool,pub favorites:bool,pub dates:bool,
-    pub width:f32,pub height:f32,pub shortcut:String,pub inspector_width:f32,
+    pub width:f32,pub height:f32,pub shortcut:String,pub inspector_width:f32,pub sidebar_width:f32,
 }
 impl Default for Preferences {
-    fn default()->Self{Self{comfortable:true,dark:true,layout:"grid".into(),tile:148.,oldest:false,favorites:false,dates:true,width:1160.,height:800.,shortcut:"U".into(),inspector_width:0.}}
+    fn default()->Self{Self{comfortable:true,dark:true,layout:"grid".into(),tile:148.,oldest:false,favorites:false,dates:true,width:1160.,height:800.,shortcut:"U".into(),inspector_width:0.,sidebar_width:0.}}
 }
 impl Preferences {
     pub fn decode(v:Value)->Self{
@@ -14,10 +14,11 @@ impl Preferences {
         Self{comfortable:v["comfortable"].as_bool().unwrap_or(d.comfortable),dark:v["dark"].as_bool().unwrap_or(d.dark),layout:match v["layout"].as_str(){Some("list")=>"list",Some("masonry")=>"masonry",Some("justified")=>"justified",_=>"grid"}.into(),
             tile:number("tile",d.tile,96.,240.),oldest:v["oldest"].as_bool().unwrap_or(d.oldest),favorites:v["favorites"].as_bool().unwrap_or(d.favorites),dates:v["dates"].as_bool().unwrap_or(d.dates),
             width:number("width",d.width,720.,3840.),height:number("height",d.height,600.,2160.),
+            sidebar_width:if v["sidebar_width"].as_f64().is_some_and(|n|n>0.){number("sidebar_width",200.,168.,300.)}else{0.},
             inspector_width:if v["inspector_width"].as_f64().is_some_and(|n|n>0.){number("inspector_width",280.,240.,420.)}else{0.},
             shortcut:match v["shortcut"].as_str(){Some("I")=>"I",Some("off")=>"off",_=>"U"}.into()}
     }
-    pub fn encode(&self)->Value{json!({"comfortable":self.comfortable,"dark":self.dark,"layout":self.layout,"tile":self.tile,"oldest":self.oldest,"favorites":self.favorites,"dates":self.dates,"width":self.width,"height":self.height,"shortcut":self.shortcut,"inspector_width":self.inspector_width})}
+    pub fn encode(&self)->Value{json!({"comfortable":self.comfortable,"dark":self.dark,"layout":self.layout,"tile":self.tile,"oldest":self.oldest,"favorites":self.favorites,"dates":self.dates,"width":self.width,"height":self.height,"shortcut":self.shortcut,"inspector_width":self.inspector_width,"sidebar_width":self.sidebar_width})}
 }
 #[cfg(test)]
 mod tests{

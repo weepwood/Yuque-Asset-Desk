@@ -65,7 +65,7 @@ impl UploadDesk {
     pub(super) fn resume_jobs(&mut self,cx:&mut Context<Self>){self.prepare_queue(Prepare::Resume,cx);}
 
     pub(super) fn select_files(&mut self, cx: &mut Context<Self>) {
-        if self.upload_review.is_some(){self.navigate_page(Page::Jobs,cx);return;}
+        if self.review_loading(){self.navigate_page(Page::Jobs,cx);return;}
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) {
             return;
         }

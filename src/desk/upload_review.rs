@@ -11,7 +11,7 @@ pub(super) struct DraftRow{
     pub name:String,pub bytes:u64,pub picture:Option<Arc<RenderImage>>,pub warning:Option<String>,pub valid:bool,
 }
 pub(super) struct Review{
-    scope:(String,String),sources:Vec<Source>,rows:Vec<DraftRow>,loading:bool,
+    scope:(String,String),sources:Vec<Source>,rows:Vec<DraftRow>,loading:bool,selected:usize,
 }
 fn inspect(source:&Source,max:u64,show:bool)->DraftRow{
     let (name,bytes,content)=match source{
@@ -46,21 +46,30 @@ impl UploadDesk{
             self.status="当前操作尚未结束，本次文件未加入".into();cx.notify();return;
         }
         if self.config.mode==Mode::Yuque&&self.config.creds.is_none(){self.status="请先配置语雀会话再上传".into();cx.notify();return;}
-        if self.upload_review.is_some(){self.status="请先确认或取消当前待上传批次".into();self.navigate_page(Page::Jobs,cx);return;}
         let scope=(self.config.provider().to_owned(),self.config.owner_id().to_owned());
+        if self.upload_review.as_ref().is_some_and(|r|r.loading){
+            self.status="正在检查上一批文件，请稍后添加".into();cx.notify();return;
+        }
+        if self.upload_review.as_ref().is_some_and(|r|r.scope!=scope){self.cancel_upload_review(cx);}
         self.review_generation=self.review_generation.wrapping_add(1);
         let generation=self.review_generation;
-        self.upload_review=Some(Review{scope:scope.clone(),sources:vec![],rows:vec![],loading:true});
+        let review=self.upload_review.get_or_insert_with(||Review{scope,sources:vec![],rows:vec![],loading:false,selected:0});
+        let budget=PREVIEW_LIMIT.saturating_sub(review.rows.iter().filter(|r|r.picture.is_some()).count());
+        review.loading=true;
         let max=self.config.max_file_mb*1024*1024;
         self.navigate_page(Page::Jobs,cx);
         self.review_task=Some(cx.spawn(async move|this,cx|{
             let (sources,rows)=cx.background_spawn(async move{
-                let rows=sources.iter().enumerate().map(|(i,s)|inspect(s,max,i<PREVIEW_LIMIT)).collect();
+                let rows=sources.iter().enumerate().map(|(i,s)|inspect(s,max,i<budget)).collect::<Vec<_>>();
                 (sources,rows)
             }).await;
             let _=this.update(cx,|v,cx|{
-                if v.review_generation!=generation||v.upload_review.is_none(){return;}
-                v.upload_review=Some(Review{scope,sources,rows,loading:false});cx.notify();
+                if v.review_generation!=generation{return;}
+                if let Some(r)=v.upload_review.as_mut(){
+                    let offset=r.rows.len();r.sources.extend(sources);r.rows.extend(rows);r.loading=false;
+                    if offset<100{r.selected=offset;}
+                }
+                cx.notify();
             });
         }));
         cx.notify();
@@ -86,34 +95,61 @@ impl UploadDesk{
         image_cache::release_images(review.rows.iter_mut().filter_map(|r|r.picture.take()).collect(),cx);
         self.prepare_queue(Prepare::Enqueue(sources),cx);
     }
-    pub(super) fn upload_review_panel(&self,cx:&mut Context<Self>)->AnyElement{
+    pub(super) fn review_loading(&self)->bool{self.upload_review.as_ref().is_some_and(|r|r.loading)}
+    fn remove_review_row(&mut self,index:usize,cx:&mut Context<Self>){
+        let Some(r)=self.upload_review.as_mut()else{return;};
+        if r.loading||index>=r.rows.len(){return;}
+        r.sources.remove(index);
+        let row=r.rows.remove(index);
+        image_cache::release_images(row.picture.into_iter().collect(),cx);
+        r.selected=if index<r.selected{r.selected-1}else{r.selected.min(r.rows.len().saturating_sub(1))};
+        cx.notify();
+    }
+    pub(super) fn upload_review_panel(&self,wide:bool,cx:&mut Context<Self>)->AnyElement{
         let Some(review)=&self.upload_review else{return div().into_any_element();};
         let p=self.palette();
         let ready=review.rows.iter().filter(|r|r.valid).count();
         let bytes=review.rows.iter().filter(|r|r.valid).map(|r|r.bytes).fold(0u64,u64::saturating_add);
-        let mut rows=div().id("review-scroll").flex_1().min_h(px(0.)).flex().flex_col().gap_1();
+        let mut rows=div().id("review-scroll").w_full().h_full().min_h(px(0.)).flex().flex_col().gap_1();
         for (i,r) in review.rows.iter().take(100).enumerate(){
-            let image=div().size(px(54.)).flex_shrink_0().rounded(px(5.)).overflow_hidden().bg(p.subtle).flex().items_center().justify_center()
+            let image=div().size(px(42.)).flex_shrink_0().rounded(px(5.)).overflow_hidden().bg(p.subtle).flex().items_center().justify_center()
                 .child(if let Some(image)=&r.picture{img(image.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element()}else{div().text_color(p.muted).child(IconName::File).into_any_element()});
-            rows=rows.child(div().id(("review-row",i)).flex().items_center().gap_3().py_2().border_b_1().border_color(p.line)
+            rows=rows.child(div().id(("review-row",i)).debug_selector(move||format!("review-row-{i}")).flex().flex_shrink_0().items_center().gap_2().px_2().py_1().rounded(px(6.))
+                .bg(if review.selected==i{p.accent_soft}else{p.canvas}).hover(|d|d.bg(p.surface))
+                .on_click(cx.listener(move|v,_,_,cx|{if let Some(r)=v.upload_review.as_mut(){if i<r.rows.len(){r.selected=i;cx.notify();}}}))
                 .child(image).child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
                     .child(div().font_medium().truncate().child(r.name.clone()))
                     .child(div().text_xs().text_color(p.muted).child(file_size(r.bytes as i64)))
                     .when(r.warning.is_some(),|d|d.child(div().text_xs().text_color(if r.valid{p.muted}else{p.error}).child(r.warning.clone().unwrap_or_default()))))
-                .child(div().text_xs().text_color(if r.valid{p.accent}else{p.error}).child(if r.valid{"待确认"}else{"无法上传"})));
+                .child(div().text_xs().text_color(if r.valid{p.accent}else{p.error}).child(if r.valid{"待确认"}else{"无效"}))
+                .child(div().debug_selector(move||format!("review-remove-{i}")).child(Button::new(("review-remove",i)).xsmall().ghost().icon(IconName::Minus).tooltip("从本批移除").disabled(review.loading).on_click(cx.listener(move|v,_,_,cx|{cx.stop_propagation();v.remove_review_row(i,cx)})))));
         }
+        let selected=review.rows.get(review.selected);
+        let preview_panel=div().flex().flex_col().gap_2().min_w(px(0.)).rounded(px(7.)).border_1().border_color(p.line).bg(p.surface).p_3()
+            .when(wide,|d|d.w(px(300.)).flex_shrink_0()).when(!wide,|d|d.w_full())
+            .child(div().flex().justify_between().text_xs().text_color(p.muted).child("本地预览").child(format!("{} / {}",if selected.is_some(){review.selected+1}else{0},review.rows.len())))
+            .child(div().id("review-preview").debug_selector(||"review-preview".into()).w_full().min_h(px(0.)).when(wide,|d|d.flex_1()).when(!wide,|d|d.h(px(84.))).bg(p.stage).rounded(px(5.)).overflow_hidden().flex().items_center().justify_center()
+                .child(if let Some(image)=selected.and_then(|r|r.picture.as_ref()){img(image.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element()}else{div().text_xs().text_color(p.muted).child("无可用预览").into_any_element()}))
+            .when(selected.is_some(),|d|d.child(div().text_sm().font_medium().truncate().child(selected.unwrap().name.clone())).child(div().text_xs().text_color(p.muted).child(format!("{} · 仅用于上传前确认",file_size(selected.unwrap().bytes as i64)))));
+        let list=div().id("review-list-viewport").debug_selector(||"review-list-viewport".into()).relative().flex_1().min_h(px(0.)).min_w(px(0.)).overflow_hidden()
+            .child(div().absolute().top_0().bottom_0().left_0().right_0().overflow_hidden().child(rows.overflow_y_scrollbar()));
+        let body=if wide{div().flex_1().min_h(px(0.)).overflow_hidden().flex().gap_3().child(list).child(preview_panel)}
+            else{div().flex_1().min_h(px(0.)).overflow_hidden().flex().flex_col().gap_2().child(preview_panel.flex_shrink_0()).child(list)};
         div().id("upload-review").debug_selector(||"upload-review".into()).flex_1().min_h(px(0.)).flex().flex_col().gap_3()
+            .drag_over::<ExternalPaths>(move|style,_,_,_|style.bg(p.accent_soft))
+            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.review_files(paths.paths().to_vec(),cx)))
             .child(div().flex().items_center().gap_2().child(div().flex_1().min_w(px(0.)).text_lg().font_semibold().child("确认上传"))
+                .child(Button::new("review-add").small().icon(IconName::Plus).label("添加").disabled(review.loading||self.picker_pending).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))))
                 .child(Button::new("review-cancel").small().ghost().label("取消").on_click(cx.listener(|v,_,_,cx|v.cancel_upload_review(cx)))))
             .child(div().text_xs().text_color(p.muted).child(if review.scope.0=="demo"{"本地演示 · 不会发送至语雀".into()}else{format!("语雀账号 {} · 确认后才发送",review.scope.1)}))
-            .when(review.loading,|d|d.child(div().text_sm().text_color(p.muted).child("正在检查文件并生成本地预览…")))
-            .when(!review.loading,|d|d.child(div().text_sm().child(format!("{} 项可上传 / {} 项 · {}",ready,review.rows.len(),file_size(bytes.min(i64::MAX as u64) as i64)))))
-            .when(review.rows.len()>PREVIEW_LIMIT,|d|d.child(div().text_xs().text_color(p.muted).child("仅预览前 24 项，其余文件仍会按队列处理。")))
+            .child(div().flex().items_center().justify_between().gap_2().child(div().text_sm().font_medium().child(format!("{} 项可上传 / {} 项 · {}",ready,review.rows.len(),file_size(bytes.min(i64::MAX as u64) as i64))))
+                .child(div().text_xs().text_color(p.muted).child(if review.loading{"检查中…"}else{"可继续拖入文件"})))
+            .when(review.rows.len()>PREVIEW_LIMIT,|d|d.child(div().text_xs().text_color(p.muted).child("最多保留24张本地预览；其余仍可上传。")))
             .when(review.rows.len()>100,|d|d.child(div().text_xs().text_color(p.muted).child("仅显示前100项；确认数量包含其余有效文件。")))
-            .child(rows.overflow_y_scrollbar())
-            .child(div().flex_shrink_0().flex().items_center().justify_end().gap_2().border_t_1().border_color(p.line).pt_3()
-                .child(div().flex_1().min_w(px(0.)).text_xs().text_color(p.muted).child("不修改原文件；无法上传的项目将跳过。"))
-                .child(div().debug_selector(||"review-confirm".into()).child(Button::new("review-confirm").small().primary().label(format!("确认上传 {ready} 项")).disabled(review.loading||ready==0||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.confirm_upload_review(cx))))))
+            .child(body)
+            .child(div().id("review-footer").occlude().bg(p.canvas).flex_shrink_0().flex().items_center().justify_end().gap_2().border_t_1().border_color(p.line).pt_3()
+                .child(div().flex_1().min_w(px(0.)).text_xs().text_color(p.muted).child("不修改原文件；无效项目会跳过。"))
+                .child(div().debug_selector(||"review-confirm".into()).child(Button::new("review-confirm").small().primary().label(format!("确认上传 {ready} 项")).disabled(review.loading||ready==0||self.queue.read(cx).busy||self.account_busy(cx)||self.picker_pending).on_click(cx.listener(|v,_,_,cx|v.confirm_upload_review(cx))))))
             .into_any_element()
     }
 }

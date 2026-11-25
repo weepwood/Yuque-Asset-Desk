@@ -55,9 +55,9 @@ pub(crate) fn raster_svg(bytes:&[u8],edge:u32)->Result<(image::DynamicImage,u32,
     let rgba=image::RgbaImage::from_raw(rw,rh,pixels.flat_map(|p|[p.red(),p.green(),p.blue(),p.alpha()]).collect()).context("SVG 像素格式无效")?;
     Ok((image::DynamicImage::ImageRgba8(rgba),w.ceil() as u32,h.ceil() as u32))
 }
-fn decode_small(bytes:Vec<u8>) -> Result<image::DynamicImage> {
+fn decode_small(bytes:Vec<u8>,edge:u32) -> Result<image::DynamicImage> {
     ensure!(!bytes.is_empty()&&bytes.len() as u64<=MAX_INPUT,"图片超过预览输入限制");
-    let decoded=if is_svg(&bytes){raster_svg(&bytes,EDGE)?.0}else{
+    let decoded=if is_svg(&bytes){raster_svg(&bytes,edge)?.0}else{
     let reader=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
     let format=reader.format().context("无法识别图片格式")?;
     let (w,h)=reader.into_dimensions().context("图片格式不支持或内容损坏")?;
@@ -69,16 +69,16 @@ fn decode_small(bytes:Vec<u8>) -> Result<image::DynamicImage> {
     limits.max_alloc=Some(128*1024*1024);
     reader.limits(limits);
     reader.decode().context("图片格式不支持、内容损坏或超出安全解码限制")?};
-    let small=if decoded.width()>EDGE || decoded.height()>EDGE {decoded.thumbnail(EDGE,EDGE)}else{decoded};
+    let small=if decoded.width()>edge || decoded.height()>edge {decoded.thumbnail(edge,edge)}else{decoded};
     Ok(small)
 }
 pub(crate) fn draft_image(bytes:Vec<u8>)->Result<std::sync::Arc<gpui_kit::RenderImage>>{
-    let mut rgba=decode_small(bytes)?.into_rgba8();
+    let mut rgba=decode_small(bytes,384)?.into_rgba8();
     for p in rgba.pixels_mut(){p.0.swap(0,2);}
     Ok(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(rgba)])))
 }
 fn write_small(dest:&Path,bytes:Vec<u8>) -> Result<PathBuf> {
-    let small=decode_small(bytes)?;
+    let small=decode_small(bytes,EDGE)?;
     // JPEG is intentionally lossy; composite transparency onto a neutral light background.
     let rgba=small.to_rgba8();
     let rgb=image::RgbImage::from_fn(rgba.width(),rgba.height(),|x,y|{

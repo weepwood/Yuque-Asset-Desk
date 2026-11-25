@@ -25,6 +25,7 @@ pub struct Job {
     pub error: String,
     pub preview:Option<(String,String)>,
     pub thumbnail:Option<PathBuf>,
+    pub result_url:Option<String>,
 }
 
 #[derive(Clone)]
@@ -434,8 +435,8 @@ Restore into a NEW data directory only; see README.
 
     pub fn jobs(&self, provider: &str, owner: &str, before: Option<i64>) -> Result<Vec<Job>> {
         let conn = self.open()?;
-        let mut stmt = conn.prepare("SELECT j.id,j.path,j.state,j.error,p.state,p.error,r.sha256 FROM upload_jobs j
-            LEFT JOIN upload_job_assets a ON a.job_id=j.id LEFT JOIN assets r ON r.id=a.asset_id AND r.provider=j.provider AND r.owner_id=j.owner_id AND r.category='image'
+        let mut stmt = conn.prepare("SELECT j.id,j.path,j.state,j.error,p.state,p.error,CASE WHEN r.category='image' THEN r.sha256 END,r.url FROM upload_jobs j
+            LEFT JOIN upload_job_assets a ON a.job_id=j.id LEFT JOIN assets r ON r.id=a.asset_id AND r.provider=j.provider AND r.owner_id=j.owner_id
             LEFT JOIN asset_preview_state p ON p.asset_id=r.id
             WHERE j.provider=?1 AND j.owner_id=?2 AND (?3 IS NULL OR j.id < ?3)
             ORDER BY j.id DESC LIMIT 51")?;
@@ -444,6 +445,7 @@ Restore into a NEW data directory only; see README.
             state: r.get(2)?, error: r.get(3)?,
             preview:r.get::<_,Option<String>>(4)?.zip(r.get::<_,Option<String>>(5)?),
             thumbnail:r.get::<_,Option<String>>(6)?.map(|sha|crate::preview::cached_path_for(self.data_dir(),provider,owner,&sha)).filter(|p|crate::preview::valid_cache(p)),
+            result_url:r.get(7)?,
         }))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
