@@ -392,7 +392,8 @@ impl UploadDesk {
     pub(super) fn apply_batch_tags(&mut self, remove:bool,cx:&mut Context<Self>) {
         let ids=self.resource.assets.iter().filter(|a|self.resource.selected_ids.contains(&a.id)).map(|a|a.id).collect::<Vec<_>>();
         let text=self.resource.batch_tag_input.read(cx).value().to_string();
-        let scope=(!self.resource.all_accounts).then(||(self.config.provider().to_owned(),self.config.owner_id().to_owned()));
+        let scope=self.resource.similar_to.as_ref().map(|a|(a.provider.clone(),a.owner_id.clone()))
+            .or_else(||(!self.resource.all_accounts).then(||(self.config.provider().to_owned(),self.config.owner_id().to_owned())));
         if !ids.is_empty(){self.mutate_resource(mutations::Mutation::Batch(ids,scope,text,remove),cx);}
     }
 

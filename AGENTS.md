@@ -220,3 +220,9 @@
 - PR #8 的 f0d9f27 双平台 CI 45546108736 成功，冻结 V0.7 候选及其原始产物不变。继续在同一后续开发分支提交，不提前合入 main 或发布。
 - selection.rs 双向范围超过150项时保留点击端点附近连续150项，追加选择不驱逐已有项；工具栏显示上限。SelectAll 同步主选项锚点。resources.rs 共用 clear_resource_selection，取消选择、查询重置和整页读取失败统一释放详情/预览状态；主选项刷新后消失则保守清空整个选择，追加页失败保留既有结果及选择，重试游标回退。
 - 本地 macOS all-targets check、static/diff check、范围专项及 GPUI 状态注入刷新失败/追加失败/恢复测试通过；完整 QA 65 passed/0 failed/1 ignored。未重新采集截图、运行真实 Windows、真实语雀或 Release 性能。未新增依赖、迁移、网络或用户数据操作。
+
+## 后续设计：图库查询取消与相似检索成本
+- 基于 PR #8 d09e6b3，前一候选 CI 45546796255 查询时仍在运行；继续同一分支，保持 V0.7 固定候选75c173b与正式v0.5.1不变。
+- GalleryQuery 新请求和 Entity Drop 发出协作式取消；仍通过 generation 拒绝过期结果。普通非追加搜索100ms debounce；追加/相似不等待。后台在分批读取、哈希、写入、匹配、元数据阶段检查取消，不中断已进入的 SQLite/文件/解码操作，已提交的派生索引保留。
+- Storage::unindexed_images 使用源账号和 keyset 分页，SQL NOT EXISTS 排除已有哈希，不做每页 COUNT 或每候选独立哈希查询；缺缩略图继续跳过。similar_assets_until 保留最多150个排名结果（距离升序、ID降序），支持扫描内取消；相似结果收藏与批量标签以源账号为准。
+- 本地 all-targets/static/diff 与完整QA 67 passed/0 failed/1 ignored。新增预取消测试、500项真实SQLite数据分页/跨账号/200项已索引候选的有界排序及扫描中止测试。首次编译发现 GPUI test 属性名冲突，改用明确 Rust 内建属性后通过。未做真实磁盘压力、全量Release性能或视觉回归，不宣称量化性能提升；无新增依赖/schema/网络或真实用户数据操作。
