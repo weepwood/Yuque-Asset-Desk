@@ -1,52 +1,47 @@
 use super::*;
+use queue_prepare::{Prepare,Prepared,Source};
 
 impl UploadDesk {
-    pub(super) fn refresh_jobs(&mut self, cx: &mut Context<Self>) {
-        let storage = self.storage.clone();
-        let provider = self.account.config.provider().to_string();
-        let owner = self.account.config.owner_id().to_string();
-        let before = self.queue.job_cursors.last().copied().flatten();
-        self.queue.jobs_loading = true;
-        self.queue.jobs_generation += 1;
-        let generation = self.queue.jobs_generation;
-        self.queue.jobs_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { storage.jobs(&provider, &owner, before) }).await;
-            _ = this.update(cx, |view, cx| {
-                if generation != view.queue.jobs_generation { return; }
-                view.queue.jobs_loading = false;
-                match result {
-                    Ok(mut jobs) => {
-                        view.queue.jobs_more = jobs.len() > 50;
-                        jobs.truncate(50);
-                        view.queue.jobs = jobs;
-                        view.queue.jobs_error = None;
-                    }
-                    Err(e) => { view.queue.jobs_error = Some(e.to_string()); view.queue.jobs.clear(); view.queue.jobs_more = false; }
+    pub(super) fn refresh_jobs(&mut self,cx:&mut Context<Self>){
+        let storage=self.storage.clone();
+        let provider=self.account.config.provider().to_owned();
+        let owner=self.account.config.owner_id().to_owned();
+        self.job_history.update(cx,|v,cx|v.refresh(storage,provider,owner,cx));
+    }
+    pub(super) fn page_jobs(&mut self,forward:bool,cx:&mut Context<Self>){
+        if self.job_history.update(cx,|v,_|v.move_page(forward)){self.refresh_jobs(cx);}
+    }
+    pub(super) fn first_jobs(&mut self,cx:&mut Context<Self>){
+        self.job_history.update(cx,|v,_|v.first());self.refresh_jobs(cx);
+    }
+
+    fn prepare_queue(&mut self,request:Prepare,cx:&mut Context<Self>){
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy||self.resetting{return;}
+        if self.account.config.mode==Mode::Yuque&&self.account.config.creds.is_none(){
+            self.status="请先配置语雀会话再上传".into();cx.notify();return;
+        }
+        let storage=self.storage.clone();
+        let provider=self.account.config.provider().to_owned();
+        let owner=self.account.config.owner_id().to_owned();
+        self.queue.busy=true;self.queue.preparing=true;
+        self.queue.queue_count=0;self.queue.queue_total=0;
+        self.status="正在准备并保存任务…".into();cx.notify();
+        self.queue.prepare_task=Some(cx.spawn(async move|this,cx|{
+            let result=cx.background_spawn(async move{request.execute(&storage,&provider,&owner)}).await;
+            let _=this.update(cx,|v,cx|{
+                v.queue.preparing=false;v.queue.busy=false;
+                match result{
+                    Ok(Prepared::Jobs(jobs)) if !jobs.is_empty()=>v.run_jobs(jobs,cx),
+                    Ok(Prepared::Jobs(_))=>{v.status="没有可恢复或可上传的任务".into();v.refresh_jobs(cx);},
+                    Ok(Prepared::Acknowledged)=>{v.status="已记录核实结果；如需重新上传，请单独重试".into();v.refresh_jobs(cx);},
+                    Err(e)=>{v.status=format!("任务准备失败：{e}");v.refresh_jobs(cx);},
                 }
                 cx.notify();
             });
         }));
     }
-
-    pub(super) fn retry_one(&mut self, id: i64, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
-        match self.storage.retry_job(self.account.config.provider(), self.account.config.owner_id(), id) {
-            Ok(Some(job)) => self.run_jobs(vec![job], cx),
-            Ok(None) => { self.status = "该任务已完成或不属于当前账号".into(); cx.notify(); }
-            Err(e) => { self.status = e.to_string(); cx.notify(); }
-        }
-    }
-
-    pub(super) fn acknowledge_job(&mut self, id:i64,cx:&mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {return;}
-        match self.storage.acknowledge_unknown(self.account.config.provider(),self.account.config.owner_id(),id) {
-            Ok(()) => {self.status="已记录核实结果；如需重新上传，请单独重试".into();
-                self.queue.recovery_count=self.storage.recoverable(self.account.config.provider(),self.account.config.owner_id()).map(|j|j.len()).unwrap_or(0);
-                self.refresh_jobs(cx);}
-            Err(e)=>self.status=e.to_string()
-        }
-        cx.notify();
-    }
+    pub(super) fn retry_one(&mut self,id:i64,cx:&mut Context<Self>){self.prepare_queue(Prepare::Retry(id),cx);}
+    pub(super) fn acknowledge_job(&mut self,id:i64,cx:&mut Context<Self>){self.prepare_queue(Prepare::Acknowledge(id),cx);}
 
     pub(super) fn paste_files(&mut self, cx: &mut Context<Self>) {
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
@@ -55,50 +50,21 @@ impl UploadDesk {
     }
     pub(super) fn paste_item(&mut self,item:ClipboardItem,cx:&mut Context<Self>){
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {return;}
-        let mut files = Vec::new();
-        for entry in item.entries() {
-            match entry {
-                ClipboardEntry::ExternalPaths(paths) => files.extend_from_slice(paths.paths()),
-                ClipboardEntry::Image(image) => {
-                    if image.bytes().len() as u64 > self.account.config.max_file_mb * 1024 * 1024 { continue; }
-                    let result = (|| -> Result<PathBuf> {
-                        use sha2::{Digest, Sha256};
-                        let dir = self.storage.data_dir().join("clipboard");
-                        std::fs::create_dir_all(&dir)?;
-                        let path = dir.join(format!("{}.{}", hex::encode(Sha256::digest(image.bytes())), image.format().extension()));
-                        // Keep a stable local source for Demo links and interrupted tasks.
-                        if !path.exists() {
-                            let temp=path.with_extension(format!("{}.tmp",std::process::id()));
-                            let result=(||->Result<()>{
-                                let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
-                                use std::io::Write;
-                                file.write_all(image.bytes())?;file.sync_all()?;drop(file);
-                                std::fs::rename(&temp,&path)?;Ok(())
-                            })();
-                            if result.is_err(){let _=std::fs::remove_file(&temp);}
-                            result?;
-                        }
-                        Ok(path)
-                    })();
-                    match result {
-                        Ok(path) => files.push(path),
-                        Err(_) => { self.status = "保存剪贴板图片失败".into(); cx.notify(); return; }
-                    }
+        let mut sources=Vec::new();
+        for entry in item.entries(){
+            match entry{
+                ClipboardEntry::ExternalPaths(paths)=>sources.extend(paths.paths().iter().cloned().map(Source::Path)),
+                ClipboardEntry::Image(image) if image.bytes().len() as u64<=self.account.config.max_file_mb*1024*1024=>{
+                    sources.push(Source::Image(image.bytes().to_vec(),image.format().extension().to_owned()));
                 }
-                _ => {}
+                _=>{}
             }
         }
-        if files.is_empty() { self.status = "剪贴板没有可上传的文件或图片".into(); cx.notify(); }
-        else { self.start_upload(files, cx); }
+        if sources.is_empty(){self.status="剪贴板没有可上传的文件或图片".into();cx.notify();}
+        else{self.prepare_queue(Prepare::Enqueue(sources),cx);}
     }
 
-    pub(super) fn resume_jobs(&mut self, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
-        match self.storage.recoverable(self.account.config.provider(), self.account.config.owner_id()) {
-            Ok(jobs) => self.run_jobs(jobs, cx),
-            Err(error) => { self.status = format!("读取任务失败：{error}"); cx.notify(); }
-        }
-    }
+    pub(super) fn resume_jobs(&mut self,cx:&mut Context<Self>){self.prepare_queue(Prepare::Resume,cx);}
 
     pub(super) fn select_files(&mut self, cx: &mut Context<Self>) {
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {
@@ -132,10 +98,7 @@ impl UploadDesk {
         if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() {
             self.status = "请先配置语雀会话再上传".into(); cx.notify(); return;
         }
-        match self.storage.enqueue(self.account.config.provider(), self.account.config.owner_id(), &files) {
-            Ok(jobs) => self.run_jobs(jobs, cx),
-            Err(error) => { self.status = format!("保存任务失败：{error}"); cx.notify(); }
-        }
+        self.prepare_queue(Prepare::Enqueue(files.into_iter().map(Source::Path).collect()),cx);
     }
 
     pub(super) fn run_jobs(&mut self, jobs: Vec<(i64, PathBuf)>, cx: &mut Context<Self>) {
@@ -146,8 +109,7 @@ impl UploadDesk {
         let config = self.account.config.clone();
         let storage = self.storage.clone();
         self.queue.busy = true;
-        self.queue.job_cursors = vec![None];
-        self.refresh_jobs(cx);
+        self.first_jobs(cx);
         self.queue.transfer_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
@@ -189,7 +151,7 @@ impl UploadDesk {
                         if view.queue.queue_count == 0 {
                             view.queue.active_job = None;
                             view.queue.busy = false;
-                            view.queue.recovery_count = view.storage.recoverable(view.account.config.provider(), view.account.config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
+
                             view.status = if result.is_err() { "任务状态保存失败，请检查恢复队列".into() }
                                 else if command == 2 { "已取消尚未开始的任务".into() } else { match reason {
                                     Some(uploader::QueueStop::Authorization)=>"上传未获授权，请检查会话后恢复任务".into(),
@@ -254,7 +216,7 @@ impl UploadDesk {
                     view.status = format!("[{}/{}] {filename} · {message}", index + 1, total);
                     if view.queue.queue_count == 0 {
                         view.queue.busy = false;
-                        view.queue.recovery_count = view.storage.recoverable(view.account.config.provider(), view.account.config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
+
                         view.status = format!("本批结束：新增 {} · 复用 {} · 失败或待核实 {}",
                             view.queue.succeeded, view.queue.duplicates, view.queue.failed.len());
                         if let Some(reason)=stop{

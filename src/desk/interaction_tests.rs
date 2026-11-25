@@ -51,6 +51,8 @@ fn native_clicks_switch_resource_and_task_views() {
     app.run_until_parked();
     assert!(app.read(|cx|desk.read(cx).page==Page::Data));
     assert!(app.read(|cx|desk.read(cx).data_usage.is_some()));
+    // A pending preference snapshot must finish before destructive operations.
+    app.executor().advance_clock(std::time::Duration::from_millis(250));app.run_until_parked();
     // Arm, but do not confirm a destructive operation. No credentials touched.
     ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
     let bounds=ui.debug_bounds("arm-reset").unwrap();ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
@@ -626,4 +628,42 @@ fn inspector_exit_reserves_space_until_finished_and_reverses(){
     toggle(&mut ui);draw(&mut ui);
     assert!(ui.debug_bounds("inspector-slot").is_none());
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn queue_prepare_and_preferences_remain_responsive_under_write_lock(){
+    let root=std::env::temp_dir().join(format!("yuque-prep-lock-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let source=root.join("fixture.txt");std::fs::write(&source,b"isolated").unwrap();
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let read=db.clone();
+    let (_,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let lock=rusqlite::Connection::open(root.join("assets.db")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let start=std::time::Instant::now();
+    app.update(|cx|desk.update(cx,|v,cx|{
+        v.start_upload(vec![source.clone()],cx);
+        assert!(v.queue.busy&&v.queue.preparing);
+        assert!(!v.desktop_can_quit(cx));
+        v.start_upload(vec![source.clone()],cx);
+        v.export_album(cx);assert!(!v.picker_pending);
+        v.navigate_page(Page::Data,cx);assert!(!v.data_scan_busy);
+        v.navigate_page(Page::Jobs,cx);assert_eq!(v.page,Page::Jobs);
+        v.resource.tile_size=180.;v.persist_preferences(cx);
+        v.resource.tile_size=204.;v.persist_preferences(cx);
+        assert!(v.prefs_writing);
+    }));
+    assert!(start.elapsed()<std::time::Duration::from_secs(1),"UI dispatch blocked on database write lock");
+    assert!(read.jobs("demo","local",None).unwrap().is_empty());
+    lock.execute_batch("COMMIT").unwrap();
+    app.run_until_parked();
+    app.executor().advance_clock(std::time::Duration::from_millis(250));app.run_until_parked();
+    assert!(app.read(|cx|{let v=desk.read(cx);!v.queue.busy&&!v.queue.preparing&&!v.prefs_writing}));
+    let jobs=read.jobs("demo","local",None).unwrap();
+    assert_eq!(jobs.len(),1);assert_eq!(jobs[0].state,"done");
+    assert_eq!(read.recoverable_count("demo","local").unwrap(),0);
+    assert_eq!(preferences::Preferences::decode(read.preferences().unwrap()).tile,204.);
+    drop(lock);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
 }

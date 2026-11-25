@@ -402,6 +402,11 @@ Restore into a NEW data directory only; see README.
             |r| Ok((r.get(0)?, PathBuf::from(r.get::<_,String>(1)?)))).optional()?)
     }
 
+    pub fn recoverable_count(&self,provider:&str,owner:&str)->Result<usize>{
+        let count:i64=self.open()?.query_row("SELECT COUNT(*) FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND state IN ('pending','paused','failed')",params![provider,owner],|r|r.get(0))?;
+        Ok(count.try_into()?)
+    }
+
     pub fn recoverable(&self, provider: &str, owner: &str) -> Result<Vec<(i64, PathBuf)>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare("SELECT id,path FROM upload_jobs WHERE provider=?1 AND owner_id=?2

@@ -6,7 +6,10 @@ mod data_panel;
 mod album;
 mod image_cache;
 pub(crate) mod preferences;
+mod preference_writer;
 mod queue;
+mod queue_prepare;
+mod job_history;
 mod resources;
 mod view;
 mod shell;
@@ -72,14 +75,6 @@ struct AccountState {
 
 struct QueueState {
     queue_control: Arc<AtomicU8>,
-    recovery_count: usize,
-    jobs: Vec<Job>,
-    job_cursors: Vec<Option<i64>>,
-    jobs_more: bool,
-    jobs_loading: bool,
-    jobs_task: Option<Task<()>>,
-    jobs_generation: u64,
-    jobs_error: Option<String>,
     transfer: Arc<uploader::TransferProgress>,
     transfer_task: Option<Task<()>>,
     active_job: Option<i64>,
@@ -90,6 +85,8 @@ struct QueueState {
     duplicates: usize,
     failed: Vec<(PathBuf, String)>,
     upload_task: Option<Task<()>>,
+    preparing:bool,
+    prepare_task:Option<Task<()>>,
 }
 
 struct ResourceState {
@@ -168,6 +165,7 @@ pub(crate) struct UploadDesk {
     viewer_model:Entity<viewer_model::ViewerModel>,
     viewer_revision:u64,
     queue: QueueState,
+    job_history:Entity<job_history::JobHistory>,
     account: AccountState,
     storage: Storage,
     dark: bool,
@@ -184,6 +182,10 @@ pub(crate) struct UploadDesk {
     desktop_enabled:bool,
     prefs:preferences::Preferences,
     prefs_task:Option<Task<()>>,
+    prefs_writer:preference_writer::PreferenceWriter,
+    prefs_revision:u64,
+    prefs_dirty:bool,
+    prefs_writing:bool,
     backup_task: Option<Task<()>>,
     update_state:crate::update::State,
     update_task:Option<Task<()>>,
@@ -192,6 +194,7 @@ pub(crate) struct UploadDesk {
     data_task:Option<Task<()>>,
     data_feedback:String,
     reset_armed:bool,
+    reset_pending:bool,
     resetting:bool,
 
 }
@@ -201,18 +204,38 @@ impl UploadDesk {
         self.prefs.dark=self.dark;
         self.prefs.layout=if !self.resource.grid_view{"list"}else if self.resource.masonry{"masonry"}else if self.resource.justified{"justified"}else{"grid"}.into();
         self.prefs.tile=self.resource.tile_size;self.prefs.oldest=self.resource.oldest;self.prefs.favorites=self.resource.favorites_only;self.prefs.dates=self.resource.group_dates;
-        // Serialize the small SQLite write on the main thread after debounce.
-        // A cancelled old task cannot overwrite the latest settings.
-        if self.resetting || self.isolated_qa(){return;}
+        self.prefs_revision=self.prefs_revision.saturating_add(1);
+        if self.resetting||self.reset_armed||self.reset_pending||self.isolated_qa(){return;}
+        self.prefs_dirty=true;
+        if self.prefs_writing{return;}
+        self.prefs_writing=true;
+        let writer=self.prefs_writer.clone();
+        let storage=self.storage.clone();
         self.prefs_task=Some(cx.spawn(async move|this,cx|{
-            cx.background_executor().timer(std::time::Duration::from_millis(180)).await;
-            _=this.update(cx,|v,cx|{if v.storage.save_preferences(&v.prefs.encode()).is_err(){v.status="保存个性化设置失败".into();cx.notify();}});
+            loop{
+                cx.background_executor().timer(std::time::Duration::from_millis(180)).await;
+                let snapshot=this.update(cx,|v,_|{
+                    if v.resetting||v.reset_armed||v.reset_pending{v.prefs_dirty=false;v.prefs_writing=false;return None;}
+                    v.prefs_dirty=false;
+                    Some((v.prefs_revision,v.prefs.encode()))
+                });
+                let Ok(Some((revision,value)))=snapshot else{break;};
+                let writer=writer.clone();let storage=storage.clone();
+                let result=cx.background_spawn(async move{writer.write(&storage,revision,&value)}).await;
+                let next=this.update(cx,|v,cx|{
+                    if result.is_err(){v.status="保存个性化设置失败".into();}
+                    let next=v.prefs_dirty&&!v.resetting&&!v.reset_armed&&!v.reset_pending;
+                    if !next{v.prefs_writing=false;}
+                    cx.notify();next
+                });
+                if !matches!(next,Ok(true)){break;}
+            }
         }));
     }
     fn isolated_qa(&self)->bool{
         cfg!(feature="qa")&&self.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some()||std::env::var_os("YUQUE_QA_PATH").is_some())
     }
-    pub(crate) fn flush_preferences(&self){if !self.resetting && !self.isolated_qa(){let _=self.storage.save_preferences(&self.prefs.encode());}}
+    pub(crate) fn flush_preferences(&self){if !self.resetting && !self.isolated_qa(){let _=self.prefs_writer.write(&self.storage,self.prefs_revision,&self.prefs.encode());}}
     #[cfg(feature="qa")]
     pub(crate) fn report_perf(&self,cx:&App){
         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF final loaded={} decoded_cache={} bound={}",self.resource.assets.len(),self.resource.image_cache.read(cx).len(),image_cache::MAX_IMAGES);}
@@ -233,7 +256,7 @@ impl UploadDesk {
         self.paste_files(cx);
     }
     pub(crate) fn desktop_can_quit(&mut self,cx:&mut Context<Self>)->bool{
-        if self.resource_write_busy || self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
+        if self.prefs_writing || self.resource_write_busy || self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
             self.status="请先关闭文件选择窗口或等待任务结束，再退出".into();cx.notify();false
         }else{true}
     }
@@ -259,7 +282,6 @@ impl UploadDesk {
             (Mode::Yuque, Some(_)) => "语雀会话已配置，等待上传文件".to_string(),
         };
         let saved_accounts = storage.accounts().unwrap_or_default();
-        let recovery_count = storage.recoverable(config.provider(), config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
         let prefs=preferences::Preferences::decode(storage.preferences().unwrap_or_default());
         use gpui_kit::component::slider::{SliderState,SliderEvent};
         let density=cx.new(|_|SliderState::new().min(96.).max(240.).step(4.).default_value(prefs.tile));
@@ -286,7 +308,10 @@ impl UploadDesk {
             }
             cx.notify();
         });
+        let job_history=cx.new(|_|job_history::JobHistory::default());
+        let job_history_subscription=cx.observe(&job_history,|_,_,cx|cx.notify());
         let mut view = Self {
+            job_history,
             viewer_model,viewer_revision:0,
             inspector_model,
             resource_write_busy:false,resource_write_task:None,
@@ -352,14 +377,6 @@ impl UploadDesk {
             },
             queue: QueueState {
                 queue_control: Arc::new(AtomicU8::new(0)),
-                recovery_count,
-                jobs: Vec::new(),
-                job_cursors: vec![None],
-                jobs_more: false,
-                jobs_loading: false,
-                jobs_task: None,
-                jobs_generation: 0,
-                jobs_error: None,
                 transfer: Arc::new(uploader::TransferProgress::default()),
                 transfer_task: None,
                 active_job: None,
@@ -370,6 +387,7 @@ impl UploadDesk {
                 duplicates: 0,
                 failed: Vec::new(),
                 upload_task: None,
+                preparing:false,prepare_task:None,
             },
             account: AccountState {
                 config,
@@ -385,7 +403,7 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription],
             inspector_open: false,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
@@ -394,12 +412,12 @@ impl UploadDesk {
             backup_busy:false,
             desktop_enabled:false,
             prefs,
-            prefs_task:None,
+            prefs_task:None,prefs_writer:Default::default(),prefs_revision:0,prefs_dirty:false,prefs_writing:false,
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
             data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
-            reset_armed:false,resetting:false,
+            reset_armed:false,reset_pending:false,resetting:false,
 
         };
         cx.defer_in(window, |view, _window, cx| {
@@ -418,7 +436,7 @@ impl UploadDesk {
                     Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});view.account.identity_status="已识别个人账号；保存时仍需核对网页会话".into();}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
-                    Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;view.refresh_jobs(cx);}
+                    Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
                     Ok("rail")=>{view.sidebar_collapsed=true;}
@@ -431,6 +449,7 @@ impl UploadDesk {
                     _=>{}
                 }
             }
+            view.refresh_jobs(cx);
             view.reload(cx);
         });
         #[cfg(feature="qa")]
