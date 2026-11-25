@@ -37,25 +37,26 @@ impl UploadDesk {
         let mut list = div().id("jobs-list").flex_1().min_h(px(0.)).flex().flex_col();
         for job in &history.jobs {
             let id = job.id;
-            let active = self.queue.active_job == Some(id);
+            let active = self.queue.read(cx).active_job == Some(id);
             let state = if active { "处理中" } else { match job.state.as_str() {
                 "done" => "完成", "failed" => "失败", "pending" => "待处理",
                 "paused" => "暂停", "cancelled" => "取消", "running" | "unknown" => "结果待核实", _ => "未知",
             }};
             let retry = matches!(job.state.as_str(), "pending" | "paused" | "failed");
-            let total = self.queue.transfer.total.load(Ordering::Relaxed);
-            let bytes = self.queue.transfer.bytes.load(Ordering::Relaxed).min(total);
-            let mut row = div().flex().flex_col().gap_2().p(px(self.spacing().row))
+            let total = self.queue.read(cx).transfer.total.load(Ordering::Relaxed);
+            let bytes = self.queue.read(cx).transfer.bytes.load(Ordering::Relaxed).min(total);
+            let mut row = div().flex().flex_col().gap_1().py_3().px_2()
                 .border_b_1().border_color(self.palette().line)
                 .child(div().flex().items_center().gap_2()
-                    .child(div().flex_1().min_w(px(0.)).font_semibold().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
-                    .child(div().text_xs().text_color(if job.state=="failed"||job.state=="unknown"{self.palette().error}else if job.state=="done"{self.palette().accent}else{self.palette().muted}).child(state))
+                    .child(div().flex_1().min_w(px(0.)).font_medium().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+                    .child(div().w(px(82.)).flex_shrink_0().text_xs().text_color(if job.state=="failed"||job.state=="unknown"{self.palette().error}else if job.state=="done"{self.palette().accent}else{self.palette().muted}).child(state))
+                    .child(div().w(px(128.)).flex_shrink_0().flex().justify_end()
                     .when(retry, |d| d.child(Button::new(("retry-job",id as usize)).small().ghost()
-                        .label(if job.state=="failed"{"重试"}else{"继续"}).tooltip("重试前请确认远端结果").disabled(self.queue.busy || self.account.account_busy)
+                        .label(if job.state=="failed"{"重试"}else{"继续"}).tooltip("重试前请确认远端结果").disabled(self.queue.read(cx).busy || self.account_busy(cx))
                         .on_click(cx.listener(move |view, _, _, cx| view.retry_one(id,cx)))))
                     .when(matches!(job.state.as_str(),"unknown"|"running") && !active, |d| d.child(Button::new(("ack-job",id as usize)).small()
-                        .label("已确认远端无文件").disabled(self.queue.busy || self.account.account_busy)
-                        .on_click(cx.listener(move |v,_,_,cx| v.acknowledge_job(id,cx))))));
+                        .label("已确认远端无文件").disabled(self.queue.read(cx).busy || self.account_busy(cx))
+                        .on_click(cx.listener(move |v,_,_,cx| v.acknowledge_job(id,cx)))))));
             if active {
                 row = row.child(if total == 0 { "检查文件／去重中".into() }
                     else { format!("已读取请求体 {} / {}，不代表服务端已确认",file_size(bytes as i64),file_size(total as i64)) });
@@ -70,27 +71,33 @@ impl UploadDesk {
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().text_lg().font_semibold().child("上传任务"))
                 .child(Button::new("refresh-jobs").small().ghost().label("刷新").on_click(cx.listener(|v,_,_,cx| v.refresh_jobs(cx))))
-                .child(Button::new("resume-jobs").small().label("恢复任务").disabled(self.queue.busy || self.account.account_busy || history.recovery_count == 0)
+                .child(Button::new("resume-jobs").small().label("恢复任务").disabled(self.queue.read(cx).busy || self.account_busy(cx) || history.recovery_count == 0)
                     .on_click(cx.listener(|v,_,_,cx| v.resume_jobs(cx)))))
-            .child(div().text_sm().child(format!("当前账号：{} / {} · 可恢复 {}",self.account.config.provider(),self.account.config.owner_id(),history.recovery_count)))
-            .when(self.queue.preparing,|d|d.child(div().text_sm().text_color(self.palette().muted).child("正在准备任务…")))
-            .when(self.queue.busy&&!self.queue.preparing, |d| d.child(div().flex().gap_2()
-                .child(Button::new("jobs-pause").label("文件结束后暂停").on_click(cx.listener(|v,_,_,cx| { let _ = v.queue.queue_control.compare_exchange(0,1,Ordering::Relaxed,Ordering::Relaxed); cx.notify(); })))
-                .child(Button::new("jobs-cancel").label("取消剩余").on_click(cx.listener(|v,_,_,cx| { v.queue.queue_control.store(2,Ordering::Relaxed); cx.notify(); })))
+            .child(div().flex().justify_between().items_center().text_xs().text_color(self.palette().muted)
+                .child(if self.config.mode==Mode::Demo{"本地演示".to_owned()}else{format!("语雀账号 {}",self.config.owner_id())})
+                .child(format!("{} 项可恢复",history.recovery_count)))
+            .child(div().flex().items_center().px_2().py_2().border_y_1().border_color(self.palette().line).text_xs().text_color(self.palette().muted)
+                .child(div().flex_1().child("文件"))
+                .gap_2().child(div().w(px(82.)).child("状态"))
+                .child(div().w(px(128.)).text_align(TextAlign::Right).child("操作")))
+            .when(self.queue.read(cx).preparing,|d|d.child(div().text_sm().text_color(self.palette().muted).child("正在准备任务…")))
+            .when(self.queue.read(cx).busy&&!self.queue.read(cx).preparing, |d| d.child(div().flex().gap_2()
+                .child(Button::new("jobs-pause").label("文件结束后暂停").on_click(cx.listener(|v,_,_,cx| { v.queue.update(cx,|q,cx|q.command(1,cx)); })))
+                .child(Button::new("jobs-cancel").label("取消剩余").on_click(cx.listener(|v,_,_,cx| { v.queue.update(cx,|q,cx|q.command(2,cx)); })))
                 .child(Button::new("cancel-active").label("中止当前读取")
-                    .disabled(self.queue.active_job.is_none())
-                    .on_click(cx.listener(|v,_,_,cx| {v.queue.queue_control.store(1,Ordering::Relaxed);v.queue.transfer.cancel.store(true,Ordering::Relaxed);v.status="已请求中止，远端结果可能未知".into();cx.notify();})))))
+                    .disabled(self.queue.read(cx).active_job.is_none())
+                    .on_click(cx.listener(|v,_,_,cx| {v.queue.update(cx,|q,cx|q.command(3,cx));})))))
             .when(history.loading, |d| d.child("正在读取任务…"))
             .when(history.jobs.is_empty() && !history.loading && history.error.is_none(), |d| d.child("暂无任务记录"))
             .when(history.error.is_some(), |d| d.child(history.error.clone().unwrap_or_default()))
             .child(list.overflow_y_scrollbar())
             .child(div().flex().items_center().gap_2()
-                .child(Button::new("jobs-prev").label("上一页").disabled(history.loading || history.cursors.len() <= 1)
+                .child(Button::new("jobs-prev").small().label("上一页").disabled(history.loading || history.cursors.len() <= 1)
                     .on_click(cx.listener(|v,_,_,cx| { v.page_jobs(false,cx) })))
                 .child(format!("第 {} 页", history.cursors.len()))
-                .child(Button::new("jobs-next").label("下一页").disabled(history.loading || !history.more)
+                .child(Button::new("jobs-next").small().label("下一页").disabled(history.loading || !history.more)
                     .on_click(cx.listener(|v,_,_,cx| { v.page_jobs(true,cx) }))))
-            .child(div().text_sm().child(self.status.clone()))
+            .child(div().border_t_1().border_color(self.palette().line).pt_2().text_xs().text_color(self.palette().muted).child(self.status.clone()))
     }
 
     pub(super) fn inspector(&self, narrow: bool, active:bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -176,6 +183,11 @@ impl UploadDesk {
                     let hover_alpha=design::tween(ElementId::from(("album-hover",index)),if revealed{1.}else{0.},design::HOVER_MS,window,cx);
                     let thumbnail = self.resource.cached_thumbnails.get(&asset.id).cloned();
                     let palette=self.palette();
+                    let ratio=self.resource.ratios.get(&asset.id).copied().filter(|r|r.is_finite()&&*r>0.);
+                    let image_size=ratio.map(|r|{
+                        let w=tile_width.min(tile_image_height*r);
+                        (w,(w/r).min(tile_image_height))
+                    });
                     let menu_asset=asset.clone();
                     let weak=cx.weak_entity();
                     return div().id(("album-tile",index)).debug_selector(move||format!("tile-{index}")).relative().flex().flex_col()
@@ -190,7 +202,11 @@ impl UploadDesk {
                         .child(div().id(("album-image",index)).relative().h(px(tile_image_height)).w_full().overflow_hidden()
                             .rounded(px(design::CONTROL_RADIUS)).bg(if thumbnail.is_some(){palette.canvas}else{palette.subtle}).flex().items_center().justify_center()
                             .child(match thumbnail {
-                                Some(path)=>img(path).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+                                Some(path)=>{
+                                    let image=img(path).image_cache(&self.resource.image_cache).object_fit(ObjectFit::Contain);
+                                    if let Some((w,h))=image_size{div().h_full().w_full().flex().justify_center().items_end().child(image.w(px(w)).h(px(h))).into_any_element()}
+                                    else{image.size_full().into_any_element()}
+                                },
                                 None=>div().flex().flex_col().items_center().gap_1().text_color(palette.muted)
                                     .child(if asset.category=="video"{IconName::Play}else if asset.category=="image"{IconName::GalleryVerticalEnd}else{IconName::File})
                                     .child(div().text_xs().child(if asset.category=="image" {"无本地预览"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
@@ -469,7 +485,7 @@ impl Render for UploadDesk {
         // Event-driven, short transition. Respects the OS reduced-motion preference.
         let feedback_opacity = gpui_kit::base::transition(
             ("upload-feedback", "opacity"),
-            if self.queue.busy { 1.0f32 } else { 0.82f32 },
+            if self.queue.read(cx).busy { 1.0f32 } else { 0.82f32 },
             gpui_kit::base::Transition::new(std::time::Duration::from_millis(design::FEEDBACK_MS)),
             window,
             cx,
@@ -499,13 +515,15 @@ impl Render for UploadDesk {
         let surface=if self.resource.large_preview_open{Surface::Preview}else if self.page.settings(){if self.page==Page::Account{Surface::Account}else if self.page==Page::Data{Surface::Data}else{Surface::Settings}}else if self.page==Page::Jobs{Surface::Jobs}else if self.immersive{Surface::Immersive}else{Surface::Gallery};
         let surface_alpha=self.surface_motion.sample(surface,window,cx);
         if self.resource.large_preview_open {return self.preview_view(surface_alpha,window,cx);}
-        let nav_width=if self.immersive{0.}else if self.sidebar_collapsed{56.}else{self.spacing().sidebar_width(narrow)};
         let nav_progress=design::tween("nav-reveal",if self.sidebar_collapsed{0.}else{1.},design::SURFACE_MS,window,cx);
+        let nav_visibility=design::tween("nav-visible",if self.immersive{0.}else{1.},design::SURFACE_MS,window,cx);
+        let nav_reserve=!self.immersive||nav_visibility>0.001;
+        let nav_width=if !nav_reserve{0.}else if self.sidebar_collapsed&&nav_progress<=0.001{56.}else{self.spacing().sidebar_width(narrow)};
         let available = f32::from(window.viewport_size().width) - nav_width - if !narrow && reserve_inspector {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
         let gallery=if self.page==Page::Gallery&&show_center{self.gallery_content(available,narrow,window,cx)}else{div().into_any_element()};
         // Never access SQLite from the hot render path.
         let total = self.resource.total_count;
-        let is_demo = self.account.config.mode == Mode::Demo;
+        let is_demo = self.config.mode == Mode::Demo;
         let detail_width=if narrow{(f32::from(window.viewport_size().width)-nav_width).max(0.)}else{self.spacing().inspector};
         div()
             .flex()
@@ -513,8 +531,9 @@ impl Render for UploadDesk {
             .text_size(px(self.spacing().body))
             .bg(self.palette().canvas)
             .text_color(self.palette().text)
-             .when(!self.immersive,|root|root.child(div().relative().w(px(nav_width)).h_full().flex_shrink_0().overflow_hidden().bg(self.palette().sidebar)
-                .child(div().absolute().top_0().bottom_0().left(px(if self.sidebar_collapsed{-8.*nav_progress}else{-12.*(1.-nav_progress)})).w(px(nav_width))
+             .when(nav_reserve,|root|root.child(div().id("nav-slot").debug_selector(||"nav-slot".into()).relative().w(px(nav_width)).h_full().flex_shrink_0().overflow_hidden().bg(self.palette().sidebar)
+                .child(div().absolute().top_0().bottom_0().left(px(-22.*(1.-nav_visibility)-if self.sidebar_collapsed{0.}else{12.*(1.-nav_progress)})).w(px(if self.sidebar_collapsed{56.}else{nav_width})).opacity(nav_visibility*if self.sidebar_collapsed{1.}else{0.75+0.25*nav_progress})
+                    .when(self.immersive,|d|d.occlude().capture_any_mouse_down(|_,_,cx|cx.stop_propagation()).capture_any_mouse_up(|_,_,cx|cx.stop_propagation()).capture_key_down(|_,_,cx|cx.stop_propagation()))
                     .child(if self.sidebar_collapsed{self.navigation_rail(cx).into_any_element()}else{self.navigation(narrow,window,cx).into_any_element()}))))
             .when(self.page.settings(),|d|d.child(div().flex_1().min_w(px(0.)).h_full().flex().justify_center().opacity(surface_alpha).child(div().w_full().max_w(px(680.)).h_full().child(self.settings_view(cx)))))
             .when(show_center && self.page==Page::Jobs, |d| d.child(div().flex_1().min_w(px(0.)).h_full().flex().opacity(surface_alpha).child(self.task_center(cx))))
@@ -565,7 +584,7 @@ impl Render for UploadDesk {
                                     .title(EmptyTitle::new().child(if initial{"还没有资源"}else{"没有符合条件的资源"}))
                                     .description(EmptyDescription::new().child(if initial{"拖入文件或点击上传，即可离线浏览、复制链接。"}else{"尝试调整搜索词或筛选条件。"})))
                                     .when(initial,|e|e.child(Button::new("empty-upload").small().primary().icon(IconName::Plus).label("上传文件")
-                                        .disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))))))
+                                        .disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))))))
                             })
                             .overflow_hidden(),
                     )
@@ -573,14 +592,14 @@ impl Render for UploadDesk {
                       .child(
                         div().h(px(30.)).flex_shrink_0().border_t_1().border_color(self.palette().line).flex().items_center().justify_between().gap_2().text_xs().text_color(self.palette().muted)
                             .child(div().flex_1().min_w(px(0.)).truncate().opacity(feedback_opacity).child(self.status.clone()))
-                            .when(!self.queue.busy && self.job_history.read(cx).recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.job_history.read(cx).recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Jobs,cx);}))))
+                            .when(!self.queue.read(cx).busy && self.job_history.read(cx).recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.job_history.read(cx).recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Jobs,cx);}))))
                             .when(self.resource.grid_view,|d|d.child(self.density_control()))
                             .when(self.resource.history_error.is_some(),|d|d.child(Button::new("refresh-history").small().label("重试读取")
                                 .on_click(cx.listener(|v,_,_,cx|{v.resource.history_error=None;if v.resource.assets.is_empty(){v.reload(cx);}else{v.load_more(cx);}}))))
                             .when(self.resource.has_more || self.resource.loading_history,|d|d.child(Button::new("next-page").ghost().small().label(if self.resource.loading_history{"加载中…"}else{"加载更多"})
                                 .disabled(self.resource.loading_history).on_click(cx.listener(|v,_,_,cx|v.load_more(cx)))))
                     )
-                    .when(self.queue.busy,|d|d.child(self.upload_summary(cx)))
+                    .when(self.queue.read(cx).busy,|d|d.child(self.upload_summary(cx)))
 ),
             ))
             .when(reserve_inspector, |d| d.child(div().id("inspector-slot").debug_selector(||"inspector-slot".into()).relative().w(px(detail_width)).flex_shrink_0().h_full().overflow_hidden().bg(self.palette().canvas)

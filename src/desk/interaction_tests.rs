@@ -62,11 +62,11 @@ fn native_clicks_switch_resource_and_task_views() {
     ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
     let bounds=ui.debug_bounds("identify-account").unwrap();
     ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
-    assert!(app.read(|cx|desk.read(cx).account.identity_status.contains("请先填写")));
+    assert!(app.read(|cx|desk.read(cx).account.read(cx).identity_status.contains("请先填写")));
     ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
     let bounds=ui.debug_bounds("save-account").unwrap();
     ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
-    assert!(app.read(|cx|desk.read(cx).account.identity_status.contains("网页 Cookie")));
+    assert!(app.read(|cx|desk.read(cx).account.read(cx).identity_status.contains("网页 Cookie")));
     assert!(app.read(|cx|desk.read(cx).storage.accounts().unwrap().is_empty()));
 
 
@@ -203,7 +203,7 @@ fn isolated_clipboard_image_creates_offline_resource(){
     let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
     assert_eq!(items.len(),1);assert!(preview::cached_path(&root,&items[0]).is_file());
     assert!(root.join("clipboard").is_dir());
-    assert!(!app.read(|cx|desk.read(cx).queue.busy));
+    assert!(!app.read(|cx|desk.read(cx).queue.read(cx).busy));
     drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
 }
 
@@ -270,8 +270,8 @@ fn gallery_external_file_drop_uses_existing_queue(){
     let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
     assert_eq!(items.len(),1);
     assert!(preview::cached_path(&root,&items[0]).is_file());
-    assert!(!app.read(|cx|desk.read(cx).queue.busy));
-    app.update(|cx|desk.update(cx,|v,cx|{v.queue.busy=true;v.start_upload(vec![source],cx);assert!(v.status.contains("未加入队列"));v.queue.busy=false;}));
+    assert!(!app.read(|cx|desk.read(cx).queue.read(cx).busy));
+    app.update(|cx|desk.update(cx,|v,cx|{v.queue.update(cx,|q,_|q.busy=true);v.start_upload(vec![source],cx);assert!(v.status.contains("未加入队列"));v.queue.update(cx,|q,_|q.busy=false);}));
     assert_eq!(db.jobs("demo","local",None).unwrap().len(),1);
     drop(ui);drop(desk);drop(app);drop(db);let _=std::fs::remove_dir_all(root);
 }
@@ -645,7 +645,7 @@ fn queue_prepare_and_preferences_remain_responsive_under_write_lock(){
     let start=std::time::Instant::now();
     app.update(|cx|desk.update(cx,|v,cx|{
         v.start_upload(vec![source.clone()],cx);
-        assert!(v.queue.busy&&v.queue.preparing);
+        assert!(v.queue.read(cx).busy&&v.queue.read(cx).preparing);
         assert!(!v.desktop_can_quit(cx));
         v.start_upload(vec![source.clone()],cx);
         v.export_album(cx);assert!(!v.picker_pending);
@@ -654,16 +654,76 @@ fn queue_prepare_and_preferences_remain_responsive_under_write_lock(){
         v.resource.tile_size=180.;v.persist_preferences(cx);
         v.resource.tile_size=204.;v.persist_preferences(cx);
         assert!(v.prefs_writing);
+        assert!(!v.desktop_can_quit(cx));
     }));
     assert!(start.elapsed()<std::time::Duration::from_secs(1),"UI dispatch blocked on database write lock");
     assert!(read.jobs("demo","local",None).unwrap().is_empty());
     lock.execute_batch("COMMIT").unwrap();
     app.run_until_parked();
     app.executor().advance_clock(std::time::Duration::from_millis(250));app.run_until_parked();
-    assert!(app.read(|cx|{let v=desk.read(cx);!v.queue.busy&&!v.queue.preparing&&!v.prefs_writing}));
+    assert!(app.read(|cx|{let v=desk.read(cx);!v.queue.read(cx).busy&&!v.queue.read(cx).preparing&&!v.prefs_writing}));
     let jobs=read.jobs("demo","local",None).unwrap();
     assert_eq!(jobs.len(),1);assert_eq!(jobs[0].state,"done");
     assert_eq!(read.recoverable_count("demo","local").unwrap(),0);
     assert_eq!(preferences::Preferences::decode(read.preferences().unwrap()).tile,204.);
+    app.update(|cx|desk.update(cx,|v,cx|assert!(v.desktop_can_quit(cx))));
     drop(lock);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn independent_runner_refreshes_gallery_once_after_batch(){
+    let root=std::env::temp_dir().join(format!("yuque-runner-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let sources=(0..3).map(|i|{let p=root.join(format!("fixture-{i}.txt"));std::fs::write(&p,format!("content-{i}")).unwrap();p}).collect::<Vec<_>>();
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let read=db.clone();
+    let (_,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions::default(),cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let generation=app.read(|cx|desk.read(cx).resource.history_generation);
+    app.update(|cx|desk.update(cx,|v,cx|v.start_upload(sources,cx)));
+    app.run_until_parked();
+    app.read(|cx|{
+        let v=desk.read(cx);let q=v.queue.read(cx);
+        assert!(!q.busy&&!q.preparing);assert_eq!(q.succeeded,3);
+        assert_eq!(v.resource.history_generation,generation+1);
+        assert_eq!(v.resource.assets.len(),3);
+        assert_eq!(v.job_history.read(cx).recovery_count,0);
+    });
+    assert_eq!(read.jobs("demo","local",None).unwrap().iter().filter(|j|j.state=="done").count(),3);
+    drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn sidebar_and_immersive_transition_reserve_geometry_and_reverse(){
+    let root=std::env::temp_dir().join(format!("yuque-nav-motion-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let app=TestAppContext::single();app.update(gpui_kit::init);app.update(|cx|cx.set_reduce_motion(false));
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(800.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    let draw=|ui:&mut VisualTestContext|ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let advance=|n|app.executor().advance_clock(std::time::Duration::from_millis(n));
+    let click=|ui:&mut VisualTestContext,id:&'static str|{let pos=ui.debug_bounds(id).unwrap().center();ui.simulate_click(pos,Modifiers::default());};
+    draw(&mut ui);let wide=ui.debug_bounds("nav-slot").unwrap();
+    click(&mut ui,"collapse-sidebar");draw(&mut ui);advance(60);draw(&mut ui);
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap(),wide);
+    click(&mut ui,"expand-sidebar");draw(&mut ui);advance(250);draw(&mut ui);
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap(),wide);
+    click(&mut ui,"collapse-sidebar");draw(&mut ui);advance(250);draw(&mut ui);
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap().size.width,px(56.));
+    click(&mut ui,"immersive-toggle");draw(&mut ui);advance(60);draw(&mut ui);
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap().size.width,px(56.));
+    click(&mut ui,"immersive-toggle");draw(&mut ui);advance(250);draw(&mut ui);
+    assert!(!app.read(|cx|desk.read(cx).immersive));
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap().size.width,px(56.));
+    click(&mut ui,"immersive-toggle");draw(&mut ui);advance(250);draw(&mut ui);
+    assert!(ui.debug_bounds("nav-slot").is_none());
+    app.update(|cx|cx.set_reduce_motion(true));
+    click(&mut ui,"immersive-toggle");draw(&mut ui);
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap().size.width,px(56.));
+    click(&mut ui,"expand-sidebar");draw(&mut ui);
+    assert_eq!(ui.debug_bounds("nav-slot").unwrap(),wide);
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
 }

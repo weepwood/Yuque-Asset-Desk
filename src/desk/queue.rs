@@ -1,11 +1,11 @@
 use super::*;
-use queue_prepare::{Prepare,Prepared,Source};
+use queue_prepare::{Prepare,Source};
 
 impl UploadDesk {
     pub(super) fn refresh_jobs(&mut self,cx:&mut Context<Self>){
         let storage=self.storage.clone();
-        let provider=self.account.config.provider().to_owned();
-        let owner=self.account.config.owner_id().to_owned();
+        let provider=self.config.provider().to_owned();
+        let owner=self.config.owner_id().to_owned();
         self.job_history.update(cx,|v,cx|v.refresh(storage,provider,owner,cx));
     }
     pub(super) fn page_jobs(&mut self,forward:bool,cx:&mut Context<Self>){
@@ -16,45 +16,28 @@ impl UploadDesk {
     }
 
     fn prepare_queue(&mut self,request:Prepare,cx:&mut Context<Self>){
-        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy||self.resetting{return;}
-        if self.account.config.mode==Mode::Yuque&&self.account.config.creds.is_none(){
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)||self.resetting{return;}
+        if self.config.mode==Mode::Yuque&&self.config.creds.is_none(){
             self.status="请先配置语雀会话再上传".into();cx.notify();return;
         }
-        let storage=self.storage.clone();
-        let provider=self.account.config.provider().to_owned();
-        let owner=self.account.config.owner_id().to_owned();
-        self.queue.busy=true;self.queue.preparing=true;
-        self.queue.queue_count=0;self.queue.queue_total=0;
-        self.status="正在准备并保存任务…".into();cx.notify();
-        self.queue.prepare_task=Some(cx.spawn(async move|this,cx|{
-            let result=cx.background_spawn(async move{request.execute(&storage,&provider,&owner)}).await;
-            let _=this.update(cx,|v,cx|{
-                v.queue.preparing=false;v.queue.busy=false;
-                match result{
-                    Ok(Prepared::Jobs(jobs)) if !jobs.is_empty()=>v.run_jobs(jobs,cx),
-                    Ok(Prepared::Jobs(_))=>{v.status="没有可恢复或可上传的任务".into();v.refresh_jobs(cx);},
-                    Ok(Prepared::Acknowledged)=>{v.status="已记录核实结果；如需重新上传，请单独重试".into();v.refresh_jobs(cx);},
-                    Err(e)=>{v.status=format!("任务准备失败：{e}");v.refresh_jobs(cx);},
-                }
-                cx.notify();
-            });
-        }));
+        let storage=self.storage.clone();let config=self.config.clone();
+        self.queue.update(cx,|v,cx|v.prepare(request,config,storage,cx));
     }
     pub(super) fn retry_one(&mut self,id:i64,cx:&mut Context<Self>){self.prepare_queue(Prepare::Retry(id),cx);}
     pub(super) fn acknowledge_job(&mut self,id:i64,cx:&mut Context<Self>){self.prepare_queue(Prepare::Acknowledge(id),cx);}
 
     pub(super) fn paste_files(&mut self, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy { return; }
+        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) { return; }
         let Some(item) = cx.read_from_clipboard() else {self.status="剪贴板没有可读取内容".into();cx.notify();return;};
         self.paste_item(item,cx);
     }
     pub(super) fn paste_item(&mut self,item:ClipboardItem,cx:&mut Context<Self>){
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {return;}
+        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) {return;}
         let mut sources=Vec::new();
         for entry in item.entries(){
             match entry{
                 ClipboardEntry::ExternalPaths(paths)=>sources.extend(paths.paths().iter().cloned().map(Source::Path)),
-                ClipboardEntry::Image(image) if image.bytes().len() as u64<=self.account.config.max_file_mb*1024*1024=>{
+                ClipboardEntry::Image(image) if image.bytes().len() as u64<=self.config.max_file_mb*1024*1024=>{
                     sources.push(Source::Image(image.bytes().to_vec(),image.format().extension().to_owned()));
                 }
                 _=>{}
@@ -67,10 +50,10 @@ impl UploadDesk {
     pub(super) fn resume_jobs(&mut self,cx:&mut Context<Self>){self.prepare_queue(Prepare::Resume,cx);}
 
     pub(super) fn select_files(&mut self, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {
+        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) {
             return;
         }
-        if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() {
+        if self.config.mode == Mode::Yuque && self.config.creds.is_none() {
             self.status = "请先配置语雀会话再上传".into();cx.notify();return;
         }
         self.picker_pending=true;
@@ -92,150 +75,13 @@ impl UploadDesk {
 
     pub(super) fn start_upload(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         if files.is_empty(){return;}
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy {
+        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) {
             self.status="当前任务处理中，本次拖入的文件未加入队列，请稍后重试".into();cx.notify();return;
         }
-        if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() {
+        if self.config.mode == Mode::Yuque && self.config.creds.is_none() {
             self.status = "请先配置语雀会话再上传".into(); cx.notify(); return;
         }
         self.prepare_queue(Prepare::Enqueue(files.into_iter().map(Source::Path).collect()),cx);
     }
 
-    pub(super) fn run_jobs(&mut self, jobs: Vec<(i64, PathBuf)>, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || jobs.is_empty() || self.account.account_busy { return; }
-        if self.account.config.mode == Mode::Yuque && self.account.config.creds.is_none() { return; }
-        let control = Arc::new(AtomicU8::new(0));
-        self.queue.queue_control = control.clone();
-        let config = self.account.config.clone();
-        let storage = self.storage.clone();
-        self.queue.busy = true;
-        self.first_jobs(cx);
-        self.queue.transfer_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
-                let result = this.update(cx, |view, cx| { cx.notify(); view.queue.busy });
-                if !matches!(result, Ok(true)) { break; }
-            }
-        }));
-        self.queue.queue_count = jobs.len();
-        self.queue.queue_total = jobs.len();
-        self.queue.succeeded = 0;
-        self.queue.duplicates = 0;
-        self.queue.failed.clear();
-        self.status = format!("已加入 {} 个文件", jobs.len());
-        cx.notify();
-
-        // The view owns the task. File hashing, uploads and SQLite writes
-        // run off the UI thread. Work is sequential to bound peak memory.
-        self.queue.upload_task = Some(cx.spawn(async move |this, cx| {
-            let total = jobs.len();
-            let interval_ms = std::env::var("YUQUE_UPLOAD_INTERVAL_MS").ok().and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(350).min(30_000);
-            let mut pause_reason=None;
-            for (index, (job_id, path)) in jobs.into_iter().enumerate() {
-                if index > 0 && config.mode == Mode::Yuque && control.load(Ordering::Relaxed) == 0 {
-                    cx.background_executor().timer(std::time::Duration::from_millis(interval_ms)).await;
-                }
-                let command = control.load(Ordering::Relaxed);
-                if command != 0 {
-                    let storage = storage.clone();
-                    let state = if command == 2 { "cancelled" } else { "paused" };
-                    let result = cx.background_spawn(async move { storage.job_state(job_id, state, "") }).await;
-                    let reason=pause_reason;
-                    _ = this.update(cx, |view, cx| {
-                        view.queue.queue_count = total - index - 1;
-                        view.refresh_jobs(cx);
-                        if result.is_err() {
-                            view.status = "任务状态保存失败，请在任务中心核实".into();
-                        }
-                        if view.queue.queue_count == 0 {
-                            view.queue.active_job = None;
-                            view.queue.busy = false;
-
-                            view.status = if result.is_err() { "任务状态保存失败，请检查恢复队列".into() }
-                                else if command == 2 { "已取消尚未开始的任务".into() } else { match reason {
-                                    Some(uploader::QueueStop::Authorization)=>"上传未获授权，请检查会话后恢复任务".into(),
-                                    Some(uploader::QueueStop::RateLimit)=>"上传受限（HTTP 429），稍后手动恢复".into(),
-                                    Some(uploader::QueueStop::Unknown)=>"远端结果待核实，请先检查语雀网页端".into(),
-                                    None=>"队列已暂停，可手动恢复".into(),
-                                } };
-                        }
-                        cx.notify();
-                    });
-                    continue;
-                }
-                let config = config.clone();
-                let storage = storage.clone();
-                let upload_path = path.clone();
-                let progress = Arc::new(uploader::TransferProgress::default());
-                _ = this.update(cx, |view, cx| {
-                    view.queue.active_job = Some(job_id);
-                    view.queue.transfer = progress.clone();
-                    cx.notify();
-                });
-                let result = cx.background_spawn(async move {
-                    storage.job_state(job_id, "running", "").map_err(|error| (error.to_string(),None))?;
-                    let result = uploader::upload_with_progress(&upload_path, &config, &storage, progress.clone())
-                        .map(|out| (out.duplicate, out.item.provider))
-                        .map_err(|error| error.to_string());
-                    let (state, error) = match &result {
-                        Ok(_) => ("done", ""),
-                        Err(error) => (uploader::failure_state(&progress), error.as_str()),
-                    };
-                    storage.job_state(job_id, state, error).map_err(|_| ("远端结果待核实：任务结果保存失败".to_string(),Some(uploader::QueueStop::Unknown)))?;
-                    if state == "unknown" {
-                        return Err((format!("远端结果待核实：{error}"),Some(uploader::QueueStop::Unknown)));
-                    }
-                    result.map_err(|error|(error,uploader::queue_stop(&progress)))
-                }).await;
-                let stop=result.as_ref().err().and_then(|(_,reason)|*reason);
-                if stop.is_some() {
-                    pause_reason=stop;
-                    let _ = control.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
-                }
-                _ = this.update(cx, |view, cx| {
-                    view.queue.queue_count = total - index - 1;
-                    let filename = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
-                    let message = match result {
-                        Ok((true, _)) => {
-                            view.queue.duplicates += 1;
-                            "复用历史链接".to_string()
-                        }
-                        Ok((false, provider)) => {
-                            view.queue.succeeded += 1;
-                            if provider == "demo" { "已保存本地记录".into() } else { "上传成功".into() }
-                        }
-                        Err((error,reason)) => {
-                            if reason==Some(uploader::QueueStop::Authorization){
-                                view.account.session_status="上传未获授权：请在设置检查会话及 CSRF Token，再手动恢复任务".into();
-                            }
-                            view.queue.failed.push((path.clone(), error.clone()));
-                            format!("失败：{error}")
-                        }
-                    };
-                    view.status = format!("[{}/{}] {filename} · {message}", index + 1, total);
-                    if view.queue.queue_count == 0 {
-                        view.queue.busy = false;
-
-                        view.status = format!("本批结束：新增 {} · 复用 {} · 失败或待核实 {}",
-                            view.queue.succeeded, view.queue.duplicates, view.queue.failed.len());
-                        if let Some(reason)=stop{
-                            view.status=match reason{
-                                uploader::QueueStop::Authorization=>"上传未获授权，请检查会话后恢复任务".into(),
-                                uploader::QueueStop::RateLimit=>"上传受限（HTTP 429），稍后手动恢复".into(),
-                                uploader::QueueStop::Unknown=>"远端结果待核实，请先检查语雀网页端".into(),
-                            };
-                        }
-                    }
-                    if view.queue.queue_count==0 && view.desktop_enabled {
-                        cx.show_system_notification(SystemNotification{tag:"yuque-upload-batch".into(),title:"Yuque Asset Desk".into(),body:format!("本批结束：新增 {} · 复用 {} · 失败 {}",view.queue.succeeded,view.queue.duplicates,view.queue.failed.len()).into(),actions:vec![]});
-                    }
-                    view.queue.active_job = None;
-                    view.refresh_jobs(cx);
-                    view.reload(cx);
-                    cx.notify();
-                });
-            }
-        }));
-    }
 }

@@ -10,9 +10,9 @@ fn record_deleted(storage:&Storage,owner:&str,confirmed_absent:bool)->bool{
 }
 
 impl UploadDesk{
-    fn data_idle(&self)->bool{!self.prefs_writing&&!self.resource_write_busy&&!self.picker_pending&&!self.backup_busy&&!self.queue.busy&&!self.account.account_busy&&!self.data_scan_busy&&!self.resetting}
+    fn data_idle(&self,cx:&App)->bool{!self.prefs_writing&&!self.resource_write_busy&&!self.picker_pending&&!self.backup_busy&&!self.queue.read(cx).busy&&!self.account_busy(cx)&&!self.data_scan_busy&&!self.resetting}
     pub(super) fn refresh_data(&mut self,cx:&mut Context<Self>){
-        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy||self.data_scan_busy||self.resetting{return;}
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)||self.data_scan_busy||self.resetting{return;}
         self.data_scan_busy=true;self.data_feedback="正在统计本地文件…".into();cx.notify();
         let storage=self.storage.clone();
         self.data_task=Some(cx.spawn(async move|this,cx|{
@@ -25,8 +25,8 @@ impl UploadDesk{
         }));
     }
     fn confirm_cleanup(&mut self,w:&mut Window,cx:&mut Context<Self>){
-        if !self.data_idle(){return;}
-        self.account.account_busy=true;cx.notify();
+        if !self.data_idle(cx){return;}
+        self.maintenance_busy=true;cx.notify();
         let answer=w.prompt(PromptLevel::Warning,"清理无引用暂存文件？",Some("仅删除内容哈希匹配、没有任何任务或本地链接引用的剪贴板暂存文件。永久微缩图、原始文件和备份不会删除。"),&["取消","确认清理"],cx);
         let storage=self.storage.clone();
         self.data_task=Some(cx.spawn(async move|this,cx|{
@@ -36,7 +36,7 @@ impl UploadDesk{
                 (r,data::usage(&storage))
             }).await)}else{None};
             let _=this.update(cx,|v,cx|{
-                v.account.account_busy=false;
+                v.maintenance_busy=false;
                 if let Some((result,usage))=result{
                     v.data_usage=usage.ok();
                     v.data_feedback=match result{Ok(r)=>format!("已清理 {} 项，释放 {}；失败 {} 项",r.count,bytes(r.bytes),r.failed),Err(e)=>format!("清理停止：{e}")};
@@ -49,23 +49,29 @@ impl UploadDesk{
         self.confirm_credentials(all,false,w,cx);
     }
     fn arm_reset(&mut self,cx:&mut Context<Self>){
-        if !self.data_idle(){return;}
-        match self.storage.unfinished_count(){
-            Ok(0)=>{self.reset_armed=true;self.data_feedback="请先导出备份并阅读重置范围，再确认退出。".into();}
-            Ok(n)=>{self.data_feedback=format!("存在 {n} 项未完成、失败或待核实任务；请先处理，不允许重置。");}
-            Err(e)=>self.data_feedback=format!("无法核对任务状态：{e}"),
-        }
-        cx.notify();
+        if !self.data_idle(cx){return;}
+        self.maintenance_busy=true;
+        self.reset_armed=false;
+        self.data_feedback="正在核对未完成任务…".into();cx.notify();
+        let storage=self.storage.clone();
+        self.data_task=Some(cx.spawn(async move|this,cx|{
+            let result=cx.background_spawn(async move{storage.unfinished_count()}).await;
+            let _=this.update(cx,|v,cx|{
+                v.maintenance_busy=false;
+                if v.page!=Page::Data{cx.notify();return;}
+                match result{
+                    Ok(0)=>{v.reset_armed=true;v.data_feedback="请先导出备份并阅读重置范围，再确认退出。".into();}
+                    Ok(n)=>v.data_feedback=format!("存在 {n} 项未完成、失败或待核实任务；请先处理，不允许重置。"),
+                    Err(_)=>v.data_feedback="无法核对任务状态，禁止重置".into(),
+                }
+                cx.notify();
+            });
+        }));
     }
     fn confirm_credentials(&mut self,all:bool,reset:bool,w:&mut Window,cx:&mut Context<Self>){
-        if !self.data_idle() || (reset&&!self.reset_armed){return;}
-        if reset&&!matches!(self.storage.unfinished_count(),Ok(0)){
-            self.reset_armed=false;self.data_feedback="存在未完成任务或无法确认任务状态，禁止重置".into();cx.notify();return;
-        }
-        let active=self.account.config.creds.as_ref().map(|c|c.user_id.clone());
-        let mut owners=if all{match self.storage.accounts(){Ok(ids)=>ids,Err(e)=>{self.data_feedback=format!("读取账号索引失败：{e}");cx.notify();return;}}}else{vec![]};
-        if let Some(id)=&active{if !owners.contains(id){owners.push(id.clone());}}
-        self.account.account_busy=true;self.reset_pending=reset;cx.notify();
+        if !self.data_idle(cx) || (reset&&!self.reset_armed){return;}
+        let active=self.config.creds.as_ref().map(|c|c.user_id.clone());
+        self.maintenance_busy=true;self.reset_pending=reset;cx.notify();
         let (title,detail,action)=if reset{
             ("完全重置并退出？","将清除本应用已索引的账号凭据、本地链接数据库、设置、永久微缩图及应用生成的剪贴板副本。外部原始文件、备份和语雀云端不删除。备份不含剪贴板原图，请先另存需要的副本。操作不可撤销。","确认重置并退出")
         }else if all{
@@ -77,8 +83,23 @@ impl UploadDesk{
         let storage=self.storage.clone();
         self.data_task=Some(cx.spawn(async move|this,cx|{
             if !matches!(answer.await,Ok(1)){
-                let _=this.update(cx,|v,cx|{v.account.account_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_feedback="操作已取消".into();cx.notify();});return;
+                let _=this.update(cx,|v,cx|{v.maintenance_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_feedback="操作已取消".into();cx.notify();});return;
             }
+            // Recheck after confirmation, before any vault deletion. The maintenance
+            // gate stays held through preflight, credential deletion and reset launch.
+            let db=storage.clone();
+            let preflight=cx.background_spawn(async move{
+                if reset{anyhow::ensure!(db.unfinished_count()?==0,"存在未完成或待核实任务，禁止重置");}
+                if all{db.accounts()}else{Ok(vec![])}
+            }).await;
+            let mut owners=match preflight{
+                Ok(ids)=>ids,
+                Err(_)=>{
+                    let _=this.update(cx,|v,cx|{v.maintenance_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_feedback="无法确认任务状态或账号索引，未删除凭据".into();cx.notify();});
+                    return;
+                }
+            };
+            if let Some(id)=&active{if !owners.contains(id){owners.push(id.clone());}}
             let mut success=0;let mut failed=0;let mut active_removed=false;
             for owner in owners{
                 if !valid_owner(&owner){failed+=1;continue;}
@@ -100,18 +121,22 @@ impl UploadDesk{
                 if recorded{success+=1;}
                 else{failed+=1;}
             }
-            let accounts=cx.background_spawn(async move{storage.accounts()}).await;
+            let accounts=cx.background_spawn({let storage=storage.clone();async move{storage.accounts()}}).await;
+            if accounts.is_err(){failed+=1;}
+            let launch=if reset&&failed==0{
+                Some(cx.background_spawn(async move{data::schedule_reset(&storage)}).await)
+            }else{None};
             let _=this.update(cx,|v,cx|{
-                v.account.account_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_usage=None;
-                if let Ok(ids)=accounts{v.account.saved_accounts=ids;}else{failed+=1;}
-                if active_removed || (all&&active.is_none()){v.activate_account(None,cx);}
+                v.maintenance_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_usage=None;
+                if let Ok(ids)=accounts{v.account.update(cx,|a,cx|a.replace_index(ids,cx));}
+                if !matches!(launch,Some(Ok(())))&&(active_removed || (all&&active.is_none())){v.activate_account(None,cx);}
                 v.data_feedback=format!("凭据已清除或确认不存在 {success} 项；失败 {failed} 项（保留索引以便重试）");
                 v.status=v.data_feedback.clone();
                 if reset{
                     if failed>0{v.data_feedback.push_str("；重置已停止。");}
                     else{
-                        match data::schedule_reset(&v.storage){
-                            Ok(())=>{v.resetting=true;v.account.account_busy=true;v.prefs_task=None;cx.quit();}
+                        match launch.expect("reset scheduled after successful preflight"){
+                            Ok(())=>{v.resetting=true;v.maintenance_busy=true;v.prefs_task=None;cx.quit();}
                             Err(e)=>v.data_feedback=format!("凭据处理完成，但本地重置未启动：{e}"),
                         }
                     }
@@ -121,7 +146,7 @@ impl UploadDesk{
         }));
     }
     pub(super) fn data_panel(&self,cx:&mut Context<Self>)->impl IntoElement{
-        let p=self.palette();let idle=self.data_idle();
+        let p=self.palette();let idle=self.data_idle(cx);
         let mut panel=div().flex().flex_col().gap(px(self.spacing().section))
             .child(div().text_xs().text_color(p.muted).child("管理本地数据和账号隐私。不会删除语雀云端文件。"))
             .child(div().flex().items_center().gap_2()

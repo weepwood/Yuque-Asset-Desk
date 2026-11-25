@@ -33,7 +33,6 @@ pub fn install(window:AnyWindowHandle,desk:Entity<UploadDesk>,cx:&mut App){
     let close_desk=desk.downgrade();
     let _=window.update(cx,|_,window,cx|window.on_window_should_close(cx,move|w,cx|{
         if let Some(desk)=close_desk.upgrade(){
-            desk.read(cx).flush_preferences();
             if tray_ok{w.minimize_window();return false;}
             return desk.update(cx,|v,cx|v.desktop_can_quit(cx));
         }
@@ -59,7 +58,7 @@ pub fn install(window:AnyWindowHandle,desk:Entity<UploadDesk>,cx:&mut App){
             let keep=cx.update(|cx|{
                 let Some(desk)=weak.upgrade()else{return false;};
                 if exit{
-                    if desk.update(cx,|v,cx|v.desktop_can_quit(cx)){desk.read(cx).flush_preferences();cx.quit();return false;}
+                    if desk.update(cx,|v,cx|v.desktop_can_quit(cx)){cx.quit();return false;}
                     activate=true;
                 }
                 if activate{

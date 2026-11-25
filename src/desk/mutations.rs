@@ -21,7 +21,7 @@ impl Mutation {
 }
 impl UploadDesk{
     pub(super) fn mutate_resource(&mut self,mutation:Mutation,cx:&mut Context<Self>){
-        if self.queue.preparing||self.resource_write_busy||self.account.account_busy||self.resetting||self.picker_pending||self.backup_busy{
+        if self.queue.read(cx).preparing||self.resource_write_busy||self.account_busy(cx)||self.resetting||self.picker_pending||self.backup_busy{
             self.status="已有操作正在处理，请稍后重试".into();cx.notify();return;
         }
         self.resource_write_busy=true;

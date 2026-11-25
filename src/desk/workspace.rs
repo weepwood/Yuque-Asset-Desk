@@ -30,16 +30,16 @@ impl UploadDesk {
         self.persist_preferences(cx);cx.notify();
     }
     pub(super) fn upload_summary(&self,cx:&mut Context<Self>)->impl IntoElement{
-        let total=self.queue.queue_total;
-        let finished=total.saturating_sub(self.queue.queue_count);
+        let total=self.queue.read(cx).queue_total;
+        let finished=total.saturating_sub(self.queue.read(cx).queue_count);
         let p=self.palette();
-        let bytes=self.queue.transfer.bytes.load(Ordering::Relaxed);
-        let size=self.queue.transfer.total.load(Ordering::Relaxed);
+        let bytes=self.queue.read(cx).transfer.bytes.load(Ordering::Relaxed);
+        let size=self.queue.read(cx).transfer.total.load(Ordering::Relaxed);
         div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(p.surface)
             .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
-                .child(div().text_xs().text_color(p.text).child(if self.queue.preparing{"正在准备任务…".into()}else if self.queue.busy{format!("正在处理 · {finished}/{total} 项")}else{format!("{} 项可恢复任务",self.job_history.read(cx).recovery_count)}))
-                .when(size>0&&self.queue.active_job.is_some(),|d|d.child(div().text_xs().text_color(p.muted).child(format!("当前文件已读取 {} / {} · 等待服务端确认",file_size((bytes.min(size)) as i64),file_size(size as i64)))))
-                .when(self.queue.busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
+                .child(div().text_xs().text_color(p.text).child(if self.queue.read(cx).preparing{"正在准备任务…".into()}else if self.queue.read(cx).busy{format!("正在处理 · {finished}/{total} 项")}else{format!("{} 项可恢复任务",self.job_history.read(cx).recovery_count)}))
+                .when(size>0&&self.queue.read(cx).active_job.is_some(),|d|d.child(div().text_xs().text_color(p.muted).child(format!("当前文件已读取 {} / {} · 等待服务端确认",file_size((bytes.min(size)) as i64),file_size(size as i64)))))
+                .when(self.queue.read(cx).busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
             .child(Button::new("view-upload-jobs").small().ghost().label("查看任务").on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))
     }
     fn navigate(&mut self,category:&'static str,favorites:bool,cx:&mut Context<Self>){
@@ -76,12 +76,12 @@ impl UploadDesk {
                     )
                 .child(div().debug_selector(||"collapse-sidebar".into()).child(Button::new("collapse-sidebar").xsmall().ghost().icon(IconName::PanelLeftClose).tooltip("收起侧栏").on_click(cx.listener(|v,_,_,cx|{v.sidebar_collapsed=true;cx.notify();})))))
             .child(div().px_1().pb_3().child(Button::new("nav-account").small().ghost().icon(IconName::User).w_full()
-                .label(if self.account.config.mode==Mode::Demo{"本地演示".to_owned()}else{format!("账号 {}",self.account.config.owner_id())})
+                .label(if self.config.mode==Mode::Demo{"本地演示".to_owned()}else{format!("账号 {}",self.config.owner_id())})
                 .selected(self.page==Page::Account).tooltip("账号管理").on_click(cx.listener(|v,_,w,cx|v.command(Command::Navigate(Page::Account),w,cx)))))
             .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap_1().child(nav).child(section("分类")).child(self.tag_tree(w,cx)).overflow_y_scrollbar())
             .child(div().h(px(1.)).bg(p.line))
             .when(self.prefs.comfortable,|d|d.child(div().h(px(8.))))
-            .child(div().debug_selector(||"nav-jobs".into()).child(SidebarMenuItem::new(if self.queue.queue_count>0{format!("上传任务 · {}",self.queue.queue_count)}else{"上传任务".into()})
+            .child(div().debug_selector(||"nav-jobs".into()).child(SidebarMenuItem::new(if self.queue.read(cx).queue_count>0{format!("上传任务 · {}",self.queue.read(cx).queue_count)}else{"上传任务".into()})
                 .icon(IconName::File).active(self.page==Page::Jobs).on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})).render("nav-jobs",w,cx)))
             .when(self.prefs.comfortable,|d|d.child(div().h(px(8.))))
             .child(div().debug_selector(||"nav-settings".into()).child(SidebarMenuItem::new("设置").icon(IconName::Settings).active(self.page.settings())
@@ -115,7 +115,7 @@ impl UploadDesk {
             .child(div().h(px(1.)).bg(p.line))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("相册备份").child(div().text_xs().text_color(p.muted).child("保存本地资源索引与微缩图，不含凭据")))
-                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy)
+                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx))
                     .on_click(cx.listener(|v,_,_,cx|v.export_album(cx)))))
     }
     pub(super) fn gallery_toolbar(&self,narrow:bool,total:i64,_is_demo:bool,w:&Window,cx:&mut Context<Self>)->impl IntoElement{
@@ -148,8 +148,8 @@ impl UploadDesk {
             .child(div().debug_selector(||"toggle-inspector".into()).child(Button::new("toggle-inspector").small().ghost().icon(IconName::PanelRight).selected(self.inspector_open&&!self.immersive).tooltip("详情 · Cmd/Ctrl+I").on_click(cx.listener(|v,_,w,cx|v.command(Command::ToggleInspector,w,cx)))))
             .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").small().ghost().selected(self.immersive).icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出沉浸"}else{"沉浸浏览"}).on_click(cx.listener(|v,_,w,cx|v.command(Command::ToggleImmersive,w,cx)))))
             .when(self.immersive,|d|d.child(Button::new("native-fullscreen").small().ghost().icon(if w.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
-            .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
-            .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").small().primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));
+            .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
+            .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").small().primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));
         let title=if fav{"收藏"}else{match self.resource.category{"image"=>"图片","video"=>"视频","attachment"=>"附件",_=>"全部资源"}};
         let heading=div().flex_1().min_w(px(0.)).flex().items_center().gap_2()
             .child(div().text_size(px(self.spacing().title)).font_semibold().truncate().child(title))

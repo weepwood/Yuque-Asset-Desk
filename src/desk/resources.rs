@@ -69,90 +69,55 @@ impl UploadDesk {
         let favorites_only=self.resource.favorites_only;
         let similar=self.resource.similar_to.clone();
         let scope = (!self.resource.all_accounts).then(|| (
-            self.account.config.provider().to_string(), self.account.config.owner_id().to_string()
+            self.config.provider().to_string(), self.config.owner_id().to_string()
         ));
         let before = self.resource.page_cursors.last().copied().flatten();
-        self.resource.history_generation += 1;
         self.resource.thumbnails_task=None;self.resource.preview_loading_batch=false;
         self.resource.preview_attempted.retain(|id|self.resource.cached_thumbnails.contains_key(id));
-        let generation = self.resource.history_generation;
-        self.resource.loading_history = true;
-        self.resource.history_error = None;
-        self.resource.history_task = Some(cx.spawn(async move |this, cx| {
-            if !query.is_empty() { cx.background_executor().timer(std::time::Duration::from_millis(100)).await; }
-            let result = cx.background_spawn(async move {
-                let scope=scope.as_ref().map(|(provider,owner)|(provider.as_str(),owner.as_str()));
-                let page=if let Some(asset)=similar {
-                    let path=preview::restore_local(&storage,&asset)?;
-                    let (hash,_)=preview::visual_hash(&path)?;
-                    storage.store_visual_hash(asset.id,hash)?;
-                    let mut cursor=None;
-                    loop {
-                        let (page,more,_)=storage.page_album(150,"","image",Some((&asset.provider,&asset.owner_id)),cursor,false,None,false)?;
-                        for candidate in &page {
-                            if storage.visual_hash(candidate.id)?.is_none(){
-                                let path=preview::cached_path(storage.data_dir(),candidate);
-                                if path.is_file(){if let Ok((hash,_))=preview::visual_hash(&path){storage.store_visual_hash(candidate.id,hash)?;}}
-                            }
-                        }
-                        if !more {break;}
-                        cursor=page.last().map(|a|a.id);
-                        if cursor.is_none(){break;}
-                    }
-                    let items=storage.similar_assets(&asset,hash)?;
-                    let total=items.len() as i64;
-                    (items,false,total)
-                }else{storage.page_album(PAGE_SIZE,&query,category,scope,before,oldest,tag.as_deref(),favorites_only)?};
-                let ratios=page.0.iter().filter(|a|a.category=="image").filter_map(|a|{
-                    let path=preview::cached_path(storage.data_dir(),a);
-                    image::image_dimensions(&path).ok().map(|(w,h)|(a.id,w as f32/h.max(1) as f32,path))
-                }).collect::<Vec<_>>();
-                let tags=storage.tag_catalog(scope)?;
-                let favorites=storage.favorite_ids(scope)?;
-                Ok::<_,anyhow::Error>((page,tags,favorites,ratios))
-            }).await;
-            _ = this.update(cx, |view, cx| {
-                if generation != view.resource.history_generation { return; }
-                view.resource.loading_history = false;
-                match result {
+        self.resource.loading_history=true;self.resource.history_error=None;
+        let request=gallery_query::GalleryRequest{query,category,oldest,tag,favorites_only,similar,scope,before,append};
+        self.resource.history_generation=self.gallery_query.update(cx,|v,cx|v.request(storage,request,cx));
+        cx.notify();
+    }
+    pub(super) fn apply_gallery_result(&mut self,event:&gallery_query::GalleryResult,cx:&mut Context<Self>){
+                if event.generation != self.resource.history_generation { return; }
+                self.resource.loading_history = false;
+                match event.result.clone() {
                     Ok(((items, more, total), tags,favorites,ratios)) => {
-                        view.resource.favorites=favorites;
-                        view.resource.tag_catalog=tags;
-                        if append {
-                            let existing=view.resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
-                            view.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
+                        self.resource.favorites=favorites;
+                        self.resource.tag_catalog=tags;
+                        if event.append {
+                            let existing=self.resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
+                            self.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
                         } else {
-                            view.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
-                            if view.resource.selected_asset.as_ref().is_some_and(|a|!items.iter().any(|x|x.id==a.id)){
-                                view.resource.selected_asset=None;view.inspector_model.update(cx,|m,cx|m.reset(cx));
+                            self.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
+                            if self.resource.selected_asset.as_ref().is_some_and(|a|!items.iter().any(|x|x.id==a.id)){
+                                self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));
                             }
-                            view.resource.assets=items;
-                            view.resource.cached_thumbnails.clear();view.resource.ratios.clear();
+                            self.resource.assets=items;
+                            self.resource.cached_thumbnails.clear();self.resource.ratios.clear();
                         }
                         for (id,ratio,path) in ratios{
-                            view.resource.ratios.insert(id,ratio);view.resource.cached_thumbnails.insert(id,path);
+                            self.resource.ratios.insert(id,ratio);self.resource.cached_thumbnails.insert(id,path);
                         }
                         #[cfg(feature="qa")]
-                        if view.isolated_qa() && std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("hover"){
-                            view.resource.hover_asset=view.resource.assets.first().map(|a|a.id);
+                        if self.isolated_qa() && std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("hover"){
+                            self.resource.hover_asset=self.resource.assets.first().map(|a|a.id);
                         }
-                        view.resource.ratio_revision+=1;
-                        view.resource.preview_loading_batch=false;view.resource.thumbnails_task=None;
+                        self.resource.ratio_revision+=1;
+                        self.resource.preview_loading_batch=false;self.resource.thumbnails_task=None;
                         #[cfg(feature="qa")]
-                        if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF page_ready_ms={} count={}",view.resource.perf_start.elapsed().as_millis(),view.resource.assets.len());}
-                        view.resource.has_more = more;
-                        view.resource.total_count = total;
-                        view.refresh_thumbnails(cx);
+                        if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF page_ready_ms={} count={}",self.resource.perf_start.elapsed().as_millis(),self.resource.assets.len());}
+                        self.resource.has_more = more;
+                        self.resource.total_count = total;
+                        self.refresh_thumbnails(cx);
                     }
                     Err(error) => {
-                        if append{view.resource.page_cursors.pop();}else{view.resource.assets.clear();view.resource.has_more=false;}
-                        view.resource.history_error = Some(error.to_string());
+                        if event.append{self.resource.page_cursors.pop();}else{self.resource.assets.clear();self.resource.has_more=false;}
+                        self.resource.history_error = Some(error.to_string());
                     }
                 }
                 cx.notify();
-            });
-        }));
-        cx.notify();
     }
 
     pub(super) fn update_visible(&mut self,start:usize,end:usize,cx:&mut Context<Self>){
@@ -196,7 +161,7 @@ impl UploadDesk {
     }
 
     pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
-        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy{return;}
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx){return;}
         self.picker_pending=true;
         self.status="请选择相册备份位置…".into();cx.notify();
         let selection=cx.prompt_for_paths(PathPromptOptions{files:false,directories:true,multiple:false,prompt:Some("选择备份位置".into())});
@@ -306,7 +271,7 @@ impl UploadDesk {
     }
     pub(super) fn save_selected_tags(&mut self,cx:&mut Context<Self>){
         let model=self.inspector_model.read(cx);
-        if !model.ready||self.account.account_busy{return;}
+        if !model.ready||self.account_busy(cx){return;}
         let Some(id)=self.resource.selected_asset.as_ref().map(|a|a.id)else{return;};
         let text=model.input.read(cx).value().to_string();
         self.mutate_resource(mutations::Mutation::Tags(id,text),cx);
@@ -388,7 +353,7 @@ impl UploadDesk {
     pub(super) fn apply_batch_tags(&mut self, remove:bool,cx:&mut Context<Self>) {
         let ids=self.resource.assets.iter().filter(|a|self.resource.selected_ids.contains(&a.id)).map(|a|a.id).collect::<Vec<_>>();
         let text=self.resource.batch_tag_input.read(cx).value().to_string();
-        let scope=(!self.resource.all_accounts).then(||(self.account.config.provider().to_owned(),self.account.config.owner_id().to_owned()));
+        let scope=(!self.resource.all_accounts).then(||(self.config.provider().to_owned(),self.config.owner_id().to_owned()));
         if !ids.is_empty(){self.mutate_resource(mutations::Mutation::Batch(ids,scope,text,remove),cx);}
     }
 
