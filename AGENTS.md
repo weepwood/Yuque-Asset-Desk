@@ -232,3 +232,9 @@
 - ThumbnailModel 独立 retained Entity 管理12项批次、协作式取消、代际及完成尝试；分页追加不取消、不重试已失败项；整页刷新重置，离开图库暂停，返回恢复，迟到事件二次核对代际。取消后当前单项I/O仍可能完成并保留派生文件。图库展示/选择/布局和路径/比例映射仍由shell协调。
 - 详情复用已知本地预览路径，恢复时更新比例；账号切换调用 AlbumImageCache::clear 与原生 drop_image，保持192项LRU上限。缓存清理不触及永久微缩图和用户原文件。可视范围异常边界防护。
 - 本地 all-targets、static/diff、QA build、68 QA passed/0 failed/1 ignored。新增151项真实隔离SQLite与本地图片回归：分页保留失败记录、设置暂停、返回可恢复、2:1比例、详情复用、实际GPUI渲染缓存账号切换清零，原图及JPEG保留。7张实际渲染截图保存dist/design-research/thumbnail-after/，已查看浅色图库、720×600详情和离线查看器；不是实际用户素材。未做Windows真机、Release性能、长期内存测量或真实语雀；不新增依赖/schema/网络。
+
+## 后续设计：原生详情焦点与 Release 性能复验
+- PR #8 b00471f 的 CI 45547718069 成功且无合并冲突；继续同一分支，不改 main/冻结候选75c173b及正式v0.5.1。
+- 固定详情头部并独立滚动正文；统一空/多选/单选返回。独立 inspector_focus 与 YuqueInspector 关闭动作，窄窗打开/查看器返回聚焦详情，Esc/Ctrl/Cmd+I 关闭还焦图库；显式分类/标签/相似/恢复入口返回窄窗图库；窗口缩窄修正焦点，退出过渡不注册焦点路径。宽窗普通切换维持图库焦点。
+- 780×640原生GPUI测试增加滚动头部固定、Esc、Ctrl+I、预览返回及分类恢复路径，完整QA 68通过/0失败/1忽略，all-targets、QA debug/release build、static/diff通过。8张实际截图在dist/design-research/focus-after/，审查深浅详情和720×600详情。
+- 同一10k合成JPEG Release QA脚本复测：第一轮与截图任务重叠，CPU p95 grid/masonry 4.829/4.295ms、峰值RSS147.86/148.25MiB；独立重跑为2.064/1.577ms、138.47/143.14MiB，旧基线2.260/1.775ms、133.55/133.39MiB。重跑首屏103/100ms（旧142/115），加载600/450项，解码均192/192，无超时。三份JSON保存在上述目录，详见development-status。单次短测非硬件FPS，不能证明长期内存稳定或排除环境噪声；RSS较旧基线仍高，下一轮优先长程滚动、账号切换缓存/内存与性能定位。Windows设备离线，未做真实语雀、物理设备交互；没有新增依赖/schema。

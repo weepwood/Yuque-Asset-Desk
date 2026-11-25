@@ -16,7 +16,7 @@ pub(super) fn asset_menu(menu:PopupMenu,weak:WeakEntity<UploadDesk>,asset:Asset,
         .item(item("查看详情",IconName::PanelRight,|v,a,w,cx|{v.show_asset_details(a.clone(),w,cx)}))
         .item(item(if starred{"取消收藏"}else{"收藏"},IconName::Star,|v,a,_,cx|v.toggle_favorite(a,cx)))
         .item(item(if checked{"取消选择"}else{"选择"},IconName::Check,|v,a,w,cx|v.toggle_album_selection(a.id,w,cx)))
-        .when(asset.category=="image",|m|m.item(item("查找相似图片",IconName::File,|v,a,_,cx|v.find_similar(a.clone(),cx))))
+        .when(asset.category=="image",|m|m.item(item("查找相似图片",IconName::File,|v,a,w,cx|{v.find_similar(a.clone(),cx);v.focus_gallery_destination(w,cx);})))
 }
 impl UploadDesk {
     pub(super) fn toggle_album_selection(&mut self,id:i64,w:&mut Window,cx:&mut Context<Self>){
@@ -40,17 +40,17 @@ impl UploadDesk {
                 .when(self.queue.read(cx).busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
             .child(Button::new("view-upload-jobs").small().ghost().label("查看任务").on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))
     }
-    fn navigate(&mut self,category:&'static str,favorites:bool,cx:&mut Context<Self>){
+    fn navigate(&mut self,category:&'static str,favorites:bool,w:&mut Window,cx:&mut Context<Self>){
         self.navigate_page(Page::Gallery,cx);
         self.resource.similar_to=None;self.resource.tag_filter=None;self.resource.favorites_only=favorites;self.resource.category=category;
-        self.persist_preferences(cx);self.reset_history(cx);
+        self.persist_preferences(cx);self.reset_history(cx);self.focus_gallery_destination(w,cx);
     }
     pub(super) fn navigation_rail(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
         let mut rail=div().size_full().flex().flex_col().items_center().gap_2().p_2().bg(p.sidebar).border_r_1().border_color(p.line)
             .child(div().debug_selector(||"expand-sidebar".into()).child(Button::new("expand-sidebar").ghost().icon(IconName::PanelLeftOpen).tooltip("展开侧栏").on_click(cx.listener(|v,_,_,cx|{v.sidebar_collapsed=false;cx.notify();}))));
         for (label,category,fav,icon) in [("全部资源","",false,IconName::FolderOpen),("图片","image",false,IconName::GalleryVerticalEnd),("收藏","",true,IconName::Star),("视频","video",false,IconName::Play),("附件","attachment",false,IconName::File)]{
-            rail=rail.child(Button::new(label).ghost().icon(icon).tooltip(label).selected(self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.category==category&&(!category.is_empty()||self.resource.favorites_only==fav)).on_click(cx.listener(move|v,_,_,cx|v.navigate(category,fav,cx))));
+            rail=rail.child(Button::new(label).ghost().icon(icon).tooltip(label).selected(self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.category==category&&(!category.is_empty()||self.resource.favorites_only==fav)).on_click(cx.listener(move|v,_,w,cx|v.navigate(category,fav,w,cx))));
         }
         rail.child(div().flex_1())
             .child(Button::new("rail-account").ghost().icon(IconName::User).tooltip("账号管理").selected(self.page==Page::Account).on_click(cx.listener(|v,_,w,cx|v.command(Command::Navigate(Page::Account),w,cx))))
@@ -65,7 +65,7 @@ impl UploadDesk {
         for (id,label,cat,fav,icon) in rows{
             let active=self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.category==cat&&(!cat.is_empty()||self.resource.favorites_only==fav);
             nav=nav.child(div().debug_selector(move||id.into()).child(SidebarMenuItem::new(label).icon(icon).active(active)
-                .on_click(cx.listener(move|v,_,_,cx|v.navigate(cat,fav,cx))).render(id,w,cx)));
+                .on_click(cx.listener(move|v,_,w,cx|v.navigate(cat,fav,w,cx))).render(id,w,cx)));
         }
         div().id("navigation-sidebar").w(px(self.spacing().sidebar_width(narrow))).flex_shrink_0().h_full()
             .flex().flex_col().p(px(self.spacing().nav_pad)).bg(p.sidebar).border_r_1().border_color(p.line)
@@ -193,7 +193,7 @@ impl UploadDesk {
         div().id("browse-context").h(px(30.)).flex_shrink_0().flex().items_center().gap_2().px_2().rounded_md().bg(p.surface)
             .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.text).child(label.clone()))
             .child(div().debug_selector(||"browse-clear".into()).child(Button::new("browse-clear").small().ghost().label(action_label).tooltip(label)
-                .on_click(cx.listener(|v,_,w,cx|{if v.resource.similar_to.is_some(){v.exit_similar(cx);}else{v.clear_browse_filters(w,cx);}}))))
+                .on_click(cx.listener(|v,_,w,cx|{if v.resource.similar_to.is_some(){v.exit_similar(cx);}else{v.clear_browse_filters(w,cx);}v.focus_gallery_destination(w,cx);}))))
     }
 
     pub(super) fn selection_toolbar(&self,cx:&mut Context<Self>)->impl IntoElement{

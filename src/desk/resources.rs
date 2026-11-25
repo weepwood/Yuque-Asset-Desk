@@ -258,7 +258,7 @@ impl UploadDesk {
         cx.notify();
     }
     pub(super) fn show_asset_details(&mut self,asset:Asset,window:&mut Window,cx:&mut Context<Self>){
-        if !self.resource.selected_ids.contains(&asset.id){self.resource.selected_ids.clear();self.resource.selected_ids.insert(asset.id);self.resource.selection_anchor=Some(asset.id);}self.select_asset(asset,window,cx);self.immersive=false;self.inspector_open=true;cx.notify();
+        if !self.resource.selected_ids.contains(&asset.id){self.resource.selected_ids.clear();self.resource.selected_ids.insert(asset.id);self.resource.selection_anchor=Some(asset.id);}self.select_asset(asset,window,cx);self.set_inspector(true,true,window,cx);
     }
     pub(super) fn click_tile(&mut self,asset:Asset,count:usize,modifiers:Modifiers,window:&mut Window,cx:&mut Context<Self>){
         let order=self.resource.assets.iter().map(|a|a.id).collect::<Vec<_>>();
@@ -455,7 +455,9 @@ impl UploadDesk {
         self.resource.pending_preview=None;
         self.resource.large_preview_open=false;
         self.resource.drag_at=None;
-        self.resource.gallery_focus.focus(window,cx);
+        if self.inspector_open&&!self.immersive&&window.viewport_size().width<px(1000.){
+            self.resource.inspector_focus.focus(window,cx);
+        }else{self.resource.gallery_focus.focus(window,cx);}
         if let Some((a,ids,anchor))=self.resource.viewer_return.take(){
             self.select_asset(a,window,cx);self.resource.selected_ids=ids;self.resource.selection_anchor=anchor;
         }else if let Some(a)=&self.resource.selected_asset{self.resource.selected_ids.clear();self.resource.selected_ids.insert(a.id);self.resource.selection_anchor=Some(a.id);}

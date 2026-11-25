@@ -114,6 +114,7 @@ struct ResourceState {
     selection_anchor:Option<i64>,
     batch_tag_open:bool,
     gallery_focus:FocusHandle,
+    inspector_focus:FocusHandle,
     preview_focus:FocusHandle,
     zoom_channel:usize,
     displayed_zoom:f32,
@@ -289,6 +290,10 @@ impl UploadDesk {
             }
         });
         let resize_subscription=cx.observe_window_bounds(window,|v,w,cx|{
+            if v.page==Page::Gallery&&v.inspector_open&&!v.immersive&&!v.resource.large_preview_open
+                &&w.viewport_size().width<px(1000.)&&!v.resource.inspector_focus.contains_focused(w,cx){
+                v.resource.inspector_focus.focus(w,cx);
+            }
             if w.is_maximized() || w.is_fullscreen(){return;}
             let size=w.bounds().size;
             v.prefs.width=f32::from(size.width).clamp(720.,3840.);v.prefs.height=f32::from(size.height).clamp(600.,2160.);
@@ -380,7 +385,7 @@ impl UploadDesk {
                 preview_loading: false,
                 large_preview_path: None,
                 large_preview_open: false,
-                selection_anchor:None,batch_tag_open:false,gallery_focus:cx.focus_handle().tab_stop(true),preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
+                selection_anchor:None,batch_tag_open:false,gallery_focus:cx.focus_handle().tab_stop(true),inspector_focus:cx.focus_handle().tab_stop(true),preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
                 preview_error: None,
                 search_input,
                 category: "",

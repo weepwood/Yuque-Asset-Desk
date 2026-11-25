@@ -20,13 +20,13 @@ impl UploadDesk {
                 .on_click(cx.listener(|v,_,_,cx|{v.resource.tags_expanded=!v.resource.tags_expanded;cx.notify();})).render("tags-toggle",w,cx));
         if self.resource.tags_expanded {
             tree=tree.child(SidebarMenuItem::new("不限标签").active(self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.tag_filter.is_none())
-                .on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Gallery,cx);v.resource.similar_to=None;v.resource.tag_filter=None;v.reset_history(cx);})).render("tag-all",w,cx));
+                .on_click(cx.listener(|v,_,w,cx|{v.navigate_page(Page::Gallery,cx);v.resource.similar_to=None;v.resource.tag_filter=None;v.reset_history(cx);v.focus_gallery_destination(w,cx);})).render("tag-all",w,cx));
             for (i,path) in nodes.into_iter().enumerate() {
                 let depth=path.matches('/').count().min(5);
                 let title=path.rsplit('/').next().unwrap_or(&path).to_string();
                 let selected=self.page==Page::Gallery&&self.resource.similar_to.is_none()&&self.resource.tag_filter.as_ref()==Some(&path);
                 tree=tree.child(div().pl(px(depth as f32*10.+8.)).child(SidebarMenuItem::new(title).icon(IconName::FolderOpen).active(selected)
-                    .on_click(cx.listener(move |v,_,_,cx|{v.navigate_page(Page::Gallery,cx);v.resource.similar_to=None;v.resource.tag_filter=Some(path.clone());v.reset_history(cx);})).render(("tag-node",i),w,cx)));
+                    .on_click(cx.listener(move |v,_,w,cx|{v.navigate_page(Page::Gallery,cx);v.resource.similar_to=None;v.resource.tag_filter=Some(path.clone());v.reset_history(cx);v.focus_gallery_destination(w,cx);})).render(("tag-node",i),w,cx)));
             }
         }
         tree
@@ -106,11 +106,13 @@ impl UploadDesk {
     }
 
     pub(super) fn inspector(&self, narrow: bool, active:bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = div().id("inspector").h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad)).when(!narrow, |d| d.w(px(self.spacing().inspector)).flex_shrink_0()).when(narrow, |d| d.w_full()).bg(self.palette().sidebar).border_l_1().border_color(self.palette().line);
+        let header=div().id("inspector-header").debug_selector(||"inspector-header".into()).flex_shrink_0().flex().items_center().justify_between()
+            .child(div().font_semibold().child(if self.resource.selected_ids.len()>1{"批量选择"}else if self.resource.selected_asset.is_some(){"详情"}else{"资源详情"}))
+            .child(Button::new("close-inspector").disabled(!active).ghost().small().icon(if narrow{IconName::ArrowLeft}else{IconName::PanelRightClose})
+                .label(if narrow{"返回图库"}else{""}).tooltip("关闭详情 · Esc").on_click(cx.listener(|v,_,w,cx|v.set_inspector(false,false,w,cx))));
+        let mut panel=div().id("inspector-body").flex_1().min_h(px(0.)).min_w(px(0.)).flex().flex_col().gap(px(self.spacing().section));
         if self.resource.selected_ids.len()>1{
-            panel=panel.child(div().flex().items_center().justify_between()
-                .child(div().font_semibold().child("批量选择"))
-                .child(Button::new("close-inspector-multi").disabled(!active).ghost().small().icon(IconName::PanelRightClose).tooltip("关闭详情").on_click(cx.listener(|v,_,w,cx|{v.inspector_open=false;v.resource.gallery_focus.focus(w,cx);cx.notify();}))))
+            panel=panel
                 .child(div().text_lg().font_medium().child(format!("{} 项资源",self.resource.selected_ids.len())))
                 .child(Button::new("multi-copy").disabled(!active).small().label("复制链接").on_click(cx.listener(|v,_,_,cx|v.copy_selected(false,cx))))
                 .child(Button::new("multi-md").disabled(!active).small().ghost().label("复制 Markdown").on_click(cx.listener(|v,_,_,cx|v.copy_selected(true,cx))))
@@ -118,15 +120,13 @@ impl UploadDesk {
         }else if let Some(asset) = &self.resource.selected_asset {
             let url_asset = asset.clone();
             let md_asset = asset.clone();
-            panel = panel.child(div().flex().items_center().justify_between().child(div().text_size(px(self.spacing().title)).font_semibold().child("详情"))
-                .child(Button::new("close-inspector").disabled(!active).ghost().small().icon(if narrow{IconName::ArrowLeft}else{IconName::PanelRightClose}).label(if narrow{"返回图库"}else{""}).tooltip("关闭详情").on_click(cx.listener(|v,_,w,cx|{v.inspector_open=false;v.resource.gallery_focus.focus(w,cx);cx.notify();}))));
             let type_label=match asset.category.as_str(){"image"=>"图片","video"=>"视频",_=>"附件"};
             panel=panel.child(div().flex().flex_col().gap_1().child(div().font_semibold().child(asset.name.clone()))
                 .child(div().text_xs().text_color(self.palette().muted).child(format!("{type_label} · {}",file_size(asset.bytes)))));
             if asset.category=="image"{
                 panel=panel.child(div().h(px(if narrow{144.}else if self.prefs.comfortable{208.}else{184.})).w_full().rounded(px(design::CONTROL_RADIUS)).overflow_hidden().bg(self.palette().subtle).flex().items_center().justify_center()
                     .child(if let Some(path)=&self.resource.thumbnail_path{img(path.clone()).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element()}else{div().text_xs().text_color(self.palette().muted).child(if self.resource.preview_loading{"读取本地预览…"}else{"无本地预览"}).into_any_element()}))
-                    .child(Button::new("large-preview").small().ghost().icon(IconName::Maximize).label("查看图片").disabled(!active||self.resource.preview_loading).on_click(cx.listener(|v,_,w,cx|v.open_large_preview(w,cx))));
+                    .child(div().debug_selector(||"detail-preview".into()).child(Button::new("large-preview").small().ghost().icon(IconName::Maximize).label("查看图片").disabled(!active||self.resource.preview_loading).on_click(cx.listener(|v,_,w,cx|v.open_large_preview(w,cx)))));
                 if self.resource.thumbnail_path.is_none()&&!self.resource.preview_loading{
                     panel=panel.child(Button::new("preview-image").disabled(!active).small().label("重新读取本地预览").on_click(cx.listener(|v,_,_,cx|v.load_preview(cx))));
                     if let Some(error)=&self.resource.preview_error{panel=panel.child(div().text_xs().text_color(self.palette().error).child(error.clone()));}
@@ -145,7 +145,7 @@ impl UploadDesk {
                 .child(Button::new("detail-favorite").disabled(!active||self.resource_write_busy).small().ghost().icon(if self.resource.favorites.contains(&asset.id){IconName::StarFill}else{IconName::Star}).label(if self.resource.favorites.contains(&asset.id){"取消收藏"}else{"收藏资源"})
                     .on_click(cx.listener(move |v,_,_,cx|v.toggle_favorite(&favorite_asset,cx))))
                 .when(asset.category=="image",|d|d.child(Button::new("detail-similar").disabled(!active).small().ghost().icon(IconName::Search).label("相似图片")
-                    .on_click(cx.listener(move |v,_,_,cx|v.find_similar(similar_asset.clone(),cx))))));
+                    .on_click(cx.listener(move |v,_,w,cx|{v.find_similar(similar_asset.clone(),cx);v.focus_gallery_destination(w,cx);})))));
             panel=panel
                 .child(div().h(px(1.)).bg(self.palette().line))
                 .child(div().text_xs().font_medium().text_color(self.palette().muted).child("标签管理"));
@@ -168,10 +168,14 @@ impl UploadDesk {
                 .child(div().text_xs().text_color(self.palette().muted).truncate().child(format!("File key: {}",asset.filekey)))
                 .child(div().text_xs().text_color(self.palette().muted).truncate().child(asset.url.clone()));
         } else {
-            panel = panel.child(div().flex().justify_between().items_center().child("资源详情").child(Button::new("close-inspector-empty").disabled(!active).ghost().small().icon(IconName::PanelRightClose).tooltip("关闭详情").on_click(cx.listener(|v,_,w,cx|{v.inspector_open=false;v.resource.gallery_focus.focus(w,cx);cx.notify();}))))
-                .child(div().text_sm().child("选择列表或网格中的资源，查看属性及复制链接。"));
+            panel = panel.child(div().text_sm().child("选择列表或网格中的资源，查看属性及复制链接。"));
         }
-        panel.overflow_y_scrollbar()
+        div().id("inspector").when(active,|d|d.track_focus(&self.resource.inspector_focus).key_context("YuqueInspector"))
+            .on_action(cx.listener(|v,_:&shell::InspectorClose,w,cx|{if v.inspector_open{v.set_inspector(false,false,w,cx);}}))
+            .h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad))
+            .when(!narrow, |d| d.w(px(self.spacing().inspector)).flex_shrink_0()).when(narrow, |d| d.w_full())
+            .bg(self.palette().sidebar).border_l_1().border_color(self.palette().line)
+            .child(header).child(panel.overflow_y_scrollbar())
     }
 }
 
@@ -591,7 +595,7 @@ impl Render for UploadDesk {
                                     .description(EmptyDescription::new().child(if initial{"拖入文件或点击上传，即可离线浏览、复制链接。"}else{"尝试调整搜索词或筛选条件。"})))
                                     .when(initial,|e|e.child(Button::new("empty-upload").small().primary().icon(IconName::Plus).label("上传文件")
                                         .disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))))
-                                    .when(!initial,|e|e.child(div().debug_selector(||"empty-clear".into()).child(Button::new("empty-clear").small().label(if self.resource.similar_to.is_some(){"返回图库"}else{"清除条件"}).on_click(cx.listener(|v,_,w,cx|{if v.resource.similar_to.is_some(){v.exit_similar(cx);}else{v.clear_browse_filters(w,cx);}}))))))
+                                    .when(!initial,|e|e.child(div().debug_selector(||"empty-clear".into()).child(Button::new("empty-clear").small().label(if self.resource.similar_to.is_some(){"返回图库"}else{"清除条件"}).on_click(cx.listener(|v,_,w,cx|{if v.resource.similar_to.is_some(){v.exit_similar(cx);}else{v.clear_browse_filters(w,cx);}v.focus_gallery_destination(w,cx);}))))))
                             })
                             .overflow_hidden(),
                     )
