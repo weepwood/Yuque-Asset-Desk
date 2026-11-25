@@ -195,3 +195,9 @@
 - 61 QA pass/0 fail/1 ignored、all-targets、QA build、static/diff；三文件批次仅一次图库刷新、侧栏/沉浸真实渲染反向和减动效、锁竞争后退出条件回归；15张不同界面截图（两次采集，账号与设置最后以0.7.0构建复验），dist/design-research/runtime-after/；8阶段实际 GPUI 注入轨迹 docs/performance/v0.7-runtime-path.log；macOS 上传/备份选择窗进程存活与回调、隔离 reset helper 通过（无物理点选/真实凭据）。未改用户数据、原文件、离线微缩图、数据库schema或第三方依赖。
 - 发布前必须确认新 PR 双平台CI与产物、Windows真机、macOS正式DMG、实际凭据/语雀测试的授权边界以及性能证据；候选未正式发布。不可将 Gallery 全部状态、所有平台强制退出及所有视觉路径表述为完全验收。
 - 本批补充 Release A/B：固定 54b3831 独立 worktree 与0.7.0候选顺序构建/同脚本万级合成数据，网格 P50/P95 2.103/5.011→1.200/2.260ms RSS149.55→133.55MiB，瀑布流2.624/4.732→1.456/1.775ms RSS147.16→133.39MiB；最终600/450条一致、各120采样、缓存192、无超时。原始报告 docs/performance/v0.7-runtime-{baseline,candidate}.json 和 comparison.md。单次同条件对照不是受控统计或FPS。
+
+## V0.7.0 发布收口（固定候选）
+- PR #7 候选 75c173bf0630d6eed2cdcb07d1a6fa3f6e4de996，CI 45541767866 双平台成功，合并 main b58ee1b；合并树与候选完全一致。冻结功能，当前正式版本仍 v0.5.1。
+- 原始 CI Windows x64 ZIP 9422058 bytes / macOS ARM64 DMG 9026105 bytes 与两份原始 SHA256 均验收，保存 dist/release-audit-v0.7.0/ci-artifacts/，四项摘要 docs/release/v0.7.0-verified-assets.json；Windows 校验文件 CRLF 导致 Mac shasum -c 路径误判，Python 独立验证及 verify-only 均通过，未改写原始文件。
+- macOS 正式候选 DMG 只读挂载、ad-hoc 签名、真实隔离启动、1160×828 窗口、空 Demo DB、tray/hotkey 注册均通过；非阻塞 sandbox_extension 警告。无 Gatekeeper 公证/真实账号/物理点选。
+- Windows CI 单测、Release、PE/ZIP 与版本元数据成功；Desktop Commander Windows 设备离线，尚未真机交互验收。按前轮发布门禁暂不创建 Tag/Release，保留原始产物、RELEASE-NOTES.md 和详细验收记录 docs/release/v0.7.0-acceptance.md。完成剩余验收（或用户明确调整门禁）后固定原候选、发布四项资产、重新下载验证与公开更新接口；不重跑已通过的全量本地测试，不扩大功能。

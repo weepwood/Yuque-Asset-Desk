@@ -216,3 +216,6 @@
 - 任务固定列、账号紧凑行、底部对齐完整缩略图，侧栏/沉浸保留空间至终态、快速反向、减少动效及焦点恢复。61 QA 成功、1公网默认忽略、all-targets/QA build/static/diff；15张不同真实渲染图（0.7候选账号/设置复验），8阶段操作 trace。macOS upload/backup native panel 存活与回调、隔离 reset helper 成功，无真实账号/真实数据/物理鼠标或 Windows 真机。新增依赖与schema迁移均为零。
 - 待完成：候选双平台CI/安装包验收、受控性能对照、Windows真机及真实凭据边界、正式 Tag/Release。不能把架构任务全量迁移或系统强制退出可靠性视为已完全实现。
 - 已完成本批 Release A/B 同条件采样：54b3831独立worktree，候选0.7.0；网格P95 5.011→2.260ms（RSS149.55→133.55MiB），瀑布流4.732→1.775ms（RSS147.16→133.39MiB），各120样本、同布局最终加载600/450条一致、缓存192、无超时。原始JSON及比较表见 docs/performance/v0.7-runtime-comparison.md。单次对照不能推断因果、持续FPS或Windows表现。正式双平台CI/产物验收仍待本PR。
+
+## V0.7.0 发布候选收口
+PR #7 已通过双平台 CI 45541767866 并合并 b58ee1b（源码树等同固定候选75c173b）。原始双平台包及SHA256验证通过，macOS正式DMG隔离启动成功；Windows真机离线，未完成实际运行与交互验收，保持 v0.5.1 最新正式版本，不创建新Tag/Release。验收详情与四项原始资产摘要见 docs/release/v0.7.0-acceptance.md、v0.7.0-verified-assets.json；复用原始候选产物，不重复全量测试或新增功能。
