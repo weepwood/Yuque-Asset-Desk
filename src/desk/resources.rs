@@ -321,7 +321,8 @@ impl UploadDesk {
         self.mutate_resource(mutations::Mutation::Tags(id,text),cx);
     }
 
-    pub(super) fn load_preview(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn load_preview(&mut self, cx: &mut Context<Self>) {self.repair_preview(false,cx);}
+    pub(super) fn repair_preview(&mut self,remote:bool,cx:&mut Context<Self>){
         let Some(asset) = self.resource.selected_asset.clone() else { return; };
         if asset.category != "image" || self.resource.preview_loading { return; }
         let storage = self.storage.clone();
@@ -330,7 +331,7 @@ impl UploadDesk {
         self.resource.preview_error = None;
         self.resource.preview_task = Some(cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
-                let path=preview::restore_local(&storage,&asset)?;
+                let path=if remote{preview::recover_remote(&storage,&asset)?}else{preview::restore_local(&storage,&asset)?};
                 let (w,h)=image::image_dimensions(&path)?;
                 Ok::<_,anyhow::Error>((path,w as f32/h.max(1) as f32))
             }).await;
@@ -341,7 +342,10 @@ impl UploadDesk {
                     Ok((path,ratio)) => {
                         view.resource.cached_thumbnails.insert(id, path.clone());
                         if view.resource.ratios.insert(id,ratio)!=Some(ratio){view.resource.ratio_revision+=1;view.resource.masonry_signature=0;}
+                        view.resource.image_cache.update(cx,|cache,cx|cache.clear(cx));
+                        if view.resource.large_preview_open{view.resource.large_preview_path=Some(path.clone());}
                         view.resource.thumbnail_path = Some(path);
+                        view.refresh_jobs(cx);
                     },
                     Err(error) => view.resource.preview_error = Some(error.to_string()),
                 }

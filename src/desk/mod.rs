@@ -338,6 +338,13 @@ impl UploadDesk {
                 Started=>v.first_jobs(cx),
                 Refresh=>v.refresh_jobs(cx),
                 ResourceChanged=>v.reload(cx),
+                ImageCommitted=>{
+                    // Refresh promptly at the newest first page; do not jump a
+                    // user away from deep browsing or a fullscreen viewer.
+                    if v.page==Page::Gallery&&!v.resource.large_preview_open&&!v.resource.loading_history
+                        &&!v.resource.oldest&&v.resource.assets.len()<=PAGE_SIZE&&v.resource.visible_range.0<=12
+                        &&v.resource.similar_to.is_none(){v.reload(cx);}
+                },
                 Authorization=>v.account.update(cx,|a,cx|{a.session_status="上传未获授权：请在设置检查会话及 CSRF Token，再手动恢复任务".into();cx.notify();}),
                 Finished(body)=>if v.desktop_enabled{cx.show_system_notification(SystemNotification{tag:"yuque-upload-batch".into(),title:"Yuque Asset Desk".into(),body:body.clone().into(),actions:vec![]});},
             }

@@ -159,11 +159,11 @@ impl UploadDesk{
                 .child(Button::new("scan-data").small().label(if self.data_scan_busy{"统计中…"}else{"统计空间"}).disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.refresh_data(cx)))));
         if let Some(u)=&self.data_usage{
             let mut stats=div().rounded_md().bg(p.surface).p_3().flex().flex_col().gap_2();
-            for (label,n) in [("数据库与日志",u.database),("永久离线微缩图",u.previews),("旧版预览",u.legacy),("剪贴板暂存",u.clipboard)]{
+            for (label,n) in [("数据库与日志",u.database),("永久离线微缩图",u.previews),("旧版预览",u.legacy),("剪贴板暂存",u.clipboard),("上传暂存",u.staging)]{
                 stats=stats.child(div().flex().justify_between().items_center().child(div().text_xs().text_color(p.muted).child(label)).child(div().text_sm().child(bytes(n))));
             }
             panel=panel.child(stats.child(div().h(px(1.)).bg(p.line))
-                .child(div().flex().justify_between().child("已识别文件合计").child(bytes(u.database.saturating_add(u.previews).saturating_add(u.legacy).saturating_add(u.clipboard))))
+                .child(div().flex().justify_between().child("已识别文件合计").child(bytes(u.database.saturating_add(u.previews).saturating_add(u.legacy).saturating_add(u.clipboard).saturating_add(u.staging))))
                 .child(div().flex().justify_between().child("可安全清理").child(format!("{} · {} 项",bytes(u.reclaimable),u.candidates)))
                 .child(div().text_xs().text_color(p.muted).child(format!("未完成任务 {} · 已保存账号 {}",u.unfinished,u.accounts))));
         }

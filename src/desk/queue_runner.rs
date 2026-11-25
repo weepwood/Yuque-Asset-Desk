@@ -1,7 +1,7 @@
 //! Owns serial queue execution and progress; emits typed shell events.
 use super::*;
 use queue_prepare::{Prepare,Prepared};
-pub(super) enum QueueEvent { Message(String),Started,Refresh,ResourceChanged,Authorization,Finished(String) }
+pub(super) enum QueueEvent { Message(String),Started,Refresh,ResourceChanged,ImageCommitted,Authorization,Finished(String) }
 pub(super) struct QueueRunner {
     pub(super) queue_control: Arc<AtomicU8>,
     pub(super) transfer: Arc<uploader::TransferProgress>,
@@ -163,14 +163,14 @@ impl QueueRunner{
                 });
                 let result = cx.background_spawn(async move {
                     storage.job_state(job_id, "running", "").map_err(|error| (error.to_string(),None))?;
-                    let result = uploader::upload_with_progress(&upload_path, &config, &storage, progress.clone())
-                        .map(|out| (out.duplicate, out.item.provider))
+                    let result = uploader::upload_with_progress(&upload_path, &config, &storage, progress.clone(),Some(job_id))
+                        .map(|out| (out.duplicate, out.item.provider,out.preview_error,out.item.category=="image"))
                         .map_err(|error| error.to_string());
                     let (state, error) = match &result {
                         Ok(_) => ("done", ""),
                         Err(error) => (uploader::failure_state(&progress), error.as_str()),
                     };
-                    storage.job_state(job_id, state, error).map_err(|_| ("远端结果待核实：任务结果保存失败".to_string(),Some(uploader::QueueStop::Unknown)))?;
+                    if result.is_err(){storage.job_state(job_id, state, error).map_err(|_| ("远端结果待核实：任务结果保存失败".to_string(),Some(uploader::QueueStop::Unknown)))?;}
                     if state == "unknown" {
                         return Err((format!("远端结果待核实：{error}"),Some(uploader::QueueStop::Unknown)));
                     }
@@ -184,14 +184,16 @@ impl QueueRunner{
                 _ = this.update(cx, |view, cx| {
                     view.queue_count = total - index - 1;
                     let filename = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+                    let preview_warning=result.as_ref().ok().and_then(|(_,_,e,_)|e.clone());
+                    let image_committed=result.as_ref().is_ok_and(|(_,_,_,image)|*image);
                     let message = match result {
-                        Ok((true, _)) => {
+                        Ok((true, _, preview,_)) => {
                             view.duplicates += 1;
-                            "复用历史链接".to_string()
+                            preview.map_or_else(||"复用历史链接".to_string(),|e|format!("复用历史链接；预览失败：{e}"))
                         }
-                        Ok((false, provider)) => {
+                        Ok((false, provider, preview,_)) => {
                             view.succeeded += 1;
-                            if provider == "demo" { "已保存本地记录".into() } else { "上传成功".into() }
+                            if let Some(e)=preview{format!("上传已记录；预览失败：{e}")}else if provider == "demo" { "已保存本地记录".into() } else { "上传成功".into() }
                         }
                         Err((error,reason)) => {
                             if reason==Some(uploader::QueueStop::Authorization){
@@ -215,11 +217,13 @@ impl QueueRunner{
                             };
                         }
                     }
+                    if let Some(error)=preview_warning{status.push_str(&format!(" · 预览失败：{error}"));}
                     cx.emit(QueueEvent::Message(status));
                     if view.queue_count==0{cx.emit(QueueEvent::Finished(format!("本批结束：新增 {} · 复用 {} · 失败 {}",view.succeeded,view.duplicates,view.failed.len())));}
                     view.active_job = None;
                     cx.emit(QueueEvent::Refresh);
                     if view.queue_count==0{cx.emit(QueueEvent::ResourceChanged);}
+                    else if image_committed{cx.emit(QueueEvent::ImageCommitted);}
                     cx.notify();
                 });
             }

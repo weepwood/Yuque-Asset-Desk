@@ -4,7 +4,7 @@ use anyhow::{Context,Result,ensure};
 use sha2::{Digest,Sha256};
 use std::{io::{Cursor,Read},path::Path, sync::Mutex,time::Duration};
 const INPUT:u64=32*1024*1024;
-const PIXELS:u64=16_000_000;
+const PIXELS:u64=24_000_000;
 const EDGE:u32=2560;
 static WORK:Mutex<()>=Mutex::new(());
 #[cfg(test)]
@@ -24,14 +24,20 @@ fn verified(bytes:&[u8],asset:&Asset)->Result<()>{
     Ok(())
 }
 fn decode(bytes:Vec<u8>,asset:&Asset,remote:bool)->Result<QualityImage>{
-    verified(&bytes,asset)?;
+    if !remote{verified(&bytes,asset)?;}
+    if crate::preview::is_svg(&bytes){
+        let (decoded,width,height)=crate::preview::raster_svg(&bytes,EDGE)?;
+        let mut rgba=decoded.into_rgba8();let (shown_width,shown_height)=rgba.dimensions();
+        for p in rgba.pixels_mut(){p.0.swap(0,2);}
+        return Ok(QualityImage{image:std::sync::Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(rgba)])),width,height,shown_width,shown_height,remote});
+    }
     let reader=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
     let format=reader.format().context("无法识别图片格式")?;
     ensure!(matches!(format,image::ImageFormat::Png|image::ImageFormat::Jpeg|image::ImageFormat::WebP|image::ImageFormat::Gif|image::ImageFormat::Bmp),"不支持该预览格式");
     let (width,height)=reader.into_dimensions()?;
-    ensure!(width>0&&height>0&&width<=8192&&height<=8192&&u64::from(width)*u64::from(height)<=PIXELS,"图片超过安全解码限制（1600 万像素 / 单边 8192）");
+    ensure!(width>0&&height>0&&width<=16384&&height<=16384&&u64::from(width)*u64::from(height)<=PIXELS,"图片超过安全解码限制（2400 万像素 / 单边 16384）");
     let mut reader=image::ImageReader::with_format(Cursor::new(bytes),format);
-    let mut limits=image::Limits::default();limits.max_image_width=Some(8192);limits.max_image_height=Some(8192);limits.max_alloc=Some(96*1024*1024);reader.limits(limits);
+    let mut limits=image::Limits::default();limits.max_image_width=Some(16384);limits.max_image_height=Some(16384);limits.max_alloc=Some(128*1024*1024);reader.limits(limits);
     let decoded=reader.decode()?;
     let decoded=if width>EDGE||height>EDGE{decoded.resize(EDGE,EDGE,image::imageops::FilterType::Triangle)}else{decoded};
     let mut rgba=decoded.into_rgba8();
@@ -62,7 +68,7 @@ fn fetch(client:&reqwest::blocking::Client,url:url::Url)->Result<Vec<u8>>{
     ensure!(r.content_length().is_none_or(|n|n<=INPUT),"原图超过 32 MiB");
     read_bounded(r).map_err(|_|anyhow::anyhow!("原图读取失败或超过 32 MiB"))
 }
-fn download(asset:&Asset)->Result<Vec<u8>>{
+pub(crate) fn download(asset:&Asset)->Result<Vec<u8>>{
     let url=remote_url(&asset.url)?;
     let client=client_builder().build().map_err(|_|anyhow::anyhow!("原图请求初始化失败"))?;
     fetch(&client,url)
@@ -127,12 +133,13 @@ mod tests{
     fn remote_scope_and_limits(){
         // The limit is checked before decoding or allocating pixel buffers.
         let mut bytes=Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(8193,1)).write_to(&mut Cursor::new(&mut bytes),image::ImageFormat::Png).unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(16385,1)).write_to(&mut Cursor::new(&mut bytes),image::ImageFormat::Png).unwrap();
         let a=Asset{id:1,name:"wide.png".into(),bytes:bytes.len() as i64,category:"image".into(),provider:"demo".into(),owner_id:"local".into(),url:String::new(),sha256:hex::encode(Sha256::digest(&bytes)),filekey:String::new(),created_at:String::new()};
         assert!(decode(bytes,&a,false).is_err());
         let mut bytes=Vec::new();
         image::DynamicImage::ImageRgb8(image::RgbImage::new(3000,1000)).write_to(&mut Cursor::new(&mut bytes),image::ImageFormat::Png).unwrap();
-        let mut a=a;a.sha256=hex::encode(Sha256::digest(&bytes));
+        let a=a;
+        assert!(decode(bytes.clone(),&a,false).is_err());
         let q=decode(bytes,&a,true).unwrap();assert_eq!((q.width,q.height,q.shown_width,q.shown_height),(3000,1000,2560,853));
 
         assert!(remote_url("https://cdn.nlark.com/yuque/0/a.png#x").is_ok());

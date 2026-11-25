@@ -23,6 +23,7 @@ pub struct Job {
     pub path: PathBuf,
     pub state: String,
     pub error: String,
+    pub preview:Option<(String,String)>,
 }
 
 #[derive(Clone)]
@@ -65,6 +66,24 @@ impl Storage {
              CREATE TABLE IF NOT EXISTS asset_favorites (
                  asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE
              );
+             CREATE TABLE IF NOT EXISTS asset_sources (
+                 asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                 path TEXT NOT NULL, PRIMARY KEY(asset_id,path)
+             );
+             CREATE TABLE IF NOT EXISTS asset_preview_state (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+                 state TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS upload_job_assets (
+                 job_id INTEGER PRIMARY KEY REFERENCES upload_jobs(id) ON DELETE CASCADE,
+                 asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS upload_receipts (
+                 job_id INTEGER PRIMARY KEY REFERENCES upload_jobs(id) ON DELETE CASCADE,
+                 name TEXT NOT NULL, bytes INTEGER NOT NULL, category TEXT NOT NULL,
+                 provider TEXT NOT NULL, owner_id TEXT NOT NULL, url TEXT NOT NULL,
+                 filekey TEXT NOT NULL, sha256 TEXT NOT NULL, source TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS asset_visual (
                  asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
                  hash INTEGER NOT NULL
@@ -82,6 +101,8 @@ impl Storage {
             UPDATE upload_jobs SET state='unknown',error='上次请求结果未知，请先核实远端' WHERE provider='yuque' AND state='running';
             UPDATE upload_jobs SET state='paused' WHERE provider='demo' AND state='running';
             COMMIT;")?;
+        drop(conn);
+        storage.recover_receipts()?;
         Ok(storage)
     }
 
@@ -106,6 +127,8 @@ impl Storage {
         let conn=self.open()?;
         let mut stmt=conn.prepare("SELECT path FROM upload_jobs")?;
         let mut refs=stmt.query_map([],|r|r.get::<_,String>(0))?.map(|r|r.map(PathBuf::from)).collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt=conn.prepare("SELECT path FROM asset_sources")?;
+        refs.extend(stmt.query_map([],|r|r.get::<_,String>(0))?.map(|r|r.map(PathBuf::from)).collect::<rusqlite::Result<Vec<_>>>()?);
         let mut stmt=conn.prepare("SELECT url FROM assets WHERE provider='demo'")?;
         for row in stmt.query_map([],|r|r.get::<_,String>(0))?{
             let raw=row?;
@@ -284,7 +307,7 @@ Restore into a NEW data directory only; see README.
     }
 
     pub fn store_visual_hash(&self,id:i64,hash:u64) -> Result<()> {
-        self.open()?.execute("INSERT OR IGNORE INTO asset_visual(asset_id,hash) VALUES(?1,?2)",params![id,hash as i64])?;
+        self.open()?.execute("INSERT INTO asset_visual(asset_id,hash) VALUES(?1,?2) ON CONFLICT(asset_id) DO UPDATE SET hash=excluded.hash",params![id,hash as i64])?;
         Ok(())
     }
 
@@ -410,12 +433,14 @@ Restore into a NEW data directory only; see README.
 
     pub fn jobs(&self, provider: &str, owner: &str, before: Option<i64>) -> Result<Vec<Job>> {
         let conn = self.open()?;
-        let mut stmt = conn.prepare("SELECT id,path,state,error FROM upload_jobs
-            WHERE provider=?1 AND owner_id=?2 AND (?3 IS NULL OR id < ?3)
-            ORDER BY id DESC LIMIT 51")?;
+        let mut stmt = conn.prepare("SELECT j.id,j.path,j.state,j.error,p.state,p.error FROM upload_jobs j
+            LEFT JOIN upload_job_assets a ON a.job_id=j.id LEFT JOIN asset_preview_state p ON p.asset_id=a.asset_id
+            WHERE j.provider=?1 AND j.owner_id=?2 AND (?3 IS NULL OR j.id < ?3)
+            ORDER BY j.id DESC LIMIT 51")?;
         let rows = stmt.query_map(params![provider, owner, before], |r| Ok(Job {
             id: r.get(0)?, path: PathBuf::from(r.get::<_,String>(1)?),
             state: r.get(2)?, error: r.get(3)?,
+            preview:r.get::<_,Option<String>>(4)?.zip(r.get::<_,Option<String>>(5)?),
         }))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -458,13 +483,22 @@ Restore into a NEW data directory only; see README.
         Ok(())
     }
 
+    pub fn set_preview_state(&self,id:i64,state:&str,error:&str)->Result<()>{
+        self.open()?.execute("INSERT INTO asset_preview_state(asset_id,state,error) VALUES(?1,?2,?3) ON CONFLICT(asset_id) DO UPDATE SET state=excluded.state,error=excluded.error",params![id,state,error])?;Ok(())
+    }
+    pub fn preview_state(&self,id:i64)->Result<Option<(String,String)>>{
+        Ok(self.open()?.query_row("SELECT state,error FROM asset_preview_state WHERE asset_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?)
+    }
     pub fn preview_sources(&self,asset:&Asset) -> Result<Vec<PathBuf>> {
         let conn=self.open()?;
+        let mut exact=conn.prepare("SELECT path FROM asset_sources WHERE asset_id=?1 ORDER BY rowid DESC LIMIT 32")?;
+        let mut paths=exact.query_map([asset.id],|r|Ok(PathBuf::from(r.get::<_,String>(0)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stmt=conn.prepare("SELECT path FROM upload_jobs WHERE provider=?1 AND owner_id=?2 AND state='done'
             AND (substr(path,-length(?3)-1)='/'||?3 OR substr(path,-length(?3)-1)=char(92)||?3 OR path=?3)
             ORDER BY id DESC LIMIT 4")?;
         let rows=stmt.query_map(params![asset.provider,asset.owner_id,asset.name],|r|Ok(PathBuf::from(r.get::<_,String>(0)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        for path in rows{let path=path?;if !paths.contains(&path){paths.push(path);}}
+        Ok(paths)
     }
 
     pub fn find(&self, provider: &str, owner_id: &str, digest: &str) -> Result<Option<Asset>> {
@@ -482,17 +516,54 @@ Restore into a NEW data directory only; see README.
         Ok(())
     }
 
+    /// Persist a known successful remote result before the asset transaction.
+    /// Only a matching running job can accept a receipt; it contains no session credentials.
+    pub fn record_receipt(&self,entry:&NewAsset,source:&std::path::Path,job:i64)->Result<()>{
+        let path=source.to_str().context("来源路径不是有效 UTF-8")?;
+        let n=self.open()?.execute("INSERT INTO upload_receipts(job_id,name,bytes,category,provider,owner_id,url,filekey,sha256,source)
+            SELECT id,?2,?3,?4,?5,?6,?7,?8,?9,?10 FROM upload_jobs WHERE id=?1 AND provider=?5 AND owner_id=?6 AND state='running' AND path=?10",
+            params![job,entry.name,entry.bytes,entry.category,entry.provider,entry.owner_id,entry.url,entry.filekey,entry.sha256,path])?;
+        anyhow::ensure!(n==1,"已返回的上传结果无法保存至对应任务");Ok(())
+    }
+    fn recover_receipts(&self)->Result<()>{
+        let conn=self.open()?;
+        let mut stmt=conn.prepare("SELECT r.job_id,r.name,r.bytes,r.category,r.provider,r.owner_id,r.url,r.filekey,r.sha256,r.source
+            FROM upload_receipts r JOIN upload_jobs j ON j.id=r.job_id AND j.provider=r.provider AND j.owner_id=r.owner_id AND j.path=r.source
+            WHERE j.state='unknown' AND r.provider='yuque' ORDER BY r.job_id")?;
+        let receipts=stmt.query_map([],|r|Ok((r.get::<_,i64>(0)?,NewAsset{name:r.get(1)?,bytes:r.get(2)?,category:r.get(3)?,provider:r.get(4)?,owner_id:r.get(5)?,url:r.get(6)?,filekey:r.get(7)?,sha256:r.get(8)?},PathBuf::from(r.get::<_,String>(9)?))))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);drop(conn);
+        for (job,entry,source) in receipts{
+            // No upload and no network. The normal commit transaction validates
+            // the matching receipt before accepting an unknown job.
+            if self.commit_asset(&entry,Some(&source),Some(job)).is_err(){
+                eprintln!("上传回执恢复未完成，任务仍待核实");
+            }
+        }
+        Ok(())
+    }
+    #[cfg(test)]
     pub fn insert_or_get(&self, entry: &NewAsset) -> Result<Asset> {
-        let conn = self.open()?;
-        conn.execute(
+        self.commit_asset(entry,None,None)
+    }
+    pub fn commit_asset(&self,entry:&NewAsset,source:Option<&std::path::Path>,job:Option<i64>)->Result<Asset>{
+        let mut conn=self.open()?;let tx=conn.transaction()?;
+        tx.execute(
             "INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256,filekey)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(provider,owner_id,sha256) DO NOTHING",
             params![entry.name, entry.bytes, entry.category, entry.provider,
                     entry.owner_id, entry.url, entry.sha256, entry.filekey],
         )?;
-        drop(conn);
-        self.find(&entry.provider, &entry.owner_id, &entry.sha256)?
-            .context("SQLite 写入后找不到资源")
+        let asset=tx.query_row("SELECT id,name,bytes,category,provider,url,sha256,owner_id,filekey,created_at FROM assets WHERE provider=?1 AND owner_id=?2 AND sha256=?3",params![entry.provider,entry.owner_id,entry.sha256],map_row)?;
+        if let Some(source)=source{
+            tx.execute("INSERT OR IGNORE INTO asset_sources(asset_id,path) VALUES(?1,?2)",params![asset.id,source.to_str().context("来源路径不是有效 UTF-8")?])?;
+        }
+        if let Some(job)=job{
+            let n=tx.execute("UPDATE upload_jobs SET state='done',error='' WHERE id=?1 AND provider=?2 AND owner_id=?3 AND (state='running' OR (state='unknown' AND EXISTS(SELECT 1 FROM upload_receipts r WHERE r.job_id=?1 AND r.provider=?2 AND r.owner_id=?3 AND r.sha256=?4 AND r.url=?5 AND r.source=upload_jobs.path)))",params![job,entry.provider,entry.owner_id,entry.sha256,entry.url])?;
+            anyhow::ensure!(n==1,"任务与资源账号不一致或状态已变化");
+            tx.execute("INSERT INTO upload_job_assets(job_id,asset_id) VALUES(?1,?2) ON CONFLICT(job_id) DO UPDATE SET asset_id=excluded.asset_id",params![job,asset.id])?;
+            tx.execute("DELETE FROM upload_receipts WHERE job_id=?1",[job])?;
+        }
+        tx.commit()?;Ok(asset)
     }
 }
 

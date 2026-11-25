@@ -65,6 +65,10 @@ impl UploadDesk {
                     row = row.child(gpui_kit::component::progress::Progress::new(("upload-progress",id as usize)).xsmall().value(bytes as f32 / total as f32 * 100.).accessibility_label("请求体读取进度"));
                 }
             }
+            if let Some((state,error))=&job.preview{
+                if state=="failed"{row=row.child(div().text_xs().text_color(self.palette().error).child(format!("已上传；预览失败：{error}")));}
+                else if state=="ready"||state=="remote_ready"{row=row.child(div().text_xs().text_color(self.palette().muted).child("本地缩略图已就绪"));}
+            }
             if !job.error.is_empty() { row = row.child(div().text_sm().text_color(self.palette().error).child(job.error.clone())); }
             list = list.child(row);
         }
@@ -129,6 +133,7 @@ impl UploadDesk {
                     .child(div().debug_selector(||"detail-preview".into()).child(Button::new("large-preview").small().ghost().icon(IconName::Maximize).label("查看图片").disabled(!active||self.resource.preview_loading).on_click(cx.listener(|v,_,w,cx|v.open_large_preview(w,cx)))));
                 if self.resource.thumbnail_path.is_none()&&!self.resource.preview_loading{
                     panel=panel.child(Button::new("preview-image").disabled(!active).small().label("重新读取本地预览").on_click(cx.listener(|v,_,_,cx|v.load_preview(cx))));
+                    if asset.provider=="yuque"{panel=panel.child(Button::new("repair-remote-thumbnail").small().label("从语雀恢复缩略图").disabled(!active).tooltip("主动请求可信语雀 CDN；不重新上传原文件").on_click(cx.listener(|v,_,_,cx|v.repair_preview(true,cx))));}
                     if let Some(error)=&self.resource.preview_error{panel=panel.child(div().text_xs().text_color(self.palette().error).child(error.clone()));}
                 }
             }
@@ -359,7 +364,10 @@ impl UploadDesk {
                         .top(px((canvas_h-image_h)*0.5)+px(pan.1))
                         .w(px(image_w)).h(px(image_h))
                         .child(img(path.clone()).image_cache(&self.resource.image_cache).w(px(image_w)).h(px(image_h)).object_fit(ObjectFit::Contain))) }
-                    else { panel.child(div().text_sm().text_color(self.palette().muted).child(self.resource.preview_error.clone().unwrap_or_else(|| if self.resource.preview_loading{"正在读取本地预览…".into()}else{"没有可显示的本地预览，请按需读取原图。".into()}))) }
+                    else { panel.child(div().flex().flex_col().items_center().gap_2()
+                .child(div().text_sm().text_color(self.palette().muted).child(self.resource.preview_error.clone().unwrap_or_else(|| if self.resource.preview_loading{"正在读取本地预览…".into()}else{"没有可显示的本地预览，请按需读取原图。".into()})))
+                .when(!self.resource.preview_loading,|d|d.child(Button::new("viewer-retry-local").small().label("重新读取本地").on_click(cx.listener(|v,_,_,cx|v.repair_preview(false,cx)))))
+                .when(!self.resource.preview_loading&&self.resource.selected_asset.as_ref().is_some_and(|a|a.provider=="yuque"),|d|d.child(Button::new("viewer-repair-remote").small().label("从语雀恢复缩略图").on_click(cx.listener(|v,_,_,cx|v.repair_preview(true,cx))))) ) }
                 }).child(self.preview_footer(cx)).into_any_element()
 
     }
@@ -373,7 +381,7 @@ impl UploadDesk {
         let position_label=format!("{position} / {loaded}{}",if self.resource.has_more{"+"}else{""});
         let quality=self.viewer_model.read(cx).quality.as_ref();
         let mode=if let Some(q)=quality{
-            let source=if q.remote{"在线原图"}else{"本地原图"};
+            let source=if q.remote{"在线图片（可能经 CDN 转码）"}else{"本地原图"};
             if (q.width,q.height)==(q.shown_width,q.shown_height){format!("{source} · {}×{}",q.width,q.height)}else{format!("{source} · {}×{} · 预览 {}×{}",q.width,q.height,q.shown_width,q.shown_height)}
         }else if self.resource.large_preview_path.is_some(){"离线微缩图".into()}else{"暂无图像".into()};
         let message=if self.resource.pending_preview.is_some(){"正在加载下一页…"}else{self.viewer_model.read(cx).status.as_str()};
