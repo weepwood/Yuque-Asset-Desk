@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     instance.try_lock().context("已有 Yuque Asset Desk 实例使用此数据目录")?;
     anyhow::ensure!(!parent.join(data_management::REQUEST).exists(),"应用重置尚未完成；请等待清理结束");
     let storage = Storage::new(path)?;
+    if preview::cleanup_staging(&storage).is_err(){eprintln!("暂存文件清理未完成，保留文件供后续检查");}
     // Startup preferences are required for initial window geometry, before UI starts.
     let prefs=desk::preferences::Preferences::decode(storage.preferences().unwrap_or_default());
     application()

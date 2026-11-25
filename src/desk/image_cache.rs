@@ -11,6 +11,9 @@ pub(super) struct AlbumImageCache{items:HashMap<Resource,(u64,ImageCacheItem)>,c
 impl AlbumImageCache{
     #[cfg(feature="qa")]
     pub fn len(&self)->usize{self.items.len()}
+    pub fn invalidate_path(&mut self,path:&std::path::Path,cx:&mut App){
+        if let Some((_,item))=self.items.remove(&Resource::Path(path.to_owned().into())){release_images(item.get().and_then(Result::ok).into_iter().collect(),cx);}
+    }
     pub fn clear(&mut self,cx:&mut App){
         let images=self.items.drain().filter_map(|(_,(_,item))|item.get().and_then(Result::ok)).collect();
         release_images(images,cx);

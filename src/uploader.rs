@@ -97,7 +97,7 @@ fn upload_with_transport(path:&Path,cfg:&Config,storage:&Storage,progress:Arc<Tr
         bail!("文件超过 {} MB 上限", cfg.max_file_mb);
     }
     let file_name = path.file_name().and_then(|v| v.to_str()).context("文件名不是有效 UTF-8")?.to_string();
-    let snapshot=UploadSnapshot::create(storage,path,metadata.len(),&progress)?;
+    let mut snapshot=UploadSnapshot::create(storage,path,metadata.len(),&progress)?;
     let category = detected_category(&snapshot.path,path);
     let digest = snapshot.digest.clone();
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), "上传已取消");
@@ -119,8 +119,10 @@ fn upload_with_transport(path:&Path,cfg:&Config,storage:&Storage,progress:Arc<Tr
             }
         }
         let entry=NewAsset{name:existing.name.clone(),bytes:existing.bytes,category:existing.category.clone(),provider:existing.provider.clone(),owner_id:existing.owner_id.clone(),url:existing.url.clone(),filekey:existing.filekey.clone(),sha256:existing.sha256.clone()};
-        let existing=storage.commit_asset(&entry,Some(path),job)?;
-        let preview_error=crate::preview::persist_upload(storage,&existing,&snapshot.path);
+        let name=snapshot.preview_name(storage,&entry,job);
+        let existing=storage.commit_asset_with_preview(&entry,Some(path),job,name.as_deref())?;
+        snapshot.retain_if_referenced(storage,name.as_deref());
+        let preview_error=if job.is_none(){crate::preview::persist_upload(storage,&existing,&snapshot.path)}else{None};
         return Ok(UploadResult { item: existing, duplicate: true,preview_error });
     }
     let (url, filekey) = match cfg.mode {
@@ -137,19 +139,36 @@ fn upload_with_transport(path:&Path,cfg:&Config,storage:&Storage,progress:Arc<Tr
         provider: cfg.provider().to_string(), owner_id: cfg.owner_id().to_string(),
         url, filekey, sha256: digest,
     };
+    let name=snapshot.preview_name(storage,&entry,job);
     if cfg.mode==Mode::Yuque {
-        if let Some(job)=job{storage.record_receipt(&entry,path,job).context("远端已返回结果，但回执保存失败；请核实远端，勿直接重传")?;}
+        if let Some(job)=job{
+            storage.record_receipt_with_preview(&entry,path,job,name.as_deref()).context("远端已返回结果，但回执保存失败；请核实远端，勿直接重传")?;
+            // The receipt owns the snapshot even if the following commit fails.
+            snapshot.retain=name.is_some();
+        }
     }
-    let item=storage.commit_asset(&entry,Some(path),job).context("上传结果已返回，但本地资源提交失败；请核实远端，勿直接重传")?;
-    let preview_error=crate::preview::persist_upload(storage,&item,&snapshot.path);
+    let item=storage.commit_asset_with_preview(&entry,Some(path),job,name.as_deref()).context("上传结果已返回，但本地资源提交失败；请核实远端，勿直接重传")?;
+    snapshot.retain_if_referenced(storage,name.as_deref());
+    let preview_error=if job.is_none(){crate::preview::persist_upload(storage,&item,&snapshot.path)}else{None};
     Ok(UploadResult { item, duplicate: false,preview_error })
 }
 
 // The same immutable snapshot is hashed, transmitted and decoded. It is
 // private transient data, never an original, and removed on every normal exit.
-struct UploadSnapshot{path:std::path::PathBuf,digest:String}
-impl Drop for UploadSnapshot{fn drop(&mut self){let _=std::fs::remove_file(&self.path);}}
+struct UploadSnapshot{path:std::path::PathBuf,digest:String,retain:bool}
+impl Drop for UploadSnapshot{fn drop(&mut self){if !self.retain{let _=std::fs::remove_file(&self.path);}}}
 impl UploadSnapshot{
+    // Bound retained original bytes independently of the upload size limit.
+    // If the budget is full, the durable task uses hash-verified source paths.
+    fn preview_name(&self,storage:&Storage,entry:&NewAsset,job:Option<i64>)->Option<String>{
+        if job.is_none()||entry.category!="image"||entry.bytes<=0||entry.bytes>32*1024*1024{return None;}
+        if storage.retained_preview_bytes().ok()?.saturating_add(entry.bytes as u64)>128*1024*1024{return None;}
+        if std::fs::OpenOptions::new().write(true).open(&self.path).and_then(|f|f.sync_all()).is_err(){return None;}
+        self.path.file_name()?.to_str().map(str::to_owned)
+    }
+    fn retain_if_referenced(&mut self,storage:&Storage,name:Option<&str>){
+        if let Some(name)=name{self.retain=storage.snapshot_referenced(name).unwrap_or(true);}
+    }
     fn create(storage:&Storage,source:&Path,expected:u64,progress:&TransferProgress)->Result<Self>{
         use std::io::Write;
         let dir=storage.data_dir().join("upload-staging");std::fs::create_dir_all(&dir)?;
@@ -160,7 +179,7 @@ impl UploadSnapshot{
         options.write(true).create_new(true);
         #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
         let output=options.open(&path)?;
-        let mut snapshot=Self{path,digest:String::new()};
+        let mut snapshot=Self{path,digest:String::new(),retain:false};
         let mut output=output;
         let mut input=File::open(source)?.take(expected+1);
         let mut hash=Sha256::new();let mut total=0;let mut buf=[0u8;65536];
@@ -175,13 +194,13 @@ impl UploadSnapshot{
 }
 fn detected_category(snapshot:&Path,original:&Path)->String{
     let mut prefix=Vec::new();
-    if File::open(snapshot).and_then(|f|f.take(64*1024).read_to_end(&mut prefix)).is_ok()&&crate::preview::is_svg(&prefix){return "image".into();}
+    if File::open(snapshot).and_then(|f|f.take(64*1024).read_to_end(&mut prefix)).is_ok()&&(crate::preview::is_svg(&prefix)||crate::preview::modern_image_mime(&prefix).is_some()){return "image".into();}
     if image::ImageReader::open(snapshot).and_then(|r|r.with_guessed_format()).ok().and_then(|r|r.format()).is_some(){return "image".into();}
     asset_category(original)
 }
 pub fn asset_category(path: &Path) -> String {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "svg") {
+    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "heic" | "heif" | "bmp" | "svg") {
         "image".into()
     } else if matches!(ext.as_str(), "mp4" | "mov" | "webm") { "video".into() }
     else { "attachment".into() }
@@ -231,7 +250,7 @@ fn upload_yuque_to(endpoint:&str,path:&Path,filename:&str,category:&str,cfg:&Con
     let fallback=mime_guess::from_path(filename).first_or_octet_stream();
     let mut prefix=Vec::new();
     let svg=File::open(path).and_then(|f|f.take(64*1024).read_to_end(&mut prefix)).is_ok()&&crate::preview::is_svg(&prefix);
-    let mime=if svg{"image/svg+xml"}else{detected.map(|f|f.to_mime_type()).unwrap_or(fallback.essence_str())};
+    let mime=if svg{"image/svg+xml"}else{crate::preview::modern_image_mime(&prefix).or_else(||detected.map(|f|f.to_mime_type())).unwrap_or(fallback.essence_str())};
     let file = File::open(path).context("打开待上传文件失败")?;
     let length = file.metadata()?.len();
     anyhow::ensure!(length > 0 && length <= cfg.max_file_mb * 1024 * 1024, "文件大小已变化或超过限制");
@@ -361,6 +380,16 @@ mod tests {
         assert_eq!(result.item.category,"image");assert_eq!(result.item.sha256,hex::encode(Sha256::digest(&bytes)));
         assert!(result.preview_error.is_none());
         assert_eq!(db.jobs("yuque","123",None).unwrap()[0].state,"done");
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].preview.as_ref().unwrap().0,"pending");
+        assert!(!crate::preview::cached_path(&root,&result.item).exists());
+        assert_eq!(db.pending_previews().unwrap(),1);
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),1);
+        // Restart with the original already changed: only the immutable
+        // snapshot can produce the expected preview. No network replay.
+        drop(db);let db=Storage::new(root.join("assets.db")).unwrap();
+        assert_eq!(crate::preview::cleanup_staging(&db).unwrap(),0);
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        assert!(crate::preview::process_next(&db).unwrap().is_none());
         assert_eq!(db.jobs("yuque","123",None).unwrap()[0].preview.as_ref().unwrap().0,"ready");
         assert_eq!(image::image_dimensions(crate::preview::cached_path(&root,&result.item)).unwrap(),(160,120));
         let duplicate=upload_with_transport(&renamed,&cfg,&db,Arc::new(TransferProgress::default()),None,|_,_,_,_,_|panic!("duplicate must not upload")).unwrap();
@@ -387,9 +416,42 @@ mod tests {
         drop(db);let db=Storage::new(root.join("assets.db")).unwrap();
         let a=db.find("yuque","123",&entry.sha256).unwrap().unwrap();
         assert_eq!(db.jobs("yuque","123",None).unwrap()[0].state,"done");
-        assert!(crate::preview::persist_upload(&db,&a,&path).is_some());
+        assert!(db.preview_pending(a.id).unwrap());
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_none());
+        assert!(!db.preview_pending(a.id).unwrap());
         let job=db.jobs("yuque","123",None).unwrap().remove(0);assert_eq!(job.state,"done");assert_eq!(job.preview.unwrap().0,"failed");
         assert!(db.recoverable("yuque","123").unwrap().is_empty());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn receipt_snapshot_survives_commit_gap_and_repair_is_scoped(){
+        let root=std::env::temp_dir().join(format!("yuque-v09-preview-work-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let path=root.join("source.png");image::RgbImage::from_pixel(240,120,image::Rgb([10,20,30])).save(&path).unwrap();
+        let bytes=std::fs::metadata(&path).unwrap().len();
+        let mut snapshot=UploadSnapshot::create(&db,&path,bytes,&TransferProgress::default()).unwrap();
+        let name=snapshot.path.file_name().unwrap().to_str().unwrap().to_owned();
+        let job=db.enqueue("yuque","123",&[path.clone()]).unwrap()[0].0;db.job_state(job,"running","").unwrap();
+        let entry=NewAsset{name:"source.png".into(),bytes:bytes as i64,category:"image".into(),provider:"yuque".into(),owner_id:"123".into(),url:"https://cdn.nlark.com/yuque/0/fixture.png".into(),filekey:"fixture".into(),sha256:snapshot.digest.clone()};
+        db.record_receipt_with_preview(&entry,&path,job,Some(&name)).unwrap();snapshot.retain=true;drop(snapshot);
+        assert!(db.acknowledge_unknown("yuque","123",job).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(root.join("upload-staging/1-1.snapshot"),b"orphan").unwrap();
+        std::fs::write(root.join("upload-staging/keep.txt"),b"unmanaged").unwrap();
+        drop(db);let db=Storage::new(root.join("assets.db")).unwrap();
+        assert_eq!(crate::preview::cleanup_staging(&db).unwrap(),1);
+        assert!(root.join("upload-staging/keep.txt").exists());
+        let a=db.find("yuque","123",&entry.sha256).unwrap().unwrap();
+        assert_eq!(db.pending_previews().unwrap(),1);
+        assert!(db.export_album(root.parent().unwrap()).is_err());
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        assert!(!root.join("upload-staging").join(&name).exists());
+        assert_eq!(db.schedule_previews("yuque","other",&[a.id]).unwrap(),0);
+        assert_eq!(db.schedule_previews("yuque","123",&[a.id]).unwrap(),1);
+        assert_eq!(db.schedule_previews("yuque","123",&[a.id]).unwrap(),0);
+        assert!(crate::preview::process_next(&db).unwrap().unwrap().found.is_some());
+        assert_eq!(db.jobs("yuque","123",None).unwrap()[0].state,"done");
+        assert_eq!(db.pending_previews().unwrap(),0);
         drop(db);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -547,5 +609,15 @@ mod tests {
     fn category_is_extension_based() {
         assert_eq!(asset_category(Path::new("photo.webp")), "image");
         assert_eq!(asset_category(Path::new("backup.zip")), "attachment");
+        assert_eq!(asset_category(Path::new("photo.heic")), "image");
+        let avif=b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00avifmif1";
+        let heic=b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00heicmif1";
+        let mp4=b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00mp41isom";
+        assert_eq!(crate::preview::modern_image_mime(avif),Some("image/avif"));
+        assert_eq!(crate::preview::modern_image_mime(heic),Some("image/heic"));
+        assert_eq!(crate::preview::modern_image_mime(mp4),None);
+        assert!(crate::preview::unsupported_modern_format(avif).unwrap_err().to_string().contains("AVIF"));
+        assert!(crate::preview::unsupported_modern_format(heic).unwrap_err().to_string().contains("HEIC"));
+        assert_eq!(crate::preview::modern_image_mime(&avif[..20]),None);
     }
 }

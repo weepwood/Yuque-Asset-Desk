@@ -78,7 +78,10 @@ impl UploadDesk {
                 }
             }
             if let Some((state,error))=&job.preview{
-                if state=="failed"{row=row.child(div().text_xs().text_color(self.palette().error).child(format!("{}；预览失败：{error}",if self.config.mode==Mode::Demo{"已记录"}else{"已上传"})));}
+                if state=="failed"{row=row.child(div().flex().items_center().gap_2().child(div().flex_1().min_w(px(0.)).text_xs().text_color(self.palette().error).child(format!("{}；预览失败：{error}",if self.config.mode==Mode::Demo{"已记录"}else{"已上传"})))
+                    .when_some(result_asset_id,|d,asset_id|d.child(Button::new(("retry-preview",id as usize)).xsmall().ghost().label("重试预览").disabled(self.preview_worker.read(cx).busy||self.account_busy(cx)).on_click(cx.listener(move|v,_,_,cx|v.repair_local_previews(vec![asset_id],cx))))));}
+                else if state=="pending"{row=row.child(div().flex().items_center().gap_2().child(div().flex_1().text_xs().text_color(self.palette().muted).child("资源已入库 · 等待后台生成缩略图"))
+                    .when(!self.preview_worker.read(cx).busy,|d|d.child(Button::new(("resume-preview",id as usize)).xsmall().ghost().label("继续预览").disabled(self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.kick_previews(cx))))));}
                 else if state=="ready"||state=="remote_ready"{row=row.child(div().text_xs().text_color(self.palette().muted).child("本地缩略图已就绪"));}
             }
             if !job.error.is_empty() { row = row.child(div().text_sm().text_color(self.palette().error).child(job.error.clone())); }

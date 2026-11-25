@@ -25,6 +25,7 @@ fn verified(bytes:&[u8],asset:&Asset)->Result<()>{
 }
 fn decode(bytes:Vec<u8>,asset:&Asset,remote:bool)->Result<QualityImage>{
     if !remote{verified(&bytes,asset)?;}
+    crate::preview::unsupported_modern_format(&bytes)?;
     if crate::preview::is_svg(&bytes){
         let (decoded,width,height)=crate::preview::raster_svg(&bytes,EDGE)?;
         let mut rgba=decoded.into_rgba8();let (shown_width,shown_height)=rgba.dimensions();

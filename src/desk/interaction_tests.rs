@@ -1051,6 +1051,16 @@ fn upload_review_requires_confirmation_and_preserves_sources(){
     ui.simulate_click(locate,Modifiers::default());app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();
     assert!(app.read(|cx|{let v=desk.read(cx);v.page==Page::Gallery&&v.resource.assets.len()==1&&v.resource.assets[0].id==id&&!v.resource.all_accounts}));
     assert!(read.page_album(150,&format!("id:{id}"),"",Some(("yuque","other")),None,false,None,false).unwrap().0.is_empty());
+    let thumbnail=job.thumbnail.unwrap();
+    std::fs::write(&thumbnail,b"corrupt").unwrap();
+    // Explicit visible-range repair must detect a corrupt file even when the
+    // gallery already holds its path; it must not create another upload job.
+    app.update(|cx|desk.update(cx,|v,cx|v.repair_visible_previews(cx)));
+    app.run_until_parked();
+    assert!(crate::preview::valid_cache(&thumbnail));
+    assert_eq!(read.jobs("demo","local",None).unwrap().len(),1);
+    assert_eq!(read.pending_previews().unwrap(),0);
+    assert!(app.read(|cx|!desk.read(cx).preview_worker.read(cx).busy));
     app.update(|cx|desk.update(cx,|v,cx|v.review_files(vec![source.clone()],cx)));app.run_until_parked();
     app.update(|cx|desk.update(cx,|v,cx|v.apply_account(None,cx)));
     app.run_until_parked();assert!(app.read(|cx|desk.read(cx).upload_review.is_none()));

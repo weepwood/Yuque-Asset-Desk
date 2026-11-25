@@ -172,6 +172,50 @@ impl UploadDesk {
         self.thumbnails.update(cx,|v,cx|v.request(storage,items,cx));
     }
 
+    pub(super) fn kick_previews(&mut self,cx:&mut Context<Self>){
+        if self.resetting||self.reset_pending||self.backup_busy{return;}
+        let storage=self.storage.clone();self.preview_worker.update(cx,|v,cx|v.kick(storage,cx));
+    }
+    pub(super) fn repair_visible_previews(&mut self,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy{self.status="缩略图后台任务正在运行".into();cx.notify();return;}
+        let (start,end)=self.resource.visible_range;
+        let lo=start.min(self.resource.assets.len());
+        let hi=end.max(start.saturating_add(24)).min(self.resource.assets.len());
+        let ids=self.resource.assets[lo..hi].iter().filter(|a|a.category=="image"&&a.provider==self.config.provider()&&a.owner_id==self.config.owner_id()).take(100).map(|a|a.id).collect::<Vec<_>>();
+        if ids.is_empty(){self.status="当前可见范围没有本账号图片".into();cx.notify();return;}
+        self.repair_local_previews(ids,cx);
+    }
+    pub(super) fn repair_local_previews(&mut self,ids:Vec<i64>,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy||self.account_busy(cx)||self.backup_busy||self.resetting{return;}
+        let storage=self.storage.clone();let provider=self.config.provider().to_owned();let owner=self.config.owner_id().to_owned();
+        self.preview_worker.update(cx,|v,cx|v.repair(storage,provider,owner,ids,cx));
+    }
+    pub(super) fn apply_preview_completion(&mut self,item:&preview::PreviewCompletion,cx:&mut Context<Self>){
+        if !item.settled{return;}
+        let id=item.id;
+        if let Some((path,ratio))=&item.found{
+            if self.resource.assets.iter().any(|a|a.id==id){
+                self.resource.cached_thumbnails.insert(id,path.clone());
+                if self.resource.ratios.insert(id,*ratio)!=Some(*ratio){self.resource.ratio_revision+=1;self.resource.masonry_signature=0;}
+                if item.changed{self.resource.image_cache.update(cx,|cache,cx|cache.invalidate_path(path,cx));}
+            }
+            if self.resource.selected_asset.as_ref().is_some_and(|a|a.id==id){
+                self.resource.thumbnail_path=Some(path.clone());self.resource.preview_error=None;
+                if self.resource.large_preview_open{self.resource.large_preview_path=Some(path.clone());}
+            }
+        }else{
+            if let Some(path)=self.resource.cached_thumbnails.remove(&id){
+                self.resource.image_cache.update(cx,|cache,cx|cache.invalidate_path(&path,cx));
+                self.resource.ratios.remove(&id);self.resource.ratio_revision+=1;self.resource.masonry_signature=0;
+            }
+            if self.resource.selected_asset.as_ref().is_some_and(|a|a.id==id){
+                self.resource.thumbnail_path=None;self.resource.large_preview_path=None;
+                self.resource.preview_error=Some("本地预览生成失败，可在任务中心重试或主动恢复在线缩略图".into());
+            }
+        }
+        self.refresh_jobs(cx);cx.notify();
+    }
+
     pub(super) fn apply_thumbnail_batch(&mut self,event:&thumbnail_model::ThumbnailBatch,cx:&mut Context<Self>){
         if !self.thumbnails.read(cx).current(event.generation){return;}
         for (id,path,ratio) in &event.found{
@@ -183,7 +227,7 @@ impl UploadDesk {
     }
 
     pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
-        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx){return;}
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.preview_worker.read(cx).busy||self.account_busy(cx){return;}
         self.picker_pending=true;
         self.status="请选择相册备份位置…".into();cx.notify();
         let selection=cx.prompt_for_paths(PathPromptOptions{files:false,directories:true,multiple:false,prompt:Some("选择备份位置".into())});
@@ -202,6 +246,7 @@ impl UploadDesk {
     }
 
     fn export_album_to(&mut self,parent:PathBuf,cx:&mut Context<Self>){
+        if self.preview_worker.read(cx).busy||self.queue.read(cx).busy{self.status="请等待上传与预览任务完成后再备份".into();cx.notify();return;}
         self.backup_busy=true;
         let storage=self.storage.clone();
         self.status="正在备份链接数据库与本地微缩图…".into();

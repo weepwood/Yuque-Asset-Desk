@@ -7,6 +7,7 @@ mod data_panel;
 mod album;
 mod image_cache;
 mod thumbnail_model;
+mod preview_worker;
 pub(crate) mod preferences;
 mod preference_writer;
 mod queue;
@@ -135,6 +136,7 @@ pub(crate) struct UploadDesk {
     resource: ResourceState,
     gallery_query:Entity<gallery_query::GalleryQuery>,
     thumbnails:Entity<thumbnail_model::ThumbnailModel>,
+    preview_worker:Entity<preview_worker::PreviewWorker>,
     resource_write_busy:bool,
     resource_write_task:Option<Task<()>>,
     inspector_model:Entity<inspector_model::InspectorModel>,
@@ -344,8 +346,9 @@ impl UploadDesk {
                 Message(s)=>v.status=s.clone(),
                 Started=>v.first_jobs(cx),
                 Refresh=>v.refresh_jobs(cx),
-                ResourceChanged=>v.reload(cx),
+                ResourceChanged=>{v.kick_previews(cx);v.reload(cx);},
                 ImageCommitted=>{
+                    v.kick_previews(cx);
                     // Refresh promptly at the newest first page; do not jump a
                     // user away from deep browsing or a fullscreen viewer.
                     if v.page==Page::Gallery&&!v.resource.large_preview_open&&!v.resource.loading_history
@@ -361,13 +364,23 @@ impl UploadDesk {
         let gallery_events=cx.subscribe(&gallery_query,|v,_,event:&gallery_query::GalleryResult,cx|v.apply_gallery_result(event,cx));
         let thumbnails=cx.new(|_|thumbnail_model::ThumbnailModel::default());
         let thumbnail_events=cx.subscribe(&thumbnails,|v,_,event:&thumbnail_model::ThumbnailBatch,cx|v.apply_thumbnail_batch(event,cx));
+        let preview_worker=cx.new(|_|preview_worker::PreviewWorker::default());
+        let preview_observer=cx.observe(&preview_worker,|_,_,cx|cx.notify());
+        let preview_events=cx.subscribe(&preview_worker,|v,_,event:&preview_worker::PreviewEvent,cx|{
+            match event{
+                preview_worker::PreviewEvent::Completed(item)=>v.apply_preview_completion(item,cx),
+                preview_worker::PreviewEvent::Error(e)=>{v.status=format!("预览任务暂停，稍后可重试：{e}");cx.notify();},
+                preview_worker::PreviewEvent::Scheduled(n)=>{v.status=format!("已加入 {n} 个本地预览修复任务");v.refresh_jobs(cx);cx.notify();},
+                preview_worker::PreviewEvent::RepairFinished{processed,failed}=>{v.status=format!("本轮后台预览：就绪 {} · 失败 {failed}",processed.saturating_sub(*failed));cx.notify();}
+            }
+        });
         let account=cx.new(|cx|account_model::AccountModel::new(window,cx));
         let account_observer=cx.observe(&account,|_,_,cx|cx.notify());
         let account_events=cx.subscribe(&account,|v,_,event:&account_model::AccountEvent,cx|{
             match event{account_model::AccountEvent::Activate(creds)=>v.apply_account(Some(creds.clone()),cx)}
         });
         let mut view = Self {
-            gallery_query,thumbnails,
+            gallery_query,thumbnails,preview_worker,
             job_history,
             viewer_model,viewer_revision:0,
             inspector_model,
@@ -433,7 +446,7 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,account_observer,account_events],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,preview_observer,preview_events,account_observer,account_events],
             inspector_open: false,inspector_drag:None,sidebar_drag:None,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
@@ -499,6 +512,7 @@ impl UploadDesk {
             }
             view.account.update(cx,|a,cx|a.refresh_index(view.storage.clone(),cx));
             view.refresh_jobs(cx);
+            view.kick_previews(cx);
             view.reload(cx);
         });
         #[cfg(feature="qa")]

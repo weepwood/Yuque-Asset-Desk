@@ -118,7 +118,7 @@ impl UploadDesk {
             .child(div().h(px(1.)).bg(p.line))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("相册备份").child(div().text_xs().text_color(p.muted).child("保存本地资源索引与微缩图，不含凭据")))
-                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx))
+                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.preview_worker.read(cx).busy||self.account_busy(cx))
                     .on_click(cx.listener(|v,_,_,cx|v.export_album(cx)))))
     }
     pub(super) fn gallery_toolbar(&self,narrow:bool,total:i64,_is_demo:bool,w:&Window,cx:&mut Context<Self>)->impl IntoElement{
@@ -146,7 +146,9 @@ impl UploadDesk {
                 .item(action(weak.clone(),"日期分组",dates,|v,_,cx|{v.resource.group_dates=!v.resource.group_dates;v.persist_preferences(cx);cx.notify();})))
                 .separator()
                 .item(action(weak.clone(),"舒适模式",comfortable,|v,_,cx|v.set_comfortable(true,cx)))
-                .item(action(weak.clone(),"紧凑模式",!comfortable,|v,_,cx|v.set_comfortable(false,cx))));
+                .item(action(weak.clone(),"紧凑模式",!comfortable,|v,_,cx|v.set_comfortable(false,cx)))
+                .separator()
+                .item(action(weak.clone(),"修复当前可见图片预览",false,|v,_,cx|v.repair_visible_previews(cx))));
         let controls=div().flex().items_center().gap_1().flex_shrink_0()
             .child(div().debug_selector(||"filter-trigger".into()).child(filter))
             .child(div().debug_selector(||"layout-trigger".into()).child(layout))

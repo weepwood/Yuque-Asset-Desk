@@ -35,8 +35,9 @@ fn inspect(source:&Source,max:u64,show:bool)->DraftRow{
         }
     };
     let category=uploader::asset_category(std::path::Path::new(&name));
+    let modern=content.as_ref().and_then(|b|preview::unsupported_modern_format(b).err()).map(|e|e.to_string());
     let picture=content.and_then(|b|preview::draft_image(b).ok());
-    let warning=if show&&category=="image"&&picture.is_none(){Some("无法生成预览；确认后仍可尝试上传".into())}else{None};
+    let warning=if modern.is_some(){modern}else if show&&category=="image"&&picture.is_none(){Some("无法生成预览；确认后仍可尝试上传".into())}else{None};
     DraftRow{name,bytes,picture,warning,valid:true}
 }
 impl UploadDesk{

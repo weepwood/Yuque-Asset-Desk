@@ -37,6 +37,26 @@ pub(crate) fn is_svg(bytes:&[u8])->bool{
     let text=text.trim_start_matches(char::from_u32(0xfeff).unwrap()).trim_start();
     text.starts_with("<svg")||((text.starts_with("<?xml")||text.starts_with("<!--"))&&text.contains("<svg"))
 }
+/// Recognize explicit ISO BMFF image brands, not generic MP4/mif1 containers.
+pub(crate) fn modern_image_mime(bytes:&[u8])->Option<&'static str>{
+    if bytes.len()<16||&bytes[4..8]!=b"ftyp"{return None;}
+    let size=u32::from_be_bytes(bytes[..4].try_into().ok()?) as usize;
+    if size<16||size>bytes.len(){return None;}
+    let brands=std::iter::once(&bytes[8..12]).chain(bytes[16..size].chunks_exact(4));
+    let mut heic=false;
+    for brand in brands{
+        if matches!(brand,b"avif"|b"avis"){return Some("image/avif");}
+        if matches!(brand,b"heic"|b"heix"|b"hevc"|b"hevx"|b"heim"|b"heis"|b"hevm"|b"hevs"){heic=true;}
+    }
+    heic.then_some("image/heic")
+}
+pub(crate) fn unsupported_modern_format(bytes:&[u8])->Result<()>{
+    match modern_image_mime(bytes){
+        Some("image/avif")=>anyhow::bail!("已识别 AVIF；当前版本未集成跨平台 AVIF 解码器，可尝试在线预览或转换为 PNG/JPEG"),
+        Some("image/heic")=>anyhow::bail!("已识别 HEIC；当前版本未集成跨平台 HEIC 解码器，可尝试在线预览或转换为 PNG/JPEG"),
+        _=>Ok(())
+    }
+}
 pub(crate) fn raster_svg(bytes:&[u8],edge:u32)->Result<(image::DynamicImage,u32,u32)>{
     ensure!(bytes.len()<=1024*1024,"SVG 超过 1 MiB 安全限制");
     let text=std::str::from_utf8(bytes)?;
@@ -57,6 +77,7 @@ pub(crate) fn raster_svg(bytes:&[u8],edge:u32)->Result<(image::DynamicImage,u32,
 }
 fn decode_small(bytes:Vec<u8>,edge:u32) -> Result<image::DynamicImage> {
     ensure!(!bytes.is_empty()&&bytes.len() as u64<=MAX_INPUT,"图片超过预览输入限制");
+    unsupported_modern_format(&bytes)?;
     let decoded=if is_svg(&bytes){raster_svg(&bytes,edge)?.0}else{
     let reader=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
     let format=reader.format().context("无法识别图片格式")?;
@@ -168,6 +189,11 @@ pub fn index_local(storage:&crate::storage::Storage,asset:&Asset) -> Result<(Pat
 }
 
 pub fn restore_local(storage:&crate::storage::Storage,asset:&Asset) -> Result<PathBuf> {
+    if storage.preview_pending(asset.id)?{
+        let path=cached_path(storage.data_dir(),asset);
+        if valid_cache(&path){return Ok(path);}
+        anyhow::bail!("缩略图正在后台生成");
+    }
     if let Ok(path)=thumbnail(storage.data_dir(),asset){
         if storage.preview_state(asset.id)?.is_none_or(|(state,_)|state=="failed"){
             storage.set_preview_state(asset.id,"ready","")?;
@@ -186,18 +212,20 @@ pub fn restore_local(storage:&crate::storage::Storage,asset:&Asset) -> Result<Pa
 }
 pub fn persist_upload(storage:&crate::storage::Storage,asset:&Asset,source:&Path)->Option<String>{
     if asset.category!="image"{return None;}
+    let remote=storage.preview_state(asset.id).ok().flatten().is_some_and(|(s,_)|s=="remote_ready")&&valid_cache(&cached_path(storage.data_dir(),asset));
     let result=persist_source(storage.data_dir(),asset,source).and_then(|p|{
         let (hash,_)=visual_hash(&p)?;
         storage.store_visual_hash(asset.id,hash)?;Ok(())
     });
     let error=result.err().map(|e|e.to_string());
-    if let Err(e)=storage.set_preview_state(asset.id,if error.is_some(){"failed"}else{"ready"},error.as_deref().unwrap_or("")){
+    if let Err(e)=storage.set_preview_state(asset.id,if error.is_some(){"failed"}else if remote{"remote_ready"}else{"ready"},error.as_deref().unwrap_or("")){
         return Some(format!("预览状态保存失败：{e}"));
     }
     error
 }
 pub fn recover_remote(storage:&crate::storage::Storage,asset:&Asset)->Result<PathBuf>{
     ensure!(asset.provider=="yuque"&&asset.category=="image","仅支持语雀图片");
+    ensure!(!storage.preview_pending(asset.id)?,"缩略图正在后台生成，请稍后重试");
     let bytes=crate::high_preview::download(asset)?;
     recover_remote_bytes(storage,asset,bytes)
 }
@@ -213,6 +241,63 @@ fn recover_remote_bytes(storage:&crate::storage::Storage,asset:&Asset,bytes:Vec<
     storage.store_visual_hash(asset.id,hash)?;
     storage.set_preview_state(asset.id,"remote_ready","")?;
     Ok(path)
+}
+
+/// One durable task at a time. No network, credentials or upload retries.
+pub(crate) struct PreviewCompletion{pub id:i64,pub found:Option<(PathBuf,f32)>,pub changed:bool,pub settled:bool}
+pub(crate) fn process_next(storage:&crate::storage::Storage)->Result<Option<PreviewCompletion>>{
+    let Some((asset,name))=storage.next_preview()?else{return Ok(None);};
+    let dest=cached_path(storage.data_dir(),&asset);
+    let initially_valid=valid_cache(&dest);
+    let remote=storage.preview_state(asset.id)?.is_some_and(|(s,_)|s=="remote_ready")&&initially_valid;
+    let mut reason="没有可用的本地来源".to_string();
+    let mut result=if initially_valid{Some(dest.clone())}else{None};
+    let staging=storage.data_dir().join("upload-staging");
+    let snapshot=if crate::storage::valid_snapshot_name(&name)&&std::fs::symlink_metadata(&staging).is_ok_and(|m|m.file_type().is_dir()){
+        Some(staging.join(&name))
+    }else{None};
+    if result.is_none(){
+        if let Some(path)=snapshot.as_ref().filter(|p|std::fs::symlink_metadata(p).is_ok_and(|m|m.file_type().is_file())){
+            match persist_source(storage.data_dir(),&asset,path){Ok(p)=>result=Some(p),Err(e)=>reason=e.to_string()}
+        }
+    }
+    if result.is_none(){
+        if let Ok(p)=thumbnail(storage.data_dir(),&asset){result=Some(p);}
+    }
+    if result.is_none(){
+        for source in storage.preview_sources(&asset)?{
+            match persist_source(storage.data_dir(),&asset,&source){Ok(p)=>{result=Some(p);break;},Err(e)=>{if reason=="没有可用的本地来源"||source.is_file(){reason=e.to_string();}}}
+        }
+    }
+    let (found,hash)=match result{
+        Some(path)=>match visual_hash(&path){Ok((hash,ratio))=>(Some((path,ratio)),Some(hash)),Err(e)=>{reason=e.to_string();(None,None)}},
+        None=>(None,None)
+    };
+    let state=if found.is_none(){"failed"}else if remote{"remote_ready"}else{"ready"};
+    let error=if found.is_none(){reason.as_str()}else{""};
+    // Compare the snapshot name: a concurrent duplicate may have upgraded a
+    // source-only task. In that case leave the newer work for the next pass.
+    let settled=storage.finish_preview(asset.id,&name,state,error,hash)?;
+    if settled{
+        if let Some(path)=snapshot{if std::fs::symlink_metadata(&path).is_ok_and(|m|m.file_type().is_file()){let _=std::fs::remove_file(path);}}
+    }
+    Ok(Some(PreviewCompletion{id:asset.id,found,changed:!initially_valid,settled}))
+}
+/// Only called with the process-wide instance lock held, before any uploads.
+pub(crate) fn cleanup_staging(storage:&crate::storage::Storage)->Result<usize>{
+    let dir=storage.data_dir().join("upload-staging");
+    if !dir.exists(){return Ok(0);}
+    ensure!(std::fs::symlink_metadata(&dir)?.file_type().is_dir(),"暂存目录不是普通目录");
+    let mut count=0;
+    for entry in std::fs::read_dir(dir)?{
+        let entry=entry?;
+        if !entry.file_type()?.is_file(){continue;}
+        let name=entry.file_name();let Some(name)=name.to_str()else{continue;};
+        if crate::storage::valid_snapshot_name(name)&&!storage.snapshot_referenced(name)?{
+            std::fs::remove_file(entry.path())?;count+=1;
+        }
+    }
+    Ok(count)
 }
 
 // Only the old transient cache is cleared; persistent album thumbnails are not evicted.
@@ -256,6 +341,10 @@ mod tests {
         assert_eq!(storage.preview_state(remote.id).unwrap().unwrap().0,"remote_ready");
         let before=std::fs::read(&cache).unwrap();
         assert!(recover_remote_bytes(&storage,&remote,vec![0]).is_ok());assert_eq!(std::fs::read(&cache).unwrap(),before);
+        assert_eq!(storage.schedule_previews("yuque","1",&[remote.id]).unwrap(),1);
+        let result=process_next(&storage).unwrap().unwrap();assert!(result.found.is_some()&&!result.changed&&result.settled);
+        assert_eq!(storage.preview_state(remote.id).unwrap().unwrap().0,"remote_ready");
+        assert_eq!(std::fs::read(&cache).unwrap(),before);
         assert!(raster_svg(br#"<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]><svg/>"#,160).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }

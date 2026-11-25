@@ -184,16 +184,18 @@ impl QueueRunner{
                 _ = this.update(cx, |view, cx| {
                     view.queue_count = total - index - 1;
                     let filename = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
-                    let preview_warning=result.as_ref().ok().and_then(|(_,_,e,_)|e.clone());
                     let image_committed=result.as_ref().is_ok_and(|(_,_,_,image)|*image);
                     let message = match result {
-                        Ok((true, _, preview,_)) => {
+                        Ok((true, _, preview,image)) => {
                             view.duplicates += 1;
-                            preview.map_or_else(||"复用历史链接".to_string(),|e|format!("复用历史链接；预览失败：{e}"))
+                            preview.map_or_else(||if image{"复用历史链接 · 预览后台处理".into()}else{"复用历史链接".into()},|e|format!("复用历史链接；预览失败：{e}"))
                         }
-                        Ok((false, provider, preview,_)) => {
+                        Ok((false, provider, preview,image)) => {
                             view.succeeded += 1;
-                            if let Some(e)=preview{format!("上传已记录；预览失败：{e}")}else if provider == "demo" { "已保存本地记录".into() } else { "上传成功".into() }
+                            if let Some(e)=preview{format!("上传已记录；预览失败：{e}")}else{
+                                let message=if provider=="demo"{"已保存本地记录"}else{"上传成功并入库"};
+                                if image{format!("{message} · 预览后台处理")}else{message.into()}
+                            }
                         }
                         Err((error,reason)) => {
                             if reason==Some(uploader::QueueStop::Authorization){
@@ -217,7 +219,6 @@ impl QueueRunner{
                             };
                         }
                     }
-                    if let Some(error)=preview_warning{status.push_str(&format!(" · 预览失败：{error}"));}
                     cx.emit(QueueEvent::Message(status));
                     if view.queue_count==0{cx.emit(QueueEvent::Finished(format!("本批结束：新增 {} · 复用 {} · 失败 {}",view.succeeded,view.duplicates,view.failed.len())));}
                     view.active_job = None;
