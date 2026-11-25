@@ -1,0 +1,8 @@
+PATH_CAPTURE 00-gallery state=(0, None, false, false) expected=(0, None, false, false) capture=Ok(())
+PATH_CAPTURE 01-select state=(1, Some(3), false, false) expected=(1, Some(3), false, false) capture=Ok(())
+PATH_CAPTURE 02-range state=(2, Some(2), false, false) expected=(2, Some(2), false, false) capture=Ok(())
+PATH_CAPTURE 03-toggle state=(1, Some(3), false, false) expected=(1, Some(3), false, false) capture=Ok(())
+PATH_CAPTURE 04-preview state=(1, Some(3), true, false) expected=(1, Some(3), true, false) capture=Ok(())
+PATH_CAPTURE 05-next state=(1, Some(2), true, false) expected=(1, Some(2), true, false) capture=Ok(())
+PATH_CAPTURE 06-return state=(1, Some(2), false, false) expected=(1, Some(2), false, false) capture=Ok(())
+PATH_CAPTURE 07-inspector state=(1, Some(2), false, true) expected=(1, Some(2), false, true) capture=Ok(())

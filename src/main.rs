@@ -107,6 +107,46 @@ fn main() -> Result<()> {
                 cx.activate(true);
                 let _=window_handle.update(cx,|_,w,_|w.activate_window());
             }
+            #[cfg(feature="qa")]
+            if let Some(out)=std::env::var_os("YUQUE_QA_PATH").filter(|_|std::env::var_os("YUQUE_DATA_DIR").is_some()&&std::env::var("YUQUE_MODE").as_deref()==Ok("demo")){
+                let root=std::path::PathBuf::from(out);
+                let view=desk.clone();
+                cx.spawn(async move|cx|{
+                    cx.background_executor().timer(std::time::Duration::from_millis(1800)).await;
+                    // Same isolated 780×640 fixture and coordinates as the pointer regression.
+                    for (name,mouse,key,expected) in [
+                        ("00-gallery",None,None,(0,None,false,false)),
+                        ("01-select",Some((263.,216.,Modifiers::default())),None,(1,Some(3),false,false)),
+                        ("02-range",Some((465.,216.,Modifiers{shift:true,..Default::default()})),None,(2,Some(2),false,false)),
+                        ("03-toggle",Some((465.,216.,Modifiers{control:true,..Default::default()})),None,(1,Some(3),false,false)),
+                        ("04-preview",None,Some("space"),(1,Some(3),true,false)),
+                        ("05-next",None,Some("right"),(1,Some(2),true,false)),
+                        ("06-return",None,Some("escape"),(1,Some(2),false,false)),
+                        ("07-inspector",None,Some("ctrl-i"),(1,Some(2),false,true)),
+                    ]{
+                        let result=cx.update(|cx|window_handle.update(cx,|_,w,cx|{
+                            w.refresh();w.draw(cx).clear(cx);
+                            if let Some((x,y,modifiers))=mouse{
+                                let position=point(px(x),px(y));
+                                w.dispatch_event(PlatformInput::MouseDown(MouseDownEvent{position,button:MouseButton::Left,click_count:1,modifiers,..Default::default()}),cx);
+                                w.dispatch_event(PlatformInput::MouseUp(MouseUpEvent{position,button:MouseButton::Left,click_count:1,modifiers,..Default::default()}),cx);
+                            }
+                            if let Some(key)=key{w.dispatch_keystroke(Keystroke::parse(key).expect("valid QA key"),cx);}
+                        }));
+                        if result.is_err(){eprintln!("PATH_CAPTURE window unavailable");break;}
+                        cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+                        let result=cx.update(|cx|window_handle.update(cx,|_,w,cx|{
+                            w.refresh();w.draw(cx).clear(cx);
+                            let state=view.read(cx).qa_path_state();
+                            let capture=w.render_to_image().and_then(|image|image.save(root.join(format!("{name}.png"))).map_err(Into::into));
+                            eprintln!("PATH_CAPTURE {name} state={state:?} expected={expected:?} capture={capture:?}");
+                            state==expected&&capture.is_ok()
+                        }));
+                        if !matches!(result,Ok(true)){eprintln!("PATH_CAPTURE FAILED");break;}
+                    }
+                    let _=cx.update(|cx|cx.quit());
+                }).detach();
+            }
             let close_desk=desk.downgrade();
             let _=window_handle.update(cx,|_,w,cx|w.on_window_should_close(cx,move|_,cx|{
                 if let Some(desk)=close_desk.upgrade(){desk.read(cx).flush_preferences();desk.update(cx,|v,cx|v.desktop_can_quit(cx))}else{true}

@@ -5,7 +5,8 @@ impl UploadDesk {
         self.clear_quality(cx);
         self.resource.preview_reload_pending=false;
         self.resource.pending_preview=None;
-        self.resource.tile_click_task=None;
+        self.resource.selection_anchor=None;self.resource.batch_tag_open=false;
+        self.inspector_model.update(cx,|model,cx|model.reset(cx));
         self.resource.page_cursors = vec![None];
         self.resource.selected_asset = None;
         self.resource.selected_ids.clear();
@@ -121,6 +122,9 @@ impl UploadDesk {
                             view.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
                         } else {
                             view.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
+                            if view.resource.selected_asset.as_ref().is_some_and(|a|!items.iter().any(|x|x.id==a.id)){
+                                view.resource.selected_asset=None;view.inspector_model.update(cx,|m,cx|m.reset(cx));
+                            }
                             view.resource.assets=items;
                             view.resource.cached_thumbnails.clear();view.resource.ratios.clear();
                         }
@@ -245,44 +249,71 @@ impl UploadDesk {
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_quality(cx);
         self.resource.pending_preview=None;
-        self.resource.tile_click_task=None;
-        let tags = self.storage.tags(asset.id).unwrap_or_default().join(", ");
-        self.resource.tag_input.update(cx, |input, cx| input.set_value(tags, window, cx));
-        self.resource.large_preview_open = false;
-        self.resource.large_preview_path = None;
-        self.resource.thumbnail_path = None;
-        self.resource.preview_task = None;
-        self.resource.preview_loading = false;
-        self.resource.preview_error = None;
-        self.resource.selected_asset = Some(asset.clone());
-        self.account_panel = false;
-        self.inspector_open = true;
-        if asset.category == "image" { self.load_preview(cx); }
+        let storage=self.storage.clone();let id=asset.id;
+        self.inspector_model.update(cx,|model,cx|model.select(id,storage,window,cx));
+        self.resource.large_preview_open=false;
+        self.resource.large_preview_path=None;
+        self.resource.thumbnail_path=None;
+        self.resource.preview_task=None;
+        self.resource.preview_loading=false;
+        self.resource.preview_error=None;
+        self.resource.selected_asset=Some(asset.clone());
+        if asset.category=="image"{self.load_preview(cx);}
         cx.notify();
     }
-
-    pub(super) fn click_tile(&mut self,asset:Asset,count:usize,window:&mut Window,cx:&mut Context<Self>){
-        // Keep the first click's tile under the pointer until a possible second
-        // click is delivered. Only defer detail layout when it would change.
-        let defer=count==1&&asset.category=="image"&&(!self.inspector_open||self.immersive);
-        let immersive=self.immersive;
-        self.select_asset(asset.clone(),window,cx);
-        if count>=2&&asset.category=="image"{
-            self.immersive=false;self.open_large_preview(window,cx);return;
-        }
-        if defer{
-            self.inspector_open=false;self.immersive=immersive;
-            let id=asset.id;let generation=self.resource.history_generation;
-            self.resource.tile_click_task=Some(cx.spawn(async move|this,cx|{
-                cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
-                let _=this.update(cx,|v,cx|{
-                    if !v.account_panel&&!v.jobs_page&&!v.resource.large_preview_open&&v.immersive==immersive&&v.resource.history_generation==generation&&v.resource.selected_asset.as_ref().is_some_and(|a|a.id==id){
-                        v.immersive=false;v.inspector_open=true;cx.notify();
-                    }
-                });
-            }));
-        }else{self.immersive=false;}
+    pub(super) fn show_asset_details(&mut self,asset:Asset,window:&mut Window,cx:&mut Context<Self>){
+        self.select_asset(asset,window,cx);self.immersive=false;self.inspector_open=true;cx.notify();
+    }
+    pub(super) fn click_tile(&mut self,asset:Asset,count:usize,modifiers:Modifiers,window:&mut Window,cx:&mut Context<Self>){
+        let order=self.resource.assets.iter().map(|a|a.id).collect::<Vec<_>>();
+        selection::click(&mut self.resource.selected_ids,&order,&mut self.resource.selection_anchor,asset.id,modifiers.shift,modifiers.platform||modifiers.control);
+        if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
+        if self.resource.selected_ids.contains(&asset.id){self.select_asset(asset.clone(),window,cx);}else if let Some(a)=self.resource.assets.iter().find(|a|self.resource.selected_ids.contains(&a.id)).cloned(){self.select_asset(a,window,cx);}else{self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));}
+        self.resource.gallery_focus.focus(window,cx);
+        if count>=2&&!modifiers.shift&&!modifiers.platform&&!modifiers.control&&asset.category=="image"{self.open_large_preview(window,cx);}
         cx.notify();
+    }
+    pub(super) fn gallery_key(&mut self,e:&KeyDownEvent,w:&mut Window,cx:&mut Context<Self>){
+        if !self.resource.gallery_focus.is_focused(w){return;}
+        let m=e.keystroke.modifiers;
+        let key=e.keystroke.key.as_str();
+        if m.platform||m.control{
+            match key{"a"=>self.command(Command::SelectAll,w,cx),"i"=>self.command(Command::ToggleInspector,w,cx),_=>return}
+        }else if !m.alt{
+            match key{
+                "space"=>self.command(Command::Preview,w,cx),
+                "escape"=>self.command(Command::ClearSelection,w,cx),
+                "left"|"right"|"up"|"down"=>{
+                    let at=self.resource.selected_asset.as_ref().and_then(|a|self.resource.assets.iter().position(|x|x.id==a.id));
+                    let next=match at{Some(i) if key=="left"||key=="up"=>i.saturating_sub(1),Some(i)=>(i+1).min(self.resource.assets.len().saturating_sub(1)),None=>0};
+                    if let Some(asset)=self.resource.assets.get(next).cloned(){
+                        self.click_tile(asset,1,m,w,cx);
+                        if self.resource.masonry&&self.resource.grid_view{
+                            if let Some(t)=self.resource.masonry_plan.tiles.iter().find(|t|t.index==next){
+                                let handle=&self.resource.masonry_scroll;let top=-f32::from(handle.offset().y);
+                                let viewport=f32::from(handle.bounds().size.height);
+                                let bottom=t.y+t.height+self.spacing().footer;
+                                if t.y<top{handle.set_offset(point(px(0.),px(-t.y)));}else if bottom>top+viewport{handle.set_offset(point(px(0.),px(-(bottom-viewport).max(0.))));}
+                            }
+                        }else if let Some(row)=self.resource.row_plan.iter().position(|r|match r{album::AlbumRow::Tiles{items,..}=>items.iter().any(|(i,_)|*i==next),album::AlbumRow::Item(i)=>*i==next,_=>false}){
+                            self.resource.album_list.scroll_to_reveal_item(row);
+                        }
+                    }
+                }
+                _=>return,
+            }
+        }else{return;}
+        cx.stop_propagation();
+    }
+    pub(super) fn save_selected_tags(&mut self,cx:&mut Context<Self>){
+        let model=self.inspector_model.read(cx);
+        if !model.ready||self.account.account_busy{return;}
+        let Some(id)=self.resource.selected_asset.as_ref().map(|a|a.id)else{return;};
+        let text=model.input.read(cx).value().to_string();
+        // Keep this bounded existing write synchronous until mutation/cleanup
+        // serialization is separated from the shell.
+        self.status=match self.storage.set_tags(id,&text){Ok(())=>"标签已保存".into(),Err(_)=>"标签保存失败，请重试".into()};
+        self.reload(cx);cx.notify();
     }
 
     pub(super) fn load_preview(&mut self, cx: &mut Context<Self>) {
@@ -440,11 +471,13 @@ impl UploadDesk {
         }));
         cx.notify();
     }
-    pub(super) fn close_preview(&mut self,cx:&mut Context<Self>){
+    pub(super) fn close_preview(&mut self,window:&mut Window,cx:&mut Context<Self>){
         self.clear_quality(cx);
         self.resource.pending_preview=None;
         self.resource.large_preview_open=false;
         self.resource.drag_at=None;
+        self.resource.gallery_focus.focus(window,cx);
+        if let Some(a)=&self.resource.selected_asset{self.resource.selected_ids.clear();self.resource.selected_ids.insert(a.id);self.resource.selection_anchor=Some(a.id);}
         if self.resource.preview_reload_pending{self.reload(cx);}else{self.refresh_thumbnails(cx);}
         cx.notify();
     }
