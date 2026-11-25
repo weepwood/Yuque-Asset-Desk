@@ -75,6 +75,9 @@ impl UploadDesk {
                 .child(div().flex().flex_col().min_w(px(0.)).child(div().font_semibold().truncate().child(if narrow{"语雀"}else{"Yuque Desk"}))
                     )
                 .child(div().debug_selector(||"collapse-sidebar".into()).child(Button::new("collapse-sidebar").xsmall().ghost().icon(IconName::PanelLeftClose).tooltip("收起侧栏").on_click(cx.listener(|v,_,_,cx|{v.sidebar_collapsed=true;cx.notify();})))))
+            .child(div().px_1().pb_3().child(Button::new("nav-account").small().ghost().icon(IconName::User).w_full()
+                .label(if self.account.config.mode==Mode::Demo{"本地演示".to_owned()}else{format!("账号 {}",self.account.config.owner_id())})
+                .selected(self.page==Page::Account).tooltip("账号管理").on_click(cx.listener(|v,_,w,cx|v.command(Command::Navigate(Page::Account),w,cx)))))
             .child(div().flex_1().min_h(px(0.)).flex().flex_col().gap_1().child(nav).child(section("分类")).child(self.tag_tree(w,cx)).overflow_y_scrollbar())
             .child(div().h(px(1.)).bg(p.line))
             .when(self.prefs.comfortable,|d|d.child(div().h(px(8.))))
@@ -83,7 +86,7 @@ impl UploadDesk {
             .when(self.prefs.comfortable,|d|d.child(div().h(px(8.))))
             .child(div().debug_selector(||"nav-settings".into()).child(SidebarMenuItem::new("设置").icon(IconName::Settings).active(self.page.settings())
                 .on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Settings),w,cx);})).render("nav-settings",w,cx)))
-            .child(div().px_2().pt_2().text_xs().text_color(p.muted).truncate().child(if self.account.config.mode==Mode::Demo{"本地演示 · 离线"}else{"语雀账号 · 离线预览"}))
+
     }
     pub(super) fn settings_preferences(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();
@@ -112,7 +115,7 @@ impl UploadDesk {
             .child(div().h(px(1.)).bg(p.line))
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("相册备份").child(div().text_xs().text_color(p.muted).child("保存本地资源索引与微缩图，不含凭据")))
-                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy)
+                .child(Button::new("album-backup").small().label(if self.backup_busy{"备份中…"}else{"导出备份"}).disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy)
                     .on_click(cx.listener(|v,_,_,cx|v.export_album(cx)))))
     }
     pub(super) fn gallery_toolbar(&self,narrow:bool,total:i64,_is_demo:bool,w:&Window,cx:&mut Context<Self>)->impl IntoElement{
@@ -145,8 +148,8 @@ impl UploadDesk {
             .child(div().debug_selector(||"toggle-inspector".into()).child(Button::new("toggle-inspector").small().ghost().icon(IconName::PanelRight).selected(self.inspector_open&&!self.immersive).tooltip("详情 · Cmd/Ctrl+I").on_click(cx.listener(|v,_,w,cx|v.command(Command::ToggleInspector,w,cx)))))
             .child(div().debug_selector(||"immersive-toggle".into()).child(Button::new("immersive-toggle").small().ghost().selected(self.immersive).icon(if self.immersive{IconName::Minimize}else{IconName::Maximize}).tooltip(if self.immersive{"退出沉浸"}else{"沉浸浏览"}).on_click(cx.listener(|v,_,w,cx|v.command(Command::ToggleImmersive,w,cx)))))
             .when(self.immersive,|d|d.child(Button::new("native-fullscreen").small().ghost().icon(if w.is_fullscreen(){IconName::Minimize}else{IconName::Maximize}).tooltip("系统全屏").on_click(cx.listener(|_,_,w,_|w.toggle_fullscreen()))))
-            .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
-            .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").small().primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));
+            .child(Button::new("paste").small().ghost().icon(IconName::Copy).tooltip("粘贴上传").disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.paste_files(cx))))
+            .child(div().debug_selector(||"choose-main".into()).child(Button::new("choose-main").small().primary().icon(IconName::Plus).label(if self.picker_pending{"选择中…"}else{"上传"}).tooltip("选择文件").disabled(self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy).on_click(cx.listener(|v,_,_,cx|v.select_files(cx)))));
         let title=if fav{"收藏"}else{match self.resource.category{"image"=>"图片","video"=>"视频","attachment"=>"附件",_=>"全部资源"}};
         let heading=div().flex_1().min_w(px(0.)).flex().items_center().gap_2()
             .child(div().text_size(px(self.spacing().title)).font_semibold().truncate().child(title))
@@ -164,7 +167,7 @@ impl UploadDesk {
     pub(super) fn selection_toolbar(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();let n=self.resource.selected_ids.len();let weak=cx.weak_entity();
         div().h(px(30.)).flex_shrink_0().flex().items_center().gap_2()
-            .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(if n>0{format!("已选择 {n} 项")}else if self.resource.all_accounts{"全部账号".into()}else if self.account.config.mode==Mode::Demo{"本地演示 · 离线".into()}else{format!("当前账号 {}",self.account.config.owner_id())}))
+            .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(if n>0{format!("已选择 {n} 项")}else if self.resource.all_accounts{"全部账号".into()}else{"Space 预览 · Shift 多选".into()}))
             .when(n>0,|d|d
                 .child(Button::new("selection-copy").small().ghost().icon(IconName::Copy).label("复制链接").on_click(cx.listener(|v,_,_,cx|v.copy_selected(false,cx))))
                 .child(Button::new("selection-more").small().ghost().label("更多").dropdown_menu(move|m,_,_|m

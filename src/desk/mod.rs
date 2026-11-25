@@ -12,6 +12,9 @@ mod view;
 mod shell;
 mod selection;
 mod inspector_model;
+mod mutations;
+mod settings_view;
+mod viewer_model;
 use shell::{Page,Command};
 
 use anyhow::{Context as AnyhowContext, Result};
@@ -132,13 +135,9 @@ struct ResourceState {
     cached_thumbnails: std::collections::HashMap<i64, PathBuf>,
     thumbnails_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
-    quality:Option<crate::high_preview::QualityImage>,
-    quality_task:Option<Task<()>>,
-    quality_generation:u64,
-    quality_busy:bool,
-    quality_status:String,
     pending_preview:Option<(i64,u8)>,
     preview_reload_pending:bool,
+    viewer_return:Option<(Asset,std::collections::HashSet<i64>,Option<i64>)>,
     preview_loading: bool,
     large_preview_path: Option<PathBuf>,
     large_preview_open: bool,
@@ -163,7 +162,11 @@ struct ResourceState {
 
 pub(crate) struct UploadDesk {
     resource: ResourceState,
+    resource_write_busy:bool,
+    resource_write_task:Option<Task<()>>,
     inspector_model:Entity<inspector_model::InspectorModel>,
+    viewer_model:Entity<viewer_model::ViewerModel>,
+    viewer_revision:u64,
     queue: QueueState,
     account: AccountState,
     storage: Storage,
@@ -224,18 +227,19 @@ impl UploadDesk {
         self.desktop_enabled=enabled;self.status=status;cx.notify();
     }
     pub(crate) fn desktop_quick_upload(&mut self,cx:&mut Context<Self>){
-        if self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
+        if self.resource_write_busy || self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
             self.status="当前有任务正在处理，请稍后再操作".into();cx.notify();return;
         }
         self.paste_files(cx);
     }
     pub(crate) fn desktop_can_quit(&mut self,cx:&mut Context<Self>)->bool{
-        if self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
+        if self.resource_write_busy || self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
             self.status="请先关闭文件选择窗口或等待任务结束，再退出".into();cx.notify();false
         }else{true}
     }
 
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, config: Config, storage: Storage) -> Self {
+        shell::bind_gallery(cx);
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("搜索文件名或标签…"));
         let subscription = cx.subscribe_in(
             &search_input,
@@ -273,8 +277,19 @@ impl UploadDesk {
         });
         let inspector_model=cx.new(|cx|inspector_model::InspectorModel::new(window,cx));
         let inspector_subscription=cx.observe(&inspector_model,|_,_,cx|cx.notify());
+        let viewer_model=cx.new(|_|viewer_model::ViewerModel::default());
+        let viewer_subscription=cx.observe(&viewer_model,|v,model,cx|{
+            let revision=model.read(cx).revision;
+            if revision!=v.viewer_revision{
+                v.viewer_revision=revision;
+                v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));v.resource.zoom_channel=v.resource.zoom_channel.wrapping_add(1);
+            }
+            cx.notify();
+        });
         let mut view = Self {
+            viewer_model,viewer_revision:0,
             inspector_model,
+            resource_write_busy:false,resource_write_task:None,
             resource: ResourceState {
                 assets: Vec::new(),
                 search: String::new(),
@@ -318,7 +333,7 @@ impl UploadDesk {
                 cached_thumbnails: Default::default(),
                 thumbnails_task: None,
                 preview_task: None,
-                quality:None,quality_task:None,quality_generation:0,quality_busy:false,quality_status:String::new(),pending_preview:None,preview_reload_pending:false,
+                pending_preview:None,preview_reload_pending:false,viewer_return:None,
                 preview_loading: false,
                 large_preview_path: None,
                 large_preview_open: false,
@@ -370,7 +385,7 @@ impl UploadDesk {
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription],
             inspector_open: false,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
