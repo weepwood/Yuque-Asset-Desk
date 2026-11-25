@@ -1,10 +1,10 @@
 # Yuque Asset Desk — AI 开发协作说明
 
 ## 当前交接入口（优先于后续历史记录）
-- 正式版本 v0.5.1；V0.7.0 固定候选 75c173bf0630d6eed2cdcb07d1a6fa3f6e4de996，冻结的 main 和原始产物不改。Windows 真机离线，门禁未完成。
-- PR #8 分支 feat/v0.8-browse-context 已完成九批后续架构、交互与性能工作，本轮收口版本元数据至 V0.8.0，未正式发布。固定 V0.8.0 代码候选 aec2446fa46c172840f38066e87e564c6422799e，CI 45553650482 双平台通过，原始产物与 Mac 隔离启动通过；Windows 真机仍阻塞。当前验收清单 [docs/release/v0.8.0-acceptance.md](docs/release/v0.8.0-acceptance.md)；历史候选 [docs/release/v0.7.0-acceptance.md](docs/release/v0.7.0-acceptance.md)。
-- 仅处理真实发布阻塞，不再扩张功能或机械拆分；不得用文档更新后的 SHA 替换已核验代码候选或重新生成发布包。遵守用户数据保护、中文提交、隔离 Demo 测试。
-- 下文历史记录中的版本、CI、平台策略以本节及对应版本验收清单为准；当前 CI 仅 Windows x64 与 macOS ARM64，不能把历史 x64 Mac 构建当成本轮门禁。
+- 最新正式版本 v0.8.0，V0.7.0 亦已正式发布。PR #8 已合并 main 25805df，代码与固定候选一致。
+- 固定发布候选：V0.7 75c173b；V0.8 aec2446。各自使用原始 CI 产物，禁止重新打包替换。详见 [V0.7验收](docs/release/v0.7.0-acceptance.md)、[V0.8验收](docs/release/v0.8.0-acceptance.md)。
+- Windows 真机已调整为发布后补充验收；不可宣称完成。只处理真实缺陷和后续验收，不继续扩大功能范围；保留用户数据，中文提交，隔离 Demo 测试。
+- 历史记录中的冻结状态已收口；当前 CI 仅 Windows x64 与 macOS ARM64。
 
 ## 项目定位
 - Rust + GPUI Kit 0.9.0 + SQLite 原生桌面上传工具；不引入 Electron 或 WebView。
@@ -275,3 +275,8 @@
 - Windows：ZIP CRC、x64 PE、图标/版本资源、INSTALL.txt 和原始 SHA256 通过；CI 原生 ProductName/ProductVersion 检查通过。实际 Windows 设备仍离线，不宣称运行、托盘或文件选择验收通过。
 - macOS：复用 dist/dmg-venv，原始 DMG CRC、只读挂载、ARM64、应用版本/图标/标识、ad-hoc 签名、Finder 安装布局通过。隔离复制后实际启动，Demo SQLite 初始化为空、1160×828 窗口、DESKTOP tray=true hotkey=true；测试进程已退出。默认 Python 缺少 ds_store，切换既有打包虚拟环境后通过；hdiutil 弃用及 sandbox_extension 警告不阻塞本次启动。未安装到 Applications、未验证 Gatekeeper 公证、未触发物理快捷键/真实上传。
 - 完整验收日志与 smoke.json 保存在 dist/release-audit-v0.8.0/。正式版本仍为 v0.5.1。V0.7 固定候选优先收口，Windows 真机门禁未完成，不合并 PR #8，不创建 Tag/Release，不改变发布顺序。
+
+## 正式发布收口（2026-11-25）
+- 根据本轮对简化发布方案的确认，Windows 真机调整为发布后补充验收，未虚报实际设备运行。V0.7.0 正式 Tag/Release 指向 75c173bf0630d6eed2cdcb07d1a6fa3f6e4de996；V0.8.0 正式 Tag/Release 指向 aec2446fa46c172840f38066e87e564c6422799e。两次正式发布前四项远程草稿资产的 SHA256/大小与原始 CI 文件完全一致，未重新打包。
+- PR #8 已合并 main 25805df371df4b1b258e184e61a2908c272e60b7；合并后除 AGENTS.md 与 docs 外，文件与 V0.8 固定代码候选一致。使用已通过的候选 CI 45553650482 与文档提交 CI 45555047033，不以新 main 构建替换发布资产。
+- 最新正式版本 v0.8.0；保留 v0.7.0 与 v0.5.1 历史版本。未公证 Mac、未签名 Windows、未进行真实语雀上传，Windows 真机、物理托盘/快捷键及文件选择为剩余补充验收。历史冻结记录仅作为当时证据，本节覆盖旧发布状态。
