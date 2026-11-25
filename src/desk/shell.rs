@@ -32,7 +32,7 @@ impl UploadDesk{
         match command{
             Command::Navigate(page)=>self.navigate_page(page,cx),
             Command::ToggleInspector=>{self.immersive=false;self.inspector_open=!self.inspector_open;},
-            Command::ToggleImmersive=>self.immersive=!self.immersive,
+            Command::ToggleImmersive=>{self.immersive=!self.immersive;if self.page==Page::Gallery{self.resource.gallery_focus.focus(window,cx);}},
             Command::SelectAll=>{
                 self.resource.selected_ids=self.resource.assets.iter().take(selection::LIMIT).map(|a|a.id).collect();
                 if self.resource.selected_asset.as_ref().is_none_or(|a|!self.resource.selected_ids.contains(&a.id)){

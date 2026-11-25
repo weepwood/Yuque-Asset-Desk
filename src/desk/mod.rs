@@ -1,4 +1,5 @@
 mod account;
+mod account_model;
 pub(crate) mod design;
 mod workspace;
 mod updates;
@@ -9,8 +10,10 @@ pub(crate) mod preferences;
 mod preference_writer;
 mod queue;
 mod queue_prepare;
+mod queue_runner;
 mod job_history;
 mod resources;
+mod gallery_query;
 mod view;
 mod shell;
 mod selection;
@@ -59,35 +62,6 @@ fn file_size(bytes: i64) -> String {
 }
 
 const PAGE_SIZE: usize = 150;
-
-struct AccountState {
-    config: Config,
-    account_token: Entity<InputState>,
-    identity: Option<crate::config::AccountIdentity>,
-    identity_status: String,
-    account_csrf: Entity<InputState>,
-    account_cookie: Entity<InputState>,
-    account_busy: bool,
-    session_status: String,
-    saved_accounts: Vec<String>,
-    account_task: Option<Task<()>>,
-}
-
-struct QueueState {
-    queue_control: Arc<AtomicU8>,
-    transfer: Arc<uploader::TransferProgress>,
-    transfer_task: Option<Task<()>>,
-    active_job: Option<i64>,
-    busy: bool,
-    queue_count: usize,
-    queue_total: usize,
-    succeeded: usize,
-    duplicates: usize,
-    failed: Vec<(PathBuf, String)>,
-    upload_task: Option<Task<()>>,
-    preparing:bool,
-    prepare_task:Option<Task<()>>,
-}
 
 struct ResourceState {
     assets: Vec<Asset>,
@@ -153,20 +127,22 @@ struct ResourceState {
     loading_history: bool,
     history_error: Option<String>,
     history_generation: u64,
-    history_task: Option<Task<()>>,
     total_count: i64,
 }
 
 pub(crate) struct UploadDesk {
     resource: ResourceState,
+    gallery_query:Entity<gallery_query::GalleryQuery>,
     resource_write_busy:bool,
     resource_write_task:Option<Task<()>>,
     inspector_model:Entity<inspector_model::InspectorModel>,
     viewer_model:Entity<viewer_model::ViewerModel>,
     viewer_revision:u64,
-    queue: QueueState,
+    queue: Entity<queue_runner::QueueRunner>,
     job_history:Entity<job_history::JobHistory>,
-    account: AccountState,
+    account: Entity<account_model::AccountModel>,
+    config:Config,
+    maintenance_busy:bool,
     storage: Storage,
     dark: bool,
     page: Page,
@@ -184,6 +160,7 @@ pub(crate) struct UploadDesk {
     prefs_task:Option<Task<()>>,
     prefs_writer:preference_writer::PreferenceWriter,
     prefs_revision:u64,
+    prefs_saved_revision:u64,
     prefs_dirty:bool,
     prefs_writing:bool,
     backup_task: Option<Task<()>>,
@@ -200,6 +177,7 @@ pub(crate) struct UploadDesk {
 }
 
 impl UploadDesk {
+    fn account_busy(&self,cx:&App)->bool{self.maintenance_busy||self.account.read(cx).account_busy}
     pub(crate) fn persist_preferences(&mut self,cx:&mut Context<Self>){
         self.prefs.dark=self.dark;
         self.prefs.layout=if !self.resource.grid_view{"list"}else if self.resource.masonry{"masonry"}else if self.resource.justified{"justified"}else{"grid"}.into();
@@ -223,7 +201,7 @@ impl UploadDesk {
                 let writer=writer.clone();let storage=storage.clone();
                 let result=cx.background_spawn(async move{writer.write(&storage,revision,&value)}).await;
                 let next=this.update(cx,|v,cx|{
-                    if result.is_err(){v.status="保存个性化设置失败".into();}
+                    if result.is_err(){v.status="保存个性化设置失败".into();}else{v.prefs_saved_revision=v.prefs_saved_revision.max(revision);}
                     let next=v.prefs_dirty&&!v.resetting&&!v.reset_armed&&!v.reset_pending;
                     if !next{v.prefs_writing=false;}
                     cx.notify();next
@@ -233,9 +211,18 @@ impl UploadDesk {
         }));
     }
     fn isolated_qa(&self)->bool{
-        cfg!(feature="qa")&&self.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some()||std::env::var_os("YUQUE_QA_PATH").is_some())
+        cfg!(feature="qa")&&self.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some()&&(std::env::var_os("YUQUE_QA_CAPTURE").is_some()||std::env::var_os("YUQUE_QA_PERF").is_some()||std::env::var_os("YUQUE_QA_PATH").is_some())
     }
+    #[cfg(all(test,feature="qa"))]
     pub(crate) fn flush_preferences(&self){if !self.resetting && !self.isolated_qa(){let _=self.prefs_writer.write(&self.storage,self.prefs_revision,&self.prefs.encode());}}
+    // GPUI native quit observers have a 200ms shutdown budget. Normal close
+    // verifies the latest revision before quit; external/native quit is best effort.
+    pub(crate) fn final_preferences_task(&self,cx:&App)->Option<Task<()>>{
+        if self.resetting||self.reset_pending||self.isolated_qa()||self.prefs_saved_revision>=self.prefs_revision{return None;}
+        let writer=self.prefs_writer.clone();let storage=self.storage.clone();
+        let revision=self.prefs_revision;let value=self.prefs.encode();
+        Some(cx.background_executor().spawn(async move{let _=writer.write(&storage,revision,&value);}))
+    }
     #[cfg(feature="qa")]
     pub(crate) fn report_perf(&self,cx:&App){
         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF final loaded={} decoded_cache={} bound={}",self.resource.assets.len(),self.resource.image_cache.read(cx).len(),image_cache::MAX_IMAGES);}
@@ -250,18 +237,27 @@ impl UploadDesk {
         self.desktop_enabled=enabled;self.status=status;cx.notify();
     }
     pub(crate) fn desktop_quick_upload(&mut self,cx:&mut Context<Self>){
-        if self.resource_write_busy || self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
+        if self.resource_write_busy || self.picker_pending || self.queue.read(cx).busy || self.backup_busy || self.account_busy(cx){
             self.status="当前有任务正在处理，请稍后再操作".into();cx.notify();return;
         }
         self.paste_files(cx);
     }
     pub(crate) fn desktop_can_quit(&mut self,cx:&mut Context<Self>)->bool{
-        if self.prefs_writing || self.resource_write_busy || self.picker_pending || self.queue.busy || self.backup_busy || self.account.account_busy{
+        if self.prefs_writing || self.resource_write_busy || self.picker_pending || self.queue.read(cx).busy || self.backup_busy || self.account_busy(cx){
             self.status="请先关闭文件选择窗口或等待任务结束，再退出".into();cx.notify();false
+        }else if !self.isolated_qa()&&self.prefs_saved_revision<self.prefs_revision{
+            self.reset_armed=false;
+            self.persist_preferences(cx);
+            self.status="正在保存最新设置，完成后可退出".into();cx.notify();false
         }else{true}
     }
 
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, config: Config, storage: Storage) -> Self {
+    #[cfg(all(test,feature="qa"))]
+    pub(crate) fn new(window:&mut Window,cx:&mut Context<Self>,config:Config,storage:Storage)->Self{
+        let prefs=preferences::Preferences::decode(storage.preferences().unwrap_or_default());
+        Self::new_with_preferences(window,cx,config,storage,prefs)
+    }
+    pub(crate) fn new_with_preferences(window: &mut Window, cx: &mut Context<Self>, config: Config, storage: Storage,prefs:preferences::Preferences) -> Self {
         shell::bind_gallery(cx);
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("搜索文件名或标签…"));
         let subscription = cx.subscribe_in(
@@ -281,8 +277,6 @@ impl UploadDesk {
             (Mode::Yuque, None) => "语雀未配置：请在设置中识别账号并配置网页会话".to_string(),
             (Mode::Yuque, Some(_)) => "语雀会话已配置，等待上传文件".to_string(),
         };
-        let saved_accounts = storage.accounts().unwrap_or_default();
-        let prefs=preferences::Preferences::decode(storage.preferences().unwrap_or_default());
         use gpui_kit::component::slider::{SliderState,SliderEvent};
         let density=cx.new(|_|SliderState::new().min(96.).max(240.).step(4.).default_value(prefs.tile));
         let density_subscription=cx.subscribe_in(&density,window,|v,_,event:&SliderEvent,_,cx|{
@@ -310,7 +304,29 @@ impl UploadDesk {
         });
         let job_history=cx.new(|_|job_history::JobHistory::default());
         let job_history_subscription=cx.observe(&job_history,|_,_,cx|cx.notify());
+        let queue=cx.new(|_|queue_runner::QueueRunner::default());
+        let queue_observer=cx.observe(&queue,|_,_,cx|cx.notify());
+        let queue_events=cx.subscribe(&queue,|v,_,event:&queue_runner::QueueEvent,cx|{
+            use queue_runner::QueueEvent::*;
+            match event{
+                Message(s)=>v.status=s.clone(),
+                Started=>v.first_jobs(cx),
+                Refresh=>v.refresh_jobs(cx),
+                ResourceChanged=>v.reload(cx),
+                Authorization=>v.account.update(cx,|a,cx|{a.session_status="上传未获授权：请在设置检查会话及 CSRF Token，再手动恢复任务".into();cx.notify();}),
+                Finished(body)=>if v.desktop_enabled{cx.show_system_notification(SystemNotification{tag:"yuque-upload-batch".into(),title:"Yuque Asset Desk".into(),body:body.clone().into(),actions:vec![]});},
+            }
+            cx.notify();
+        });
+        let gallery_query=cx.new(|_|gallery_query::GalleryQuery::default());
+        let gallery_events=cx.subscribe(&gallery_query,|v,_,event:&gallery_query::GalleryResult,cx|v.apply_gallery_result(event,cx));
+        let account=cx.new(|cx|account_model::AccountModel::new(window,cx));
+        let account_observer=cx.observe(&account,|_,_,cx|cx.notify());
+        let account_events=cx.subscribe(&account,|v,_,event:&account_model::AccountEvent,cx|{
+            match event{account_model::AccountEvent::Activate(creds)=>v.apply_account(Some(creds.clone()),cx)}
+        });
         let mut view = Self {
+            gallery_query,
             job_history,
             viewer_model,viewer_revision:0,
             inspector_model,
@@ -372,38 +388,14 @@ impl UploadDesk {
                 loading_history: false,
                 history_error: None,
                 history_generation: 0,
-                history_task: None,
                 total_count: 0,
             },
-            queue: QueueState {
-                queue_control: Arc::new(AtomicU8::new(0)),
-                transfer: Arc::new(uploader::TransferProgress::default()),
-                transfer_task: None,
-                active_job: None,
-                busy: false,
-                queue_count: 0,
-                queue_total: 0,
-                succeeded: 0,
-                duplicates: 0,
-                failed: Vec::new(),
-                upload_task: None,
-                preparing:false,prepare_task:None,
-            },
-            account: AccountState {
-                config,
-                account_token: cx.new(|cx| InputState::new(window, cx).placeholder("个人 API Token（可选）").masked(true)),
-                identity:None, identity_status:String::new(),
-                account_csrf: cx.new(|cx| InputState::new(window, cx).placeholder("Cookie 无 yuque_ctoken 时填写").masked(true)),
-                account_cookie: cx.new(|cx| InputState::new(window, cx).placeholder("Cookie").masked(true)),
-                account_busy: false,
-                session_status: "尚未验证会话".into(),
-                saved_accounts,
-                account_task: None,
-            },
+            queue,
+            account,config,maintenance_busy:false,
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,account_observer,account_events],
             inspector_open: false,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
@@ -412,7 +404,7 @@ impl UploadDesk {
             backup_busy:false,
             desktop_enabled:false,
             prefs,
-            prefs_task:None,prefs_writer:Default::default(),prefs_revision:0,prefs_dirty:false,prefs_writing:false,
+            prefs_task:None,prefs_writer:Default::default(),prefs_revision:0,prefs_saved_revision:0,prefs_dirty:false,prefs_writing:false,
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
@@ -422,7 +414,7 @@ impl UploadDesk {
         };
         cx.defer_in(window, |view, _window, cx| {
             #[cfg(feature="qa")]
-            if view.account.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && (std::env::var_os("YUQUE_QA_CAPTURE").is_some() || std::env::var_os("YUQUE_QA_PERF").is_some()) {
+            if view.config.mode==Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() && (std::env::var_os("YUQUE_QA_CAPTURE").is_some() || std::env::var_os("YUQUE_QA_PERF").is_some()) {
                 match std::env::var("YUQUE_QA_PAGE").as_deref() {
                     Ok("notice")=>{
                         use gpui_kit::component::{notification::Notification,WindowExt};
@@ -434,7 +426,7 @@ impl UploadDesk {
                     }
                     Ok("data")=>{view.page=Page::Data;view.inspector_open=false;view.refresh_data(cx);}
                     Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
-                    Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});view.account.identity_status="已识别个人账号；保存时仍需核对网页会话".into();}
+                    Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
                     Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}
                     Ok("tags")=>{view.resource.tags_expanded=true;}
@@ -449,11 +441,12 @@ impl UploadDesk {
                     _=>{}
                 }
             }
+            view.account.update(cx,|a,cx|a.refresh_index(view.storage.clone(),cx));
             view.refresh_jobs(cx);
             view.reload(cx);
         });
         #[cfg(feature="qa")]
-        if view.account.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some(){
+        if view.config.mode==Mode::Demo&&std::env::var_os("YUQUE_DATA_DIR").is_some(){
             if let Ok(kind)=std::env::var("YUQUE_QA_PICKER"){
                 if matches!(kind.as_str(),"upload"|"backup"){
                     cx.spawn(async move|this,cx|{
@@ -468,7 +461,7 @@ impl UploadDesk {
                 }
             }
         }
-        if std::env::var("YUQUE_KEYCHAIN_SMOKE").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && view.account.config.mode == Mode::Demo {
+        if std::env::var("YUQUE_KEYCHAIN_SMOKE").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && view.config.mode == Mode::Demo {
             view.keychain_smoke(cx);
         }
         view

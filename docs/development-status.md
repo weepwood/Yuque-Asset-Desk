@@ -209,3 +209,10 @@
 - 偏好快照后台合并保存及 revision 顺序门禁，正常关闭先核验 busy，最终同步 flush 兜底；重置准备禁止启动设置写入。账号索引保存、凭据删除后的索引删除/列表重读均后台执行，保持先索引后 vault、失败保留索引。不新增依赖/数据库迁移/业务功能。
 - 59项 QA 通过、1公网默认忽略；all-targets、QA build、static/diff；SQLite 真实写锁下重复入队拦截、最新偏好持久化、账号 scope/分页、剪贴板校验。原生上传和备份选择窗口存活及回调通过（未物理点选），隔离 reset helper 通过（无真实账号）。8张实际截图，任务页/最小窗口/存储已审查。未再次运行全量 Release 性能；沿用上轮基准，不宣称性能提升。
 - 剩余：Gallery/Queue runner/Account 完整独立 Entity、启动与重置预检查等同步 I/O、最终退出 flush、其他维护任务、完整侧栏/沉浸动画、Windows 真机与真实语雀、正式发布。保持 v0.5.1 Tag/Cargo 0.6.0。
+
+## V0.7 第四批：运行边界与发布准备
+- PR #6 固定 54b3831，CI 45536097492 success，合并 c2bb22d，main CI 45540060853 success。独立分支基于同内容 54b3831。Cargo/lock 升 0.7.0 候选，CHANGELOG 更新，保持 v0.5.1 正式 Tag。
+- QueueRunner/AccountModel/GalleryQuery retained Entity 独立任务生命周期，shell 使用 typed event 协调；Gallery 显示/选择/布局仍在 shell，当前 Config 与维护互锁仍由 shell 协调。任务终态一次图库刷新。启动偏好单次读、账号索引异步、重置预检/确认后预检/启动 helper 后台。正常退出确保最新 revision，强制/原生外部退出 best-effort 后台保存（GPUI 200ms预算），数据库启动初始化仍同步。
+- 任务固定列、账号紧凑行、底部对齐完整缩略图，侧栏/沉浸保留空间至终态、快速反向、减少动效及焦点恢复。61 QA 成功、1公网默认忽略、all-targets/QA build/static/diff；15张不同真实渲染图（0.7候选账号/设置复验），8阶段操作 trace。macOS upload/backup native panel 存活与回调、隔离 reset helper 成功，无真实账号/真实数据/物理鼠标或 Windows 真机。新增依赖与schema迁移均为零。
+- 待完成：候选双平台CI/安装包验收、受控性能对照、Windows真机及真实凭据边界、正式 Tag/Release。不能把架构任务全量迁移或系统强制退出可靠性视为已完全实现。
+- 已完成本批 Release A/B 同条件采样：54b3831独立worktree，候选0.7.0；网格P95 5.011→2.260ms（RSS149.55→133.55MiB），瀑布流4.732→1.775ms（RSS147.16→133.39MiB），各120样本、同布局最终加载600/450条一致、缓存192、无超时。原始JSON及比较表见 docs/performance/v0.7-runtime-comparison.md。单次对照不能推断因果、持续FPS或Windows表现。正式双平台CI/产物验收仍待本PR。

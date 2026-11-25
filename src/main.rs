@@ -35,11 +35,12 @@ fn main() -> Result<()> {
     instance.try_lock().context("已有 Yuque Asset Desk 实例使用此数据目录")?;
     anyhow::ensure!(!parent.join(data_management::REQUEST).exists(),"应用重置尚未完成；请等待清理结束");
     let storage = Storage::new(path)?;
+    // Startup preferences are required for initial window geometry, before UI starts.
+    let prefs=desk::preferences::Preferences::decode(storage.preferences().unwrap_or_default());
     application()
         .with_assets(assets::Assets)
         .run(move |cx| {
             init(cx);
-            let prefs=desk::preferences::Preferences::decode(storage.preferences().unwrap_or_default());
             let light = std::env::var("YUQUE_QA_LIGHT").as_deref() == Ok("1") && std::env::var_os("YUQUE_DATA_DIR").is_some() && config.mode == config::Mode::Demo;
             desk::design::apply(!light && prefs.dark,None,cx);
             let config = config.clone();
@@ -98,7 +99,7 @@ fn main() -> Result<()> {
                         }).detach();
                     }
                 }
-                cx.new(|cx| UploadDesk::new(window, cx, config, storage))
+                cx.new(|cx| UploadDesk::new_with_preferences(window, cx, config, storage,prefs.clone()))
             })
             .expect("无法创建 GPUI 桌面窗口");
             #[cfg(feature="qa")]
@@ -150,15 +151,15 @@ fn main() -> Result<()> {
             }
             let close_desk=desk.downgrade();
             let _=window_handle.update(cx,|_,w,cx|w.on_window_should_close(cx,move|_,cx|{
-                if let Some(desk)=close_desk.upgrade(){let allowed=desk.update(cx,|v,cx|v.desktop_can_quit(cx));if allowed{desk.read(cx).flush_preferences();}allowed}else{true}
+                if let Some(desk)=close_desk.upgrade(){desk.update(cx,|v,cx|v.desktop_can_quit(cx))}else{true}
             }));
             let quit_desk=desk.downgrade();
             cx.on_app_quit(move|cx|{
-                if let Some(desk)=quit_desk.upgrade(){
-                    desk.read(cx).flush_preferences();
+                let task=quit_desk.upgrade().and_then(|desk|{
                     #[cfg(feature="qa")] desk.read(cx).report_perf(cx);
-                }
-                async {}
+                    desk.read(cx).final_preferences_task(cx)
+                });
+                async move{if let Some(task)=task{task.await;}}
             }).detach();
             #[cfg(any(target_os="macos",target_os="windows"))]
             if std::env::var("YUQUE_DESKTOP_INTEGRATION").as_deref()!=Ok("0")

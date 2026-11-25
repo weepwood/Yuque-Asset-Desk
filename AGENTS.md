@@ -185,3 +185,13 @@
 - 账号验证后索引保存与列表读取后台执行，仍先索引后系统密钥库；凭据删除后索引删除与重读后台执行，保留失败索引。账号启动读取、重置预检查/调度及部分维护写入仍同步；未使用真实凭据。
 - 59 QA pass/0 fail/1 ignored、all-targets check、QA build、static/diff；实际 SQLite BEGIN IMMEDIATE 下入队与设置更新 UI dispatch <1s，重复入队拦截，仅一个 done，最新 tile204；独立 history scope 切换和51条分页、剪贴板校验及不覆盖。真实 macOS upload/backup NSOpenPanel 880×448，进程存活和窗口内回调，jobs=0（不是物理点选）；隔离 reset helper 验证错误 token/unknown任务/实例锁/受控删除及原文件备份保留。8 张不同界面截图 dist/design-research/io-after/（合成资料）；任务计数改为“可恢复”，避免与所有未完成混淆。证据 /tmp/yuque-v07-io-*.log。
 - 后续集中推进 Gallery/Queue runner/Account 真正 Entity 化、余下同步 I/O、侧栏与沉浸动效、同条件 Release 性能复测、真实 Windows/macOS 包验收。不重复无必要全量基准，不新增业务功能。
+
+## V0.7 运行边界第四批
+- PR #6 固定 54b3831，双平台 CI 45536097492 success，合并 main c2bb22d，main CI 45540060853 success。第一次合并后 git fetch HTTPS 失败，随后已核实 MERGED 并成功 fetch。独立 feat/v0.7-runtime-boundaries 基于同内容的 54b3831；正式 Tag 保持 v0.5.1，候选 Cargo/Cargo.lock 0.7.0。
+- QueueRunner retained Entity 拥有 prepare/upload/progress task、状态、控制；shell 订阅类型化事件，账号快照固定到批次，完成/取消/暂停统一触发图库刷新一次。保留串行协议、远端结果未知门禁、每文件任务状态；暂停/取消期间累计状态写入失败不可被最后一项成功覆盖。
+- GalleryQuery retained Entity 持有查询与 generation，过期请求不发结果；shell 仍负责当前结果合并、选择、布局、缓存及预览协调，不声称所有 Gallery 状态已独立。AccountModel retained Entity 持有凭据表单、识别/会话/vault任务和索引任务代际；shell 持有已激活 Config 和独立 maintenance_busy，避免数据维护占用账号模型状态。
+- 启动偏好在 application.run 前读取一次用于窗口初始尺寸/主题，账号索引后台加载；重置 arm 与确认后 preflight、账号索引及 reset helper 启动后台执行，确认前后安全门禁、实例锁及源文件保护不变。普通退出先核对最新偏好保存成功，失败/未完成拒绝退出并可重试；托盘隐藏不阻塞写入；系统外部直接退出的后台最终保存受 GPUI 200ms shutdown timeout 限制。启动数据库创建/打开仍是窗口启动前同步 I/O；部分剪贴板读取和平台 API 必须 UI 线程，不声称绝对无阻塞。
+- 任务中心对齐列，账号当前状态顶部紧凑行、Token 同行识别、Cookie/CSRF 连续分组；等宽图库缩略图底部对齐、不裁剪。侧栏收起与沉浸退出保留空间至180ms过渡终态，图标栏可反向，沉浸退出的控件拦截输入、进入恢复图库焦点；展开预留最终宽度，不逐帧 reflow，减少动态直接终态。退出布局不是连续宽度动画。
+- 61 QA pass/0 fail/1 ignored、all-targets、QA build、static/diff；三文件批次仅一次图库刷新、侧栏/沉浸真实渲染反向和减动效、锁竞争后退出条件回归；15张不同界面截图（两次采集，账号与设置最后以0.7.0构建复验），dist/design-research/runtime-after/；8阶段实际 GPUI 注入轨迹 docs/performance/v0.7-runtime-path.log；macOS 上传/备份选择窗进程存活与回调、隔离 reset helper 通过（无物理点选/真实凭据）。未改用户数据、原文件、离线微缩图、数据库schema或第三方依赖。
+- 发布前必须确认新 PR 双平台CI与产物、Windows真机、macOS正式DMG、实际凭据/语雀测试的授权边界以及性能证据；候选未正式发布。不可将 Gallery 全部状态、所有平台强制退出及所有视觉路径表述为完全验收。
+- 本批补充 Release A/B：固定 54b3831 独立 worktree 与0.7.0候选顺序构建/同脚本万级合成数据，网格 P50/P95 2.103/5.011→1.200/2.260ms RSS149.55→133.55MiB，瀑布流2.624/4.732→1.456/1.775ms RSS147.16→133.39MiB；最终600/450条一致、各120采样、缓存192、无超时。原始报告 docs/performance/v0.7-runtime-{baseline,candidate}.json 和 comparison.md。单次同条件对照不是受控统计或FPS。
