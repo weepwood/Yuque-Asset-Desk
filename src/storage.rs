@@ -26,6 +26,7 @@ pub struct Job {
     pub preview:Option<(String,String)>,
     pub thumbnail:Option<PathBuf>,
     pub result_url:Option<String>,
+    pub result_asset_id:Option<i64>,
 }
 
 #[derive(Clone)]
@@ -202,11 +203,12 @@ impl Storage {
             (None, _) => "AND ?5 IS NULL",
         };
         let order = if oldest { "ASC" } else { "DESC" };
+        let exact_id=query.strip_prefix("id:").filter(|s|s.parse::<i64>().is_ok_and(|id|id>0));
+        let query_filter=if exact_id.is_some(){"id = ?1"}else{"(?1 = '' OR instr(lower(name), lower(?1)) > 0 OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id = assets.id AND instr(lower(tag), lower(?1)) > 0))"};
         let sql = format!(
             "SELECT id,name,bytes,category,provider,url,sha256,owner_id,filekey,created_at
              FROM assets
-             WHERE (?1 = '' OR instr(lower(name), lower(?1)) > 0
-                 OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id = assets.id AND instr(lower(tag), lower(?1)) > 0))
+             WHERE {query_filter}
                AND (?2 = '' OR category = ?2)
                AND (?7 IS NULL OR EXISTS (SELECT 1 FROM asset_tags WHERE asset_id=assets.id
                    AND (tag=?7 OR substr(tag,1,length(?7)+1)=?7||'/')))
@@ -215,7 +217,7 @@ impl Storage {
              ORDER BY id {order} LIMIT ?6"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![query, category,
+        let rows = stmt.query_map(params![exact_id.unwrap_or(query), category,
             provider, owner, cursor, (limit + 1) as i64, tag, favorites], map_row)?;
         let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = items.len() > limit;
@@ -435,7 +437,7 @@ Restore into a NEW data directory only; see README.
 
     pub fn jobs(&self, provider: &str, owner: &str, before: Option<i64>) -> Result<Vec<Job>> {
         let conn = self.open()?;
-        let mut stmt = conn.prepare("SELECT j.id,j.path,j.state,j.error,p.state,p.error,CASE WHEN r.category='image' THEN r.sha256 END,r.url FROM upload_jobs j
+        let mut stmt = conn.prepare("SELECT j.id,j.path,j.state,j.error,p.state,p.error,CASE WHEN r.category='image' THEN r.sha256 END,r.url,r.id FROM upload_jobs j
             LEFT JOIN upload_job_assets a ON a.job_id=j.id LEFT JOIN assets r ON r.id=a.asset_id AND r.provider=j.provider AND r.owner_id=j.owner_id
             LEFT JOIN asset_preview_state p ON p.asset_id=r.id
             WHERE j.provider=?1 AND j.owner_id=?2 AND (?3 IS NULL OR j.id < ?3)
@@ -445,7 +447,7 @@ Restore into a NEW data directory only; see README.
             state: r.get(2)?, error: r.get(3)?,
             preview:r.get::<_,Option<String>>(4)?.zip(r.get::<_,Option<String>>(5)?),
             thumbnail:r.get::<_,Option<String>>(6)?.map(|sha|crate::preview::cached_path_for(self.data_dir(),provider,owner,&sha)).filter(|p|crate::preview::valid_cache(p)),
-            result_url:r.get(7)?,
+            result_url:r.get(7)?,result_asset_id:r.get(8)?,
         }))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }

@@ -99,6 +99,9 @@ impl UploadDesk {
                 .child(div().flex_1().child("舒适模式").child(div().text_xs().text_color(p.muted).child("增加图片、导航与表单留白；关闭后为紧凑模式")))
                 .child(div().debug_selector(||"settings-comfortable".into()).child(Switch::new("comfortable-toggle").checked(self.prefs.comfortable).small().color(p.accent).accessibility_label("舒适模式").on_change(cx.listener(|v,checked:&bool,_,cx|v.set_comfortable(*checked,cx))))))
             .child(div().flex().items_center().justify_between().gap_2()
+                .child(div().flex_1().child("工作区布局").child(div().text_xs().text_color(p.muted).child("恢复默认侧栏宽度，不影响图库数据")))
+                .child(Button::new("reset-panel-widths").small().ghost().label("恢复默认").disabled(self.prefs.sidebar_width<=0.&&self.prefs.inspector_width<=0.).on_click(cx.listener(|v,_,_,cx|{v.prefs.sidebar_width=0.;v.prefs.inspector_width=0.;v.persist_preferences(cx);cx.notify();}))))
+            .child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("全局快捷键").child(div().text_xs().text_color(p.muted).child("切换后重启生效")))
                 .child(Button::new("shortcut-choice").small().label(if self.prefs.shortcut=="off"{"禁用"}else{self.prefs.shortcut.as_str()})
                     .dropdown_menu({

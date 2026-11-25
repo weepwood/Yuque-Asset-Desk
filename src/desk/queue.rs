@@ -53,7 +53,7 @@ impl UploadDesk {
             match entry{
                 ClipboardEntry::ExternalPaths(paths)=>sources.extend(paths.paths().iter().cloned().map(Source::Path)),
                 ClipboardEntry::Image(image) if image.bytes().len() as u64<=self.config.max_file_mb*1024*1024=>{
-                    sources.push(Source::Image(image.bytes().to_vec(),image.format().extension().to_owned()));
+                    sources.push(Source::Image(Arc::new(image.bytes().to_vec()),image.format().extension().to_owned()));
                 }
                 _=>{}
             }

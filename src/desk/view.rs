@@ -48,7 +48,7 @@ impl UploadDesk {
                 "paused" => "暂停", "cancelled" => "取消", "running" | "unknown" => "结果待核实", _ => "未知",
             }};
             let retry = !active&&matches!(job.state.as_str(), "pending" | "paused" | "failed");
-            let result_url=job.result_url.clone();
+            let result_url=job.result_url.clone();let result_asset_id=job.result_asset_id;
             let total = self.queue.read(cx).transfer.total.load(Ordering::Relaxed);
             let bytes = self.queue.read(cx).transfer.bytes.load(Ordering::Relaxed).min(total);
             let mut row = div().flex().flex_col().gap_1().py_3().px_2()
@@ -63,7 +63,8 @@ impl UploadDesk {
 
                     .child(div().w(px(82.)).flex_shrink_0().text_xs().text_color(if job.state=="failed"||job.state=="unknown"{self.palette().error}else if job.state=="done"{self.palette().accent}else{self.palette().muted}).child(state))
                     .child(div().w(px(128.)).flex_shrink_0().flex().justify_end()
-                    .when(job.state=="done"&&result_url.is_some(),|d|d.child(Button::new(("copy-job-result",id as usize)).small().ghost().icon(IconName::Copy).label("复制链接").on_click(cx.listener(move|v,_,w,cx|{if let Some(url)=&result_url{v.copy_result_text(url.clone(),false,w,cx);}}))))
+                    .when(job.state=="done"&&result_asset_id.is_some(),|d|d.child(div().debug_selector(move||format!("locate-job-{id}")).child(Button::new(("locate-job",id as usize)).small().ghost().label("定位").tooltip("在当前账号图库中定位资源").disabled(self.account_busy(cx)).on_click(cx.listener(move|v,_,w,cx|{if let Some(asset_id)=result_asset_id{v.locate_job_asset(asset_id,w,cx);}})))))
+                    .when(job.state=="done"&&result_url.is_some(),|d|d.child(Button::new(("copy-job-result",id as usize)).small().ghost().icon(IconName::Copy).tooltip("复制资源链接").on_click(cx.listener(move|v,_,w,cx|{if let Some(url)=&result_url{v.copy_result_text(url.clone(),false,w,cx);}}))))
                     .when(retry, |d| d.child(Button::new(("retry-job",id as usize)).small().ghost()
                         .label(if job.state=="failed"{"重试"}else{"继续"}).tooltip("重试前请确认远端结果").disabled(self.queue.read(cx).busy || self.account_busy(cx))
                         .on_click(cx.listener(move |view, _, _, cx| view.retry_one(id,cx)))))
@@ -111,9 +112,11 @@ impl UploadDesk {
                 .child(div().flex_1().child("文件"))
                 .gap_2().child(div().w(px(82.)).child("状态"))
                 .child(div().w(px(128.)).text_align(TextAlign::Right).child("操作")))
-            .when(history.loading, |d| d.child("正在读取任务…"))
-            .when(history.jobs.is_empty() && !history.loading && history.error.is_none(), |d| d.child("暂无任务记录"))
-            .when(history.error.is_some(), |d| d.child(history.error.clone().unwrap_or_default()))
+            .when(history.loading, |d| d.child(div().text_xs().text_color(self.palette().muted).child("正在读取任务…")))
+            .when(history.jobs.is_empty() && !history.loading && history.error.is_none(), |d| d.child(div().flex().flex_col().items_center().gap_2().py_6().text_color(self.palette().muted)
+                .child(IconName::File).child(div().font_medium().text_color(self.palette().text).child("暂无上传任务"))
+                .child(div().text_xs().child("添加或拖入文件，确认后开始上传"))))
+            .when(history.error.is_some(), |d| d.child(div().text_xs().text_color(self.palette().error).child(history.error.clone().unwrap_or_default())))
             .child(list.overflow_y_scrollbar())
             .child(div().flex().items_center().gap_2()
                 .child(Button::new("jobs-prev").small().label("上一页").disabled(history.loading || history.cursors.len() <= 1)
@@ -226,7 +229,7 @@ impl UploadDesk {
                         let w=tile_width.min(tile_image_height*r);
                         (w,(w/r).min(tile_image_height))
                     });
-                    let menu_asset=asset.clone();
+                    let menu_asset=asset.clone();let preview_asset=asset.clone();
                     let weak=cx.weak_entity();
                     return div().id(("album-tile",index)).debug_selector(move||format!("tile-{index}")).relative().flex().flex_col()
                         .w(px(tile_width)).h(px(tile_image_height+self.spacing().footer)).flex_shrink_0()
@@ -252,10 +255,12 @@ impl UploadDesk {
                             .when(checked||selected,|d|d.child(div().absolute().inset_0().rounded(px(design::CONTROL_RADIUS)).border_2().border_color(palette.accent)))
                             .when(revealed,|d|d.child(div().absolute().top(px(5.)).left(px(5.)).opacity(0.72+0.28*hover_alpha)
                                 .child(Button::new(("grid-select",index)).xsmall().selected(checked).icon(if checked{IconName::Check}else{IconName::Square}).tooltip("多选")
-                                    .on_click(cx.listener(move|v,_,w,cx|v.toggle_album_selection(asset_id,w,cx))))))
+                                    .on_click(cx.listener(move|v,_,w,cx|{cx.stop_propagation();v.toggle_album_selection(asset_id,w,cx);})))))
                             .when(starred,|d|d.child(div().absolute().top(px(6.)).right(px(6.)).p_1().rounded_sm().bg(palette.surface).text_color(palette.accent).child(IconName::StarFill)))
                             .when(revealed,|d|d.child(div().absolute().bottom(px(6.)).right(px(6.)).rounded(px(5.)).bg(palette.surface).opacity(hover_alpha.max(0.7))
-                                .child(Button::new(("tile-copy",index)).xsmall().ghost().icon(IconName::Copy).tooltip("复制链接").on_click(cx.listener(move|v,_,w,cx|v.copy_asset(&url_asset,false,w,cx)))))))
+                                .child(div().flex().items_center().gap_1()
+                                    .when(asset.category=="image",|d|d.child(Button::new(("tile-preview",index)).xsmall().ghost().icon(IconName::Maximize).tooltip("查看图片").on_click(cx.listener(move|v,_,w,cx|{cx.stop_propagation();v.click_tile(preview_asset.clone(),2,Modifiers::default(),w,cx);}))))
+                                    .child(Button::new(("tile-copy",index)).xsmall().ghost().icon(IconName::Copy).tooltip("复制链接").on_click(cx.listener(move|v,_,w,cx|{cx.stop_propagation();v.copy_asset(&url_asset,false,w,cx);})))))))
                         .child(div().h(px(self.spacing().footer)).flex().flex_col().justify_center().items_center().gap_0p5()
                             .child(div().max_w_full().truncate().text_size(px(self.spacing().caption)).text_color(if selected||checked{palette.accent}else{palette.text}).child(asset.name.clone()))
                             .child(div().text_xs().text_color(palette.muted).child(file_size(asset.bytes))))
@@ -423,7 +428,7 @@ impl UploadDesk {
                 .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(p.muted).child(mode))
                 .when(quality.is_some()||self.viewer_model.read(cx).busy,|d|d.child(div().debug_selector(||"offline-quality".into()).child(Button::new("offline-quality").small().ghost().label(if self.viewer_model.read(cx).busy{"停止等待"}else{"离线预览"}).tooltip("停止等待不保证立即停止后台读取；返回本地微缩图").on_click(cx.listener(|v,_,_,cx|{v.clear_quality(cx);cx.notify();})))))
                 .child(div().debug_selector(||"local-quality".into()).child(Button::new("local-quality").small().label("本地原图").selected(quality.is_some_and(|q|!q.remote)).disabled(self.viewer_model.read(cx).busy||quality.is_some_and(|q|!q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(false,cx)))))
-                .when(online,|d|d.child(Button::new("remote-quality").small().label("在线原图").selected(quality.is_some_and(|q|q.remote)).disabled(self.viewer_model.read(cx).busy||quality.is_some_and(|q|q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(true,cx)))))
+                .when(online,|d|d.child(Button::new("remote-quality").small().label("在线图片").tooltip("可信 CDN 图片，可能经过转码").selected(quality.is_some_and(|q|q.remote)).disabled(self.viewer_model.read(cx).busy||quality.is_some_and(|q|q.remote)).on_click(cx.listener(|v,_,_,cx|v.load_quality(true,cx)))))
                 .child(Button::new("preview-browser").ghost().small().label("打开原文件").on_click(cx.listener(|v,_,_,cx|v.open_selected_resource(cx)))))
             .child(div().h(px(20.)).flex().items_center().justify_center().text_xs().text_color(p.muted).gap_2().child(div().flex_shrink_0().child(position_label)).child(div().flex_1().min_w(px(0.)).truncate().child(if message.is_empty(){if self.resource.preview_reload_pending{"相册有更新，返回后刷新".to_string()}else{"左右键切图 · 原图按需加载".to_string()}}else{message.to_owned()})))
             .child(strip).into_any_element()

@@ -1025,6 +1025,13 @@ fn upload_review_requires_confirmation_and_preserves_sources(){
     assert_eq!(read.jobs("demo","local",None).unwrap().len(),1);
     let job=read.jobs("demo","local",None).unwrap().remove(0);
     assert_eq!(job.state,"done");assert!(job.thumbnail.is_some());assert!(job.result_url.is_some());assert_eq!(std::fs::read(&source).unwrap(),original);
+    let id=job.result_asset_id.unwrap();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert_eq!(job.id,1);
+    let locate=ui.debug_bounds("locate-job-1").unwrap().center();
+    ui.simulate_click(locate,Modifiers::default());app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();
+    assert!(app.read(|cx|{let v=desk.read(cx);v.page==Page::Gallery&&v.resource.assets.len()==1&&v.resource.assets[0].id==id&&!v.resource.all_accounts}));
+    assert!(read.page_album(150,&format!("id:{id}"),"",Some(("yuque","other")),None,false,None,false).unwrap().0.is_empty());
     app.update(|cx|desk.update(cx,|v,cx|v.review_files(vec![source.clone()],cx)));app.run_until_parked();
     app.update(|cx|desk.update(cx,|v,cx|v.apply_account(None,cx)));
     app.run_until_parked();assert!(app.read(|cx|desk.read(cx).upload_review.is_none()));
@@ -1065,5 +1072,43 @@ fn inspector_drag_resizes_and_persists_preference(){
     assert!(ui.debug_bounds("nav-slot").unwrap().size.width>=before+px(40.));
     app.update(|cx|desk.update(cx,|v,_|{assert!(v.sidebar_drag.is_none());v.flush_preferences();}));
     assert!(read.preferences().unwrap()["sidebar_width"].as_f64().unwrap()>235.);
+    drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn upload_review_paginates_all_sources_and_bounds_preview_memory(){
+    let root=std::env::temp_dir().join(format!("yuque-review-pages-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let source=root.join("source.png");image::RgbImage::from_pixel(32,24,image::Rgb([40,90,130])).save(&source).unwrap();
+    let files=(0..105).map(|i|{let p=root.join(format!("draft-{i}.png"));std::fs::copy(&source,&p).unwrap();p}).collect::<Vec<_>>();
+    let read=db.clone();let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(720.),px(600.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    app.update(|cx|desk.update(cx,|v,cx|v.review_files(files.clone(),cx)));
+    app.run_until_parked();
+    let mut ui=VisualTestContext::from_window(window,&app);
+    for page in 0..5{
+        ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+        let snapshot=app.read(|cx|desk.read(cx).review_snapshot().unwrap());
+        assert_eq!(snapshot,(105,page*24,if page==4{9}else{24},false));
+        assert!(ui.debug_bounds(["review-row-0","review-row-24","review-row-48","review-row-72","review-row-96"][page]).is_some());
+        assert!(read.jobs("demo","local",None).unwrap().is_empty());
+        if page<4{let next=ui.debug_bounds("review-next-page").unwrap().center();ui.simulate_click(next,Modifiers::default());app.run_until_parked();}
+    }
+    let remove=ui.debug_bounds("review-remove-96").unwrap().center();
+    let viewport=ui.debug_bounds("review-list-viewport").unwrap();
+    assert!(remove.y>=viewport.origin.y&&remove.y<viewport.origin.y+viewport.size.height);
+    ui.simulate_click(remove,Modifiers::default());app.run_until_parked();
+    assert_eq!(app.read(|cx|desk.read(cx).review_snapshot()),Some((104,96,8,false)));
+    assert!(files[96].is_file());
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let prev=ui.debug_bounds("review-prev-page").unwrap().center();
+    ui.simulate_click(prev,Modifiers::default());
+    app.update(|cx|desk.update(cx,|v,cx|v.cancel_upload_review(cx)));
+    app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).review_snapshot().is_none()));
+    assert!(read.jobs("demo","local",None).unwrap().is_empty());
+    assert!(files.iter().all(|p|p.is_file()));
     drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
 }

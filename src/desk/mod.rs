@@ -159,6 +159,7 @@ pub(crate) struct UploadDesk {
     status: String,
     upload_review: Option<upload_review::Review>,
     review_task:Option<Task<()>>,
+    review_preview_task:Option<Task<()>>,
     review_generation:u64,
     picker_pending: bool,
     picker_task: Option<Task<()>>,
@@ -437,7 +438,7 @@ impl UploadDesk {
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
             status,
-            upload_review:None,review_task:None,review_generation:0,
+            upload_review:None,review_task:None,review_preview_task:None,review_generation:0,
             picker_pending:false,picker_task:None,
             backup_busy:false,
             desktop_enabled:false,
@@ -466,8 +467,9 @@ impl UploadDesk {
                     Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
-                    Ok("upload-review")=>{
+                    Ok("upload-review"|"upload-review-batch")=>{
                         let files=std::fs::read_dir(view.storage.data_dir()).ok().into_iter().flatten().filter_map(|e|e.ok()).map(|e|e.path()).filter(|p|p.extension().is_some_and(|x|x=="png")).take(5).collect::<Vec<_>>();
+                        let files=if std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("upload-review-batch"){files.into_iter().cycle().take(105).collect()}else{files};
                         view.review_files(files,cx);
                     }
                     Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}

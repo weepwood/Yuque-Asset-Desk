@@ -80,6 +80,7 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     assert len(previews)==11, f"expected 11 offline previews, got {len(previews)}"
     capture("upload-review-dark.png",YUQUE_QA_PAGE="upload-review")
     capture("upload-review-minimum.png",YUQUE_QA_PAGE="upload-review",YUQUE_QA_MINIMUM="1",YUQUE_QA_LIGHT="1")
+    capture("upload-review-batch-minimum.png",YUQUE_QA_PAGE="upload-review-batch",YUQUE_QA_MINIMUM="1",YUQUE_QA_LIGHT="1")
     capture("preview-quality-dark.png",YUQUE_QA_PAGE="quality")
     capture("preview-quality-light.png",YUQUE_QA_PAGE="quality",YUQUE_QA_LIGHT="1")
     capture("preview-quality-narrow.png",YUQUE_QA_PAGE="quality",YUQUE_QA_NARROW="1")

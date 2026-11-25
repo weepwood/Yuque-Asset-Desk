@@ -247,6 +247,20 @@ impl UploadDesk {
         self.resource.favorites_only||self.resource.all_accounts||self.resource.tag_filter.is_some()
     }
 
+    pub(super) fn locate_job_asset(&mut self,id:i64,window:&mut Window,cx:&mut Context<Self>){
+        if self.account_busy(cx){return;}
+        self.resource.category="";
+        self.resource.favorites_only=false;self.resource.all_accounts=false;
+        self.resource.tag_filter=None;self.resource.similar_to=None;
+        let query=format!("id:{id}");
+        self.resource.search=query.clone();
+        self.resource.search_input.update(cx,|input,cx|input.set_value(query,window,cx));
+        self.navigate_page(Page::Gallery,cx);
+        self.reset_history(cx);self.focus_gallery_destination(window,cx);
+        self.status="已按任务关联定位资源；清空搜索可返回全部资源".into();
+        cx.notify();
+    }
+
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
         if !self.resource.large_preview_open&&self.resource.selected_asset.as_ref().is_some_and(|a|a.id==asset.id)&&self.inspector_model.read(cx).ready{return;}
         self.clear_quality(cx);
