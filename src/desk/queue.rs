@@ -24,7 +24,22 @@ impl UploadDesk {
         self.queue.update(cx,|v,cx|v.prepare(request,config,storage,cx));
     }
     pub(super) fn retry_one(&mut self,id:i64,cx:&mut Context<Self>){self.prepare_queue(Prepare::Retry(id),cx);}
-    pub(super) fn acknowledge_job(&mut self,id:i64,cx:&mut Context<Self>){self.prepare_queue(Prepare::Acknowledge(id),cx);}
+    pub(super) fn acknowledge_job(&mut self,id:i64,w:&mut Window,cx:&mut Context<Self>){
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.read(cx).busy||self.account_busy(cx)||self.resetting{return;}
+        let Some(job)=self.job_history.read(cx).jobs.iter().find(|j|j.id==id&&matches!(j.state.as_str(),"unknown"|"running"))else{return;};
+        let name=job.path.file_name().unwrap_or_default().to_string_lossy();
+        let detail=format!("请先在语雀网页端核实「{name}」未上传成功。确认只会将任务改为可手动重试，不会立即上传；如果远端已有文件，重试可能产生重复资源。");
+        self.maintenance_busy=true;cx.notify();
+        let answer=w.prompt(PromptLevel::Warning,"确认远端没有该文件？",Some(&detail),&["取消","确认核实结果"],cx);
+        self.job_ack_task=Some(cx.spawn(async move|this,cx|{
+            let accepted=matches!(answer.await,Ok(1));
+            let _=this.update(cx,|v,cx|{
+                v.maintenance_busy=false;
+                if accepted{v.prepare_queue(Prepare::Acknowledge(id),cx);}else{v.status="已取消核实，任务状态未修改".into();}
+                cx.notify();
+            });
+        }));
+    }
 
     pub(super) fn paste_files(&mut self, cx: &mut Context<Self>) {
         if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.read(cx).busy || self.account_busy(cx) { return; }

@@ -15,7 +15,7 @@ impl ViewerModel{
     pub fn clear(&mut self,cx:&mut Context<Self>){
         self.generation=self.generation.wrapping_add(1);
         self.task=None;self.asset=None;self.busy=false;self.status.clear();
-        if let Some(q)=self.quality.take(){cx.drop_image(q.image,None);}
+        if let Some(q)=self.quality.take(){image_cache::release_images(vec![q.image],cx);}
         cx.notify();
     }
     pub fn feedback(&mut self,status:String,cx:&mut Context<Self>){self.status=status;cx.notify();}
@@ -35,7 +35,7 @@ impl ViewerModel{
                 match result{
                     Ok(q)=>{
                         v.status.clear();
-                        if let Some(old)=v.quality.replace(q){cx.drop_image(old.image,None);}
+                        if let Some(old)=v.quality.replace(q){image_cache::release_images(vec![old.image],cx);}
                         v.revision=v.revision.wrapping_add(1);
                     }
                     Err(e)=>v.status=e.to_string(),

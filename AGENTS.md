@@ -1,5 +1,11 @@
 # Yuque Asset Desk — AI 开发协作说明
 
+## 当前交接入口（优先于后续历史记录）
+- 正式版本 v0.5.1；V0.7.0 固定候选 75c173bf0630d6eed2cdcb07d1a6fa3f6e4de996，冻结的 main 和原始产物不改。Windows 真机离线，门禁未完成。
+- PR #8 分支 feat/v0.8-browse-context 已完成九批后续架构、交互与性能工作，本轮收口版本元数据至 V0.8.0，未正式发布。固定 V0.8.0 代码候选 aec2446fa46c172840f38066e87e564c6422799e，CI 45553650482 双平台通过，原始产物与 Mac 隔离启动通过；Windows 真机仍阻塞。当前验收清单 [docs/release/v0.8.0-acceptance.md](docs/release/v0.8.0-acceptance.md)；历史候选 [docs/release/v0.7.0-acceptance.md](docs/release/v0.7.0-acceptance.md)。
+- 仅处理真实发布阻塞，不再扩张功能或机械拆分；不得用文档更新后的 SHA 替换已核验代码候选或重新生成发布包。遵守用户数据保护、中文提交、隔离 Demo 测试。
+- 下文历史记录中的版本、CI、平台策略以本节及对应版本验收清单为准；当前 CI 仅 Windows x64 与 macOS ARM64，不能把历史 x64 Mac 构建当成本轮门禁。
+
 ## 项目定位
 - Rust + GPUI Kit 0.9.0 + SQLite 原生桌面上传工具；不引入 Electron 或 WebView。
 - 保留现有数据库目录、assets 表及 provider + owner_id + sha256 去重约束。
@@ -201,3 +207,71 @@
 - 原始 CI Windows x64 ZIP 9422058 bytes / macOS ARM64 DMG 9026105 bytes 与两份原始 SHA256 均验收，保存 dist/release-audit-v0.7.0/ci-artifacts/，四项摘要 docs/release/v0.7.0-verified-assets.json；Windows 校验文件 CRLF 导致 Mac shasum -c 路径误判，Python 独立验证及 verify-only 均通过，未改写原始文件。
 - macOS 正式候选 DMG 只读挂载、ad-hoc 签名、真实隔离启动、1160×828 窗口、空 Demo DB、tray/hotkey 注册均通过；非阻塞 sandbox_extension 警告。无 Gatekeeper 公证/真实账号/物理点选。
 - Windows CI 单测、Release、PE/ZIP 与版本元数据成功；Desktop Commander Windows 设备离线，尚未真机交互验收。按前轮发布门禁暂不创建 Tag/Release，保留原始产物、RELEASE-NOTES.md 和详细验收记录 docs/release/v0.7.0-acceptance.md。完成剩余验收（或用户明确调整门禁）后固定原候选、发布四项资产、重新下载验证与公开更新接口；不重跑已通过的全量本地测试，不扩大功能。
+
+## 后续设计深化：浏览上下文（V0.7候选冻结）
+- V0.7 固定候选75c173b与原始四资产不变，合并后main CI 45542564057 双平台成功，仍待Windows真机或明确调整门禁；未创建Tag/Release。新分支 feat/v0.8-browse-context 基于文档提交5b0c33c，不混入冻结产物；Cargo仍0.7.0，非新发布。
+- 重读锁定SpaceUI Explorer与GPUI Design Guides，新增DESIGN.md第11节。普通浏览统一账号范围/标签/组合收藏/搜索条件行；清除恢复当前账号全部资源并同步搜索输入。分类高亮独立于标签及组合收藏；标签仅真实上下文高亮，收起侧栏保留账号入口。
+- 相似查询按源资源所属账号及相似度，保留原搜索/标签/收藏/日期偏好；普通搜索及筛选禁用，排序与日期命令不显示，显式返回恢复原组合。最多150项；普通分类入口离开相似上下文。相似模式保留原生布局菜单。
+- SQL原total为账号总资源量，不进行额外筛选COUNT：有过滤且分页未完显示已加载数，最终显示实际结果数，读取中/失败不显示陈旧总数。空结果可清除/返回；不变更SQLite schema/上传/原图/永久微缩图。
+- 62 QA通过/0失败/1忽略；新增720×600真实GPUI指针与键盘路径，验证组合条件、相似结果返回、搜索输入、空结果清除、1项/0项计数。all-targets check（计数精修前）、最终QA build及static/diff通过。8种实际截图，3张上下文图最终重新捕获，修复截图发现的陈旧计数与分类高亮；保存dist/design-research/browse-after/。无真实用户数据、Windows真机、全量Release性能复测；下一批优先基于实际操作痛点检查查看器/任务反馈，而非无目的视觉修改。
+
+## 后续设计：核心操作体验第二批
+- PR #8 的934ef7a双平台CI45544055365 success；不合入冻结V0.7主线，直接追加同一PR集中交付。固定V0.7候选75c173b、原始四项资产、正式v0.5.1均不变。
+- 重读固定Immich AssetViewerNavBar/DetailPanel及GPUI Design Guides，DESIGN.md第12节：查看器显示适应窗口相对缩放、当前/已加载图片序号(+有分页)，缩略图完整contain与当前标识；区分无图/读取/离线/高清，“停止等待”仅取消结果接收并回离线，不保证网络立即终止。
+- QueueRunner.activity_label/transfer_label共享真实请求状态，准备/暂停/取消/中止/请求体读完等待结果，批次和单文件反馈分层。中止使用fetch_max(1)，不能将已请求取消2降级为暂停1。重复命令禁用；当前文件不显示继续按钮。远端待核实操作新增原生确认，maintenance_busy持有至确认结果，取消不改变状态、确认仅Acknowledge且不自动上传，SQL继续核对当前账号和原状态。
+- 详情对象名称/本地化类型置顶，复制链接主按钮，打开/Markdown/收藏/相似动作优先，标签右侧保存；窄窗144px预览及明确返回图库。保留低频技术属性、原图和永久微缩图；无新增依赖/schema/网络功能。
+- 64 QA passed/0 failed/1 ignored，all-targets、QA build、static/diff；新增命令优先级及请求体读完不等于成功回归、待核实原生确认平台模拟回调（取消保留unknown、确认failed、未上传、互锁退出/重试）。11种不同真实渲染截图（两轮重点复验，深浅及720×600；活跃任务是隔离QA状态夹具非真实上传）；dist/design-research/flow-after/。最终查看器/详情和活跃任务最小窗口已实际审查。未执行真实语雀、Windows真机、完整Release性能复测、完整物理交互；继续保留发布门禁。
+
+## 后续设计：图库选择与读取恢复
+- PR #8 的 f0d9f27 双平台 CI 45546108736 成功，冻结 V0.7 候选及其原始产物不变。继续在同一后续开发分支提交，不提前合入 main 或发布。
+- selection.rs 双向范围超过150项时保留点击端点附近连续150项，追加选择不驱逐已有项；工具栏显示上限。SelectAll 同步主选项锚点。resources.rs 共用 clear_resource_selection，取消选择、查询重置和整页读取失败统一释放详情/预览状态；主选项刷新后消失则保守清空整个选择，追加页失败保留既有结果及选择，重试游标回退。
+- 本地 macOS all-targets check、static/diff check、范围专项及 GPUI 状态注入刷新失败/追加失败/恢复测试通过；完整 QA 65 passed/0 failed/1 ignored。未重新采集截图、运行真实 Windows、真实语雀或 Release 性能。未新增依赖、迁移、网络或用户数据操作。
+
+## 后续设计：图库查询取消与相似检索成本
+- 基于 PR #8 d09e6b3，前一候选 CI 45546796255 查询时仍在运行；继续同一分支，保持 V0.7 固定候选75c173b与正式v0.5.1不变。
+- GalleryQuery 新请求和 Entity Drop 发出协作式取消；仍通过 generation 拒绝过期结果。普通非追加搜索100ms debounce；追加/相似不等待。后台在分批读取、哈希、写入、匹配、元数据阶段检查取消，不中断已进入的 SQLite/文件/解码操作，已提交的派生索引保留。
+- Storage::unindexed_images 使用源账号和 keyset 分页，SQL NOT EXISTS 排除已有哈希，不做每页 COUNT 或每候选独立哈希查询；缺缩略图继续跳过。similar_assets_until 保留最多150个排名结果（距离升序、ID降序），支持扫描内取消；相似结果收藏与批量标签以源账号为准。
+- 本地 all-targets/static/diff 与完整QA 67 passed/0 failed/1 ignored。新增预取消测试、500项真实SQLite数据分页/跨账号/200项已索引候选的有界排序及扫描中止测试。首次编译发现 GPUI test 属性名冲突，改用明确 Rust 内建属性后通过。未做真实磁盘压力、全量Release性能或视觉回归，不宣称量化性能提升；无新增依赖/schema/网络或真实用户数据操作。
+
+## 后续设计：缩略图生命周期与缓存释放
+- 基于 PR #8 1e723b8，CI 45547161999 最近查询仍在运行。继续同一分支，冻结 V0.7 候选75c173b、原始产物及正式v0.5.1不变。
+- ThumbnailModel 独立 retained Entity 管理12项批次、协作式取消、代际及完成尝试；分页追加不取消、不重试已失败项；整页刷新重置，离开图库暂停，返回恢复，迟到事件二次核对代际。取消后当前单项I/O仍可能完成并保留派生文件。图库展示/选择/布局和路径/比例映射仍由shell协调。
+- 详情复用已知本地预览路径，恢复时更新比例；账号切换调用 AlbumImageCache::clear 与原生 drop_image，保持192项LRU上限。缓存清理不触及永久微缩图和用户原文件。可视范围异常边界防护。
+- 本地 all-targets、static/diff、QA build、68 QA passed/0 failed/1 ignored。新增151项真实隔离SQLite与本地图片回归：分页保留失败记录、设置暂停、返回可恢复、2:1比例、详情复用、实际GPUI渲染缓存账号切换清零，原图及JPEG保留。7张实际渲染截图保存dist/design-research/thumbnail-after/，已查看浅色图库、720×600详情和离线查看器；不是实际用户素材。未做Windows真机、Release性能、长期内存测量或真实语雀；不新增依赖/schema/网络。
+
+## 后续设计：原生详情焦点与 Release 性能复验
+- PR #8 b00471f 的 CI 45547718069 成功且无合并冲突；继续同一分支，不改 main/冻结候选75c173b及正式v0.5.1。
+- 固定详情头部并独立滚动正文；统一空/多选/单选返回。独立 inspector_focus 与 YuqueInspector 关闭动作，窄窗打开/查看器返回聚焦详情，Esc/Ctrl/Cmd+I 关闭还焦图库；显式分类/标签/相似/恢复入口返回窄窗图库；窗口缩窄修正焦点，退出过渡不注册焦点路径。宽窗普通切换维持图库焦点。
+- 780×640原生GPUI测试增加滚动头部固定、Esc、Ctrl+I、预览返回及分类恢复路径，完整QA 68通过/0失败/1忽略，all-targets、QA debug/release build、static/diff通过。8张实际截图在dist/design-research/focus-after/，审查深浅详情和720×600详情。
+- 同一10k合成JPEG Release QA脚本复测：第一轮与截图任务重叠，CPU p95 grid/masonry 4.829/4.295ms、峰值RSS147.86/148.25MiB；独立重跑为2.064/1.577ms、138.47/143.14MiB，旧基线2.260/1.775ms、133.55/133.39MiB。重跑首屏103/100ms（旧142/115），加载600/450项，解码均192/192，无超时。三份JSON保存在上述目录，详见development-status。单次短测非硬件FPS，不能证明长期内存稳定或排除环境噪声；RSS较旧基线仍高，下一轮优先长程滚动、账号切换缓存/内存与性能定位。Windows设备离线，未做真实语雀、物理设备交互；没有新增依赖/schema。
+
+## 后续设计：原生纹理回收与长程滚动诊断
+- PR #8 84bab5e 的 CI 45548753872 两平台通过。继续同一分支，不改main/冻结V0.7候选75c173b及正式v0.5.1。
+- 依据GPUI 0.3.11 App::update_window_erased/drop_image源码，批量清理与高清图替换/关闭使用App::defer，在窗口回到窗口映射后释放纹理。离开图库释放解码缓存，返回重新解码；保留资源/滚动位置及永久JPEG。重置释放旧容器分配，清理滚动回调；弱引用布局及身份校验拦截旧事件。仍使用192项LRU。
+- 隔离QA 68通过/0失败/1忽略，all-targets、Release QA build、static/diff、Python语法检查通过；初次QA编译的AnyView调用错误已改为显式Entity读写，最终通过。脚本YUQUE_PERF_MEMORY=1 python3 scripts/album_perf.py，10k合成JPEG、每种布局3轮180次原生滚动+离开/返回/演示账号重置，共1080次滚动和54个检查点，全部门禁通过。网格每轮1050项、峰值140.16MiB，瀑布流2250项、峰值155.42MiB；离开6次缓存均0，重置6次均150项。报告dist/design-research/memory-after/。
+- 两模式各约22秒，非数小时耐久测试；RSS最近采样值不等于GPU专用内存，未独占机器，无旧版本同长程基线；不能证明没有泄漏。真实账号切换、Windows真机仍未验证。后续优先精简布局全量重算与视觉收口，按风险分级；Desktop Commander提示本月使用量达到80%。
+
+## 后续设计：瀑布流增量与裁剪
+- 本地9594ac9之前TLS推送失败，本轮成功推送并核实PR #8 head；CI 45549944690查询时运行中。继续同一分支，冻结V0.7候选75c173b及正式v0.5.1不变。
+- MasonryPlan 保存列底部、日期边界与实际最高磁贴，普通追加仅计算后缀，整页替换/已有比例变化/几何变化全量重排。真实高度裁剪、日期二分定位、滚动锚点限域，行键盘导航避免为前置行分配中心数组。
+- 新增10k资源、150项分批、双密度/日期模式增量与全量逐磁贴/日期/高度等价及可见区暴力对照测试。首次测试490px紧凑模式正好两列，超高夹具断言失败；改480px覆盖两种密度单列超高磁贴后通过。完整QA 69通过/0失败/1忽略、all-targets、Debug QA build、static/diff通过；实际780×640瀑布流截图已审查，保存在dist/design-research/layout-after/。未重新测Release/长程RSS，不宣称量化收益；未改依赖、数据库、真实数据。剩余视觉与网格布局优化按实际收益收口，Windows真机门禁不变。
+
+## 后续设计：行布局增量与分页反馈
+- 0dac367 的TLS推送阻塞已解除，远程PR #8 head核实一致；前一9594ac9 CI 45549944690双平台通过，0dac367 CI 45551785937查询时运行中。保持V0.7固定候选75c173b、正式v0.5.1与main不变。
+- 网格/等高拼图/列表分页只重排末行及后缀；保留首段日期标题、GPUI ListState splice只替换变化后缀。普通追加不增加既有比例revision，旧比例更新/几何变更/完整替换重算。渲染读取当前行计划，滚动回调弱引用身份校验；NaN等无效比例回退。固定底栏展示追加加载/错误，避免正文插入提示改变视口高度。
+- 新增10k、150项分页、三布局×双密度×日期开关等价测试，覆盖跨日期、跨页及异常比例；完整QA 70通过/0失败/1忽略，all-targets、QA Debug构建、static/diff通过。真实深色拼图和浅色网格截图审查，保存在dist/design-research/row-after/。未重复Release/RSS，不量化端到端收益；未单独测加载态像素位移、真实Windows/语雀。无依赖/schema/真实数据改动。下一轮优先集中收口、复查CI及剩余真实视觉问题，不扩张功能。
+
+## V0.8.0 候选集中收口
+- ef31fce CI 45552122688 success；窄窗分页状态栏优先错误与重试，新增真实GPUI几何不变及重试点击回归，完整QA 71通过/0失败/1忽略，全目标编译、Release QA、static/diff通过。Cargo.toml/Cargo.lock仅修改自身版本0.8.0，无依赖或schema变化。
+- 11张实际Release截图生成，人工审查最小窗口图库/任务/设置/详情4张。顺序执行10k合成JPEG性能基准，均未超时，192缓存上限；完整指标及剩余门禁见docs/release/v0.8.0-acceptance.md。报告与截图位于dist/design-research/v0.8-closeout/。不宣称真实用户上传、Windows真机、全量视觉审查或长期内存验收。
+- 当前阶段停止扩大开发范围，待本提交CI及最终候选原始产物核验；仍保持V0.7固定候选、main及正式v0.5.1不变。仅修复发布实际阻塞。
+
+## V0.8.0 固定候选验收
+
+## 最终固定候选与原始 CI 产物（2026-11-25）
+
+- 固定代码候选：aec2446fa46c172840f38066e87e564c6422799e；PR #8，CI 45553650482（headSha 一致，双平台 success）。之后仅允许验收文档更新，不改变此候选的源代码和原始产物。
+- 原始 Windows x64 ZIP 9439257 bytes、macOS ARM64 DMG 9040235 bytes，及各自原始 SHA256 文件均从该次 CI 下载，保存于 dist/release-audit-v0.8.0/ci-artifacts/；四项完整摘要见 [v0.8.0-verified-assets.json](v0.8.0-verified-assets.json)。校验前后均比对原始摘要，不重新打包或覆盖校验文件。V0.7 四项原始文件也重新核对，保持不变。
+- Windows：ZIP CRC、x64 PE、图标/版本资源、INSTALL.txt 和原始 SHA256 通过；CI 原生 ProductName/ProductVersion 检查通过。实际 Windows 设备仍离线，不宣称运行、托盘或文件选择验收通过。
+- macOS：复用 dist/dmg-venv，原始 DMG CRC、只读挂载、ARM64、应用版本/图标/标识、ad-hoc 签名、Finder 安装布局通过。隔离复制后实际启动，Demo SQLite 初始化为空、1160×828 窗口、DESKTOP tray=true hotkey=true；测试进程已退出。默认 Python 缺少 ds_store，切换既有打包虚拟环境后通过；hdiutil 弃用及 sandbox_extension 警告不阻塞本次启动。未安装到 Applications、未验证 Gatekeeper 公证、未触发物理快捷键/真实上传。
+- 完整验收日志与 smoke.json 保存在 dist/release-audit-v0.8.0/。正式版本仍为 v0.5.1。V0.7 固定候选优先收口，Windows 真机门禁未完成，不合并 PR #8，不创建 Tag/Release，不改变发布顺序。

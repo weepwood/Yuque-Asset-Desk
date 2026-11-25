@@ -6,6 +6,7 @@ mod updates;
 mod data_panel;
 mod album;
 mod image_cache;
+mod thumbnail_model;
 pub(crate) mod preferences;
 mod preference_writer;
 mod queue;
@@ -89,8 +90,7 @@ struct ResourceState {
     layout_signature: u64,
     row_plan: std::rc::Rc<Vec<album::AlbumRow>>,
     visible_range: (usize,usize),
-    preview_attempted:std::collections::HashSet<i64>,
-    preview_loading_batch:bool,
+
     image_cache:Entity<image_cache::AlbumImageCache>,
     selected_asset: Option<Asset>,
     oldest: bool,
@@ -104,7 +104,6 @@ struct ResourceState {
     drag_at: Option<Point<Pixels>>,
     thumbnail_path: Option<PathBuf>,
     cached_thumbnails: std::collections::HashMap<i64, PathBuf>,
-    thumbnails_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
     pending_preview:Option<(i64,u8)>,
     preview_reload_pending:bool,
@@ -115,6 +114,7 @@ struct ResourceState {
     selection_anchor:Option<i64>,
     batch_tag_open:bool,
     gallery_focus:FocusHandle,
+    inspector_focus:FocusHandle,
     preview_focus:FocusHandle,
     zoom_channel:usize,
     displayed_zoom:f32,
@@ -133,6 +133,7 @@ struct ResourceState {
 pub(crate) struct UploadDesk {
     resource: ResourceState,
     gallery_query:Entity<gallery_query::GalleryQuery>,
+    thumbnails:Entity<thumbnail_model::ThumbnailModel>,
     resource_write_busy:bool,
     resource_write_task:Option<Task<()>>,
     inspector_model:Entity<inspector_model::InspectorModel>,
@@ -143,6 +144,7 @@ pub(crate) struct UploadDesk {
     account: Entity<account_model::AccountModel>,
     config:Config,
     maintenance_busy:bool,
+    job_ack_task:Option<Task<()>>,
     storage: Storage,
     dark: bool,
     page: Page,
@@ -227,6 +229,23 @@ impl UploadDesk {
     pub(crate) fn report_perf(&self,cx:&App){
         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF final loaded={} decoded_cache={} bound={}",self.resource.assets.len(),self.resource.image_cache.read(cx).len(),image_cache::MAX_IMAGES);}
     }
+    #[cfg(feature="qa")]
+    pub(crate) fn qa_memory_phase(&mut self,phase:&str,cx:&mut Context<Self>){
+        if !self.isolated_qa(){return;}
+        match phase{
+            "leave"=>self.navigate_page(Page::Settings,cx),
+            "return"=>self.navigate_page(Page::Gallery,cx),
+            "reset"=>self.apply_account(None,cx),
+            _=>{}
+        }
+    }
+    #[cfg(feature="qa")]
+    pub(crate) fn qa_memory_checkpoint(&self,phase:&str,cx:&App){
+        let r=&self.resource;
+        eprintln!("MEMORY phase={phase} loaded={} cache={} bound={} paths={} ratios={} rows={} tiles={} loading={}",
+            r.assets.len(),r.image_cache.read(cx).len(),image_cache::MAX_IMAGES,r.cached_thumbnails.len(),r.ratios.len(),
+            r.row_plan.len(),r.masonry_plan.tiles.len(),r.loading_history);
+    }
     pub(crate) fn shortcut(&self)->&str{&self.prefs.shortcut}
 
     #[cfg(feature="qa")]
@@ -265,7 +284,9 @@ impl UploadDesk {
             window,
             |this, input, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.resource.search = input.read(cx).value().to_string();
+                    let query=input.read(cx).value().to_string();
+                    if this.resource.search==query{return;}
+                    this.resource.search=query;
                     this.resource.similar_to=None;
                     this.reset_history(cx);
                     cx.notify();
@@ -286,6 +307,10 @@ impl UploadDesk {
             }
         });
         let resize_subscription=cx.observe_window_bounds(window,|v,w,cx|{
+            if v.page==Page::Gallery&&v.inspector_open&&!v.immersive&&!v.resource.large_preview_open
+                &&w.viewport_size().width<px(1000.)&&!v.resource.inspector_focus.contains_focused(w,cx){
+                v.resource.inspector_focus.focus(w,cx);
+            }
             if w.is_maximized() || w.is_fullscreen(){return;}
             let size=w.bounds().size;
             v.prefs.width=f32::from(size.width).clamp(720.,3840.);v.prefs.height=f32::from(size.height).clamp(600.,2160.);
@@ -320,13 +345,15 @@ impl UploadDesk {
         });
         let gallery_query=cx.new(|_|gallery_query::GalleryQuery::default());
         let gallery_events=cx.subscribe(&gallery_query,|v,_,event:&gallery_query::GalleryResult,cx|v.apply_gallery_result(event,cx));
+        let thumbnails=cx.new(|_|thumbnail_model::ThumbnailModel::default());
+        let thumbnail_events=cx.subscribe(&thumbnails,|v,_,event:&thumbnail_model::ThumbnailBatch,cx|v.apply_thumbnail_batch(event,cx));
         let account=cx.new(|cx|account_model::AccountModel::new(window,cx));
         let account_observer=cx.observe(&account,|_,_,cx|cx.notify());
         let account_events=cx.subscribe(&account,|v,_,event:&account_model::AccountEvent,cx|{
             match event{account_model::AccountEvent::Activate(creds)=>v.apply_account(Some(creds.clone()),cx)}
         });
         let mut view = Self {
-            gallery_query,
+            gallery_query,thumbnails,
             job_history,
             viewer_model,viewer_revision:0,
             inspector_model,
@@ -357,8 +384,6 @@ impl UploadDesk {
                 layout_signature: 0,
                 row_plan:Default::default(),
                 visible_range:(0,48),
-                preview_attempted:Default::default(),
-                preview_loading_batch:false,
                 image_cache:image_cache::AlbumImageCache::new(cx),
                 selected_asset: None,
                 oldest:prefs.oldest,
@@ -372,13 +397,12 @@ impl UploadDesk {
                 drag_at: None,
                 thumbnail_path: None,
                 cached_thumbnails: Default::default(),
-                thumbnails_task: None,
                 preview_task: None,
                 pending_preview:None,preview_reload_pending:false,viewer_return:None,
                 preview_loading: false,
                 large_preview_path: None,
                 large_preview_open: false,
-                selection_anchor:None,batch_tag_open:false,gallery_focus:cx.focus_handle().tab_stop(true),preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
+                selection_anchor:None,batch_tag_open:false,gallery_focus:cx.focus_handle().tab_stop(true),inspector_focus:cx.focus_handle().tab_stop(true),preview_focus:cx.focus_handle(),zoom_channel:0,displayed_zoom:1.,
                 preview_error: None,
                 search_input,
                 category: "",
@@ -391,11 +415,11 @@ impl UploadDesk {
                 total_count: 0,
             },
             queue,
-            account,config,maintenance_busy:false,
+            account,config,maintenance_busy:false,job_ack_task:None,
             dark: cx.theme().mode == ThemeMode::Dark,
             page: Page::Gallery,
             storage,
-            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,account_observer,account_events],
+            _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,account_observer,account_events],
             inspector_open: false,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
@@ -429,6 +453,16 @@ impl UploadDesk {
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
                     Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}
+                    Ok("tasks-active")=>{
+                        view.page=Page::Jobs;view.inspector_open=false;
+                        view.queue.update(cx,|q,cx|{
+                            q.busy=true;q.queue_total=3;q.queue_count=2;q.active_job=Some(3);
+                            q.transfer.total.store(8*1024*1024,Ordering::Relaxed);
+                            q.transfer.bytes.store(8*1024*1024,Ordering::Relaxed);
+                            q.queue_control.store(1,Ordering::Relaxed);
+                            cx.notify();
+                        });
+                    }
                     Ok("tags")=>{view.resource.tags_expanded=true;}
                     Ok("justified")=>{view.resource.justified=true;}
                     Ok("rail")=>{view.sidebar_collapsed=true;}
@@ -438,6 +472,8 @@ impl UploadDesk {
                     Ok("compact")=>{view.prefs.comfortable=false;}
                     Ok("compact-masonry")=>{view.prefs.comfortable=false;view.resource.masonry=true;}
                     Ok("favorites")=>{view.resource.favorites_only=true;}
+                    Ok("browse-context")=>{view.resource.category="image";view.resource.favorites_only=true;view.resource.all_accounts=true;view.resource.tag_filter=Some("设计/UI".into());view.resource.tags_expanded=true;}
+                    Ok("browse-empty")=>{view.resource.category="video";view.resource.tag_filter=Some("设计/UI".into());view.resource.tags_expanded=true;}
                     _=>{}
                 }
             }

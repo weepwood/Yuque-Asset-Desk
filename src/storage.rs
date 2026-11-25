@@ -288,16 +288,41 @@ Restore into a NEW data directory only; see README.
         Ok(())
     }
 
+    /// Only unindexed images, in the source account; no repeated COUNT or per-row SQL lookup.
+    pub fn unindexed_images(&self,asset:&Asset,before:Option<i64>) -> Result<Vec<Asset>> {
+        let conn=self.open()?;
+        let cursor=if before.is_some(){"AND a.id < ?3"}else{"AND ?3 IS NULL"};
+        let sql=format!("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at
+            FROM assets a WHERE a.provider=?1 AND a.owner_id=?2 AND a.category='image'
+            AND NOT EXISTS(SELECT 1 FROM asset_visual v WHERE v.asset_id=a.id) {cursor}
+            ORDER BY a.id DESC LIMIT 150");
+        let mut stmt=conn.prepare(&sql)?;
+        let rows=stmt.query_map(params![asset.provider,asset.owner_id,before],map_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    #[cfg(test)]
     pub fn similar_assets(&self,asset:&Asset,hash:u64) -> Result<Vec<Asset>> {
+        self.similar_assets_until(asset,hash,||false)
+    }
+
+    pub fn similar_assets_until(&self,asset:&Asset,hash:u64,cancelled:impl Fn()->bool) -> Result<Vec<Asset>> {
         let conn=self.open()?;
         let mut stmt=conn.prepare("SELECT a.id,a.name,a.bytes,a.category,a.provider,a.url,a.sha256,a.owner_id,a.filekey,a.created_at,v.hash
             FROM assets a JOIN asset_visual v ON a.id=v.asset_id WHERE a.provider=?1 AND a.owner_id=?2 AND a.id<>?3 AND a.category='image'")?;
         let rows=stmt.query_map(params![asset.provider,asset.owner_id,asset.id],|r|Ok((map_row(r)?,r.get::<_,i64>(10)? as u64)))?;
-        let mut matches=Vec::new();
-        for row in rows {let (a,h)=row?;let distance=(hash^h).count_ones();if distance<=10 {matches.push((distance,a));}}
-        matches.sort_by_key(|(distance,a)|(*distance,std::cmp::Reverse(a.id)));
-        matches.truncate(150);
-        Ok(matches.into_iter().map(|(_,a)|a).collect())
+        // Keep the best 150 throughout, ordered by distance and newest ID.
+        let mut matches=std::collections::BTreeMap::new();
+        for row in rows {
+            anyhow::ensure!(!cancelled(),"查询已取消");
+            let (a,h)=row?;
+            let distance=(hash^h).count_ones();
+            if distance<=10 {
+                matches.insert((distance,std::cmp::Reverse(a.id)),a);
+                if matches.len()>150{matches.pop_last();}
+            }
+        }
+        Ok(matches.into_values().collect())
     }
 
     pub fn tags(&self, id: i64) -> Result<Vec<String>> {
@@ -539,6 +564,34 @@ mod tests {
         assert!(!db.toggle_favorite(&a).unwrap());
         drop(restored);drop(conn);drop(db);
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn similarity_index_pages_and_bounded_rank_are_account_scoped(){
+        let root=std::env::temp_dir().join(format!("yuque-similarity-index-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let mut conn=db.open().unwrap();
+        let tx=conn.transaction().unwrap();
+        for i in 1..=500{
+            tx.execute("INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256) VALUES(?1,10,'image','yuque','1','https://example.invalid/x',?1)",[format!("image-{i}")]).unwrap();
+        }
+        tx.execute("INSERT INTO assets(name,bytes,category,provider,owner_id,url,sha256) VALUES('other',10,'image','yuque','2','https://example.invalid/x','other')",[]).unwrap();
+        tx.execute("INSERT INTO asset_visual(asset_id,hash) SELECT id, CASE WHEN id <= 50 THEN 0 ELSE 1 END FROM assets WHERE id<=200 OR id=501",[]).unwrap();
+        tx.commit().unwrap();
+        let a=db.page_album(1,"","image",Some(("yuque","1")),None,true,None,false).unwrap().0.remove(0);
+        let first=db.unindexed_images(&a,None).unwrap();
+        assert_eq!(first.len(),150);assert_eq!(first[0].id,500);assert_eq!(first[149].id,351);
+        let second=db.unindexed_images(&a,Some(first[149].id)).unwrap();
+        assert_eq!(second.len(),150);assert_eq!(second[149].id,201);
+        assert!(db.unindexed_images(&a,Some(201)).unwrap().is_empty());
+        let ranked=db.similar_assets(&a,0).unwrap();
+        assert_eq!(ranked.len(),150);
+        let expected=(2..=50).rev().chain((100..=200).rev()).collect::<Vec<i64>>();
+        assert_eq!(ranked.iter().map(|a|a.id).collect::<Vec<_>>(),expected);
+        let checks=std::cell::Cell::new(0);
+        let result=db.similar_assets_until(&a,0,||{checks.set(checks.get()+1);checks.get()>5});
+        assert!(result.is_err());assert_eq!(checks.get(),6);
+        drop(conn);drop(db);let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

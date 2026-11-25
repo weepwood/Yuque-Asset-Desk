@@ -1,36 +1,43 @@
 use super::*;
 
 impl UploadDesk {
-    pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_resource_selection(&mut self,cx:&mut Context<Self>){
         self.clear_quality(cx);
-        self.resource.preview_reload_pending=false;
+        self.resource.selected_ids.clear();
+        self.resource.selected_asset=None;
+        self.resource.selection_anchor=None;
+        self.resource.batch_tag_open=false;
         self.resource.viewer_return=None;
         self.resource.pending_preview=None;
-        self.resource.selection_anchor=None;self.resource.batch_tag_open=false;
-        self.inspector_model.update(cx,|model,cx|model.reset(cx));
+        self.resource.large_preview_open=false;
+        self.resource.large_preview_path=None;
+        self.resource.thumbnail_path=None;
+        self.resource.preview_task=None;
+        self.resource.preview_loading=false;
+        self.resource.preview_error=None;
+        self.inspector_model.update(cx,|m,cx|m.reset(cx));
+    }
+
+    pub(super) fn reset_history(&mut self, cx: &mut Context<Self>) {
+        self.clear_resource_selection(cx);
+        self.resource.preview_reload_pending=false;
         self.resource.page_cursors = vec![None];
-        self.resource.selected_asset = None;
-        self.resource.selected_ids.clear();
-        self.resource.large_preview_open = false;
-        self.resource.large_preview_path = None;
-        self.resource.thumbnail_path = None;
-        self.resource.cached_thumbnails.clear();
-        self.resource.preview_attempted.clear();
-        self.resource.preview_loading_batch=false;
+        self.resource.cached_thumbnails=Default::default();
         self.resource.visible_range=(0,48);
-        self.resource.ratios.clear();
+        self.resource.ratios=Default::default();
         self.resource.hover_asset=None;
+        self.resource.album_list.set_scroll_handler(|_,_,_|{});
         self.resource.album_list.reset(0);
         self.resource.row_plan=Default::default();
         self.resource.layout_signature=0;
         self.resource.masonry_scroll.set_offset(point(px(0.),px(0.)));
         self.resource.masonry_plan=Default::default();
         self.resource.masonry_signature=0;
-        self.resource.thumbnails_task = None;
         self.resource.preview_task = None;
         self.resource.preview_loading = false;
         self.resource.preview_error = None;
-        self.resource.assets.clear();
+        self.resource.assets=Vec::new();
+        self.resource.total_count=0;
         self.resource.has_more = false;
         self.reload(cx);
     }
@@ -46,14 +53,12 @@ impl UploadDesk {
         self.resource.pending_preview=None;
         self.resource.page_cursors=vec![None];
         self.resource.visible_range=(0,48);
+        self.resource.album_list.set_scroll_handler(|_,_,_|{});
         self.resource.album_list.reset(0);
         self.resource.row_plan=Default::default();
         self.resource.layout_signature=0;
         self.resource.masonry_scroll.set_offset(point(px(0.),px(0.)));
         self.resource.masonry_plan=Default::default();
-        self.resource.preview_attempted.clear();
-        self.resource.preview_loading_batch=false;
-        self.resource.thumbnails_task=None;
         self.load_history(false,cx);
     }
     pub(super) fn load_more(&mut self,cx:&mut Context<Self>){
@@ -72,8 +77,7 @@ impl UploadDesk {
             self.config.provider().to_string(), self.config.owner_id().to_string()
         ));
         let before = self.resource.page_cursors.last().copied().flatten();
-        self.resource.thumbnails_task=None;self.resource.preview_loading_batch=false;
-        self.resource.preview_attempted.retain(|id|self.resource.cached_thumbnails.contains_key(id));
+        if !append{self.thumbnails.update(cx,|v,_|v.stop(true));}
         self.resource.loading_history=true;self.resource.history_error=None;
         let request=gallery_query::GalleryRequest{query,category,oldest,tag,favorites_only,similar,scope,before,append};
         self.resource.history_generation=self.gallery_query.update(cx,|v,cx|v.request(storage,request,cx));
@@ -88,14 +92,27 @@ impl UploadDesk {
                         self.resource.tag_catalog=tags;
                         if event.append {
                             let existing=self.resource.assets.iter().map(|a|a.id).collect::<std::collections::HashSet<_>>();
+                            if ratios.iter().any(|(id,r,_)|existing.contains(id)&&self.resource.ratios.get(id)!=Some(r)){
+                                self.resource.masonry_signature=0;
+                                self.resource.ratio_revision=self.resource.ratio_revision.wrapping_add(1);
+                            }
                             self.resource.assets.extend(items.into_iter().filter(|a|!existing.contains(&a.id)));
                         } else {
                             self.resource.selected_ids.retain(|id| items.iter().any(|a| a.id == *id));
-                            if self.resource.selected_asset.as_ref().is_some_and(|a|!items.iter().any(|x|x.id==a.id)){
-                                self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));
+                            if self.resource.selected_asset.as_ref().is_some_and(|a|!self.resource.selected_ids.contains(&a.id)){
+                                // A refresh can remove the primary item; do not keep a
+                                // disconnected selection or expose actions for an old asset.
+                                self.clear_resource_selection(cx);
+                            }else{
+                                if self.resource.selection_anchor.is_some_and(|id|!items.iter().any(|a|a.id==id)){
+                                    self.resource.selection_anchor=self.resource.selected_asset.as_ref().map(|a|a.id);
+                                }
+                                if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
                             }
                             self.resource.assets=items;
-                            self.resource.cached_thumbnails.clear();self.resource.ratios.clear();
+                            self.resource.layout_signature=0;
+                            self.resource.masonry_signature=0;
+                            self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
                         }
                         for (id,ratio,path) in ratios{
                             self.resource.ratios.insert(id,ratio);self.resource.cached_thumbnails.insert(id,path);
@@ -104,8 +121,6 @@ impl UploadDesk {
                         if self.isolated_qa() && std::env::var("YUQUE_QA_PAGE").as_deref()==Ok("hover"){
                             self.resource.hover_asset=self.resource.assets.first().map(|a|a.id);
                         }
-                        self.resource.ratio_revision+=1;
-                        self.resource.preview_loading_batch=false;self.resource.thumbnails_task=None;
                         #[cfg(feature="qa")]
                         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF page_ready_ms={} count={}",self.resource.perf_start.elapsed().as_millis(),self.resource.assets.len());}
                         self.resource.has_more = more;
@@ -113,31 +128,38 @@ impl UploadDesk {
                         self.refresh_thumbnails(cx);
                     }
                     Err(error) => {
-                        if event.append{self.resource.page_cursors.pop();}else{self.resource.assets.clear();self.resource.has_more=false;}
+                        if event.append{self.resource.page_cursors.pop();}else{
+                            self.clear_resource_selection(cx);
+                            self.resource.layout_signature=0;
+                            self.resource.masonry_signature=0;
+                            self.resource.assets=Vec::new();self.resource.total_count=0;self.resource.has_more=false;
+                            self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
+                        }
                         self.resource.history_error = Some(error.to_string());
+                        if event.append{self.refresh_thumbnails(cx);}
                     }
                 }
                 cx.notify();
     }
 
     pub(super) fn update_visible(&mut self,start:usize,end:usize,cx:&mut Context<Self>){
+        if self.page!=Page::Gallery{return;}
         self.resource.visible_range=(start,end);
         if end.saturating_add(24)>=self.resource.assets.len(){self.load_more(cx);}
         self.refresh_thumbnails(cx);
     }
     pub(super) fn refresh_thumbnails(&mut self,cx:&mut Context<Self>){
-        if self.resource.preview_loading_batch || self.resource.loading_history{return;}
-        let generation=self.resource.history_generation;
+        if self.page!=Page::Gallery||self.thumbnails.read(cx).busy||self.resource.loading_history{return;}
         let (start,end)=self.resource.visible_range;
         let lo=start.saturating_sub(24).min(self.resource.assets.len());
-        let hi=end.saturating_add(48).min(self.resource.assets.len());
         let mid=start.min(self.resource.assets.len());
+        let hi=end.max(start).saturating_add(48).min(self.resource.assets.len());
         let candidates:Vec<&Asset>=if self.resource.large_preview_open{
             self.preview_strip()
         }else{
             self.resource.assets[mid..hi].iter().chain(self.resource.assets[lo..mid].iter()).collect()
         };
-        let items=candidates.into_iter().filter(|a|a.category=="image"&&!self.resource.preview_attempted.contains(&a.id)&&!self.resource.cached_thumbnails.contains_key(&a.id)).take(12).cloned().collect::<Vec<_>>();
+        let items=candidates.into_iter().filter(|a|a.category=="image"&&!self.thumbnails.read(cx).attempted(a.id)&&!self.resource.cached_thumbnails.contains_key(&a.id)).take(12).cloned().collect::<Vec<_>>();
         if items.is_empty(){
             #[cfg(feature="qa")]
             if std::env::var_os("YUQUE_QA_PERF").is_some() && self.resource.perf_preview_count!=self.resource.cached_thumbnails.len(){
@@ -146,18 +168,18 @@ impl UploadDesk {
             }
             return;
         }
-        self.resource.preview_loading_batch=true;
-        for a in &items{self.resource.preview_attempted.insert(a.id);}
         let storage=self.storage.clone();
-        self.resource.thumbnails_task=Some(cx.spawn(async move|this,cx|{
-            let found=cx.background_spawn(async move{items.into_iter().filter_map(|a|preview::index_local(&storage,&a).ok().map(|(p,r)|(a.id,p,r))).collect::<Vec<_>>()}).await;
-            _=this.update(cx,|v,cx|{
-                if generation!=v.resource.history_generation{return;}
-                v.resource.preview_loading_batch=false;
-                for (id,p,r) in found{v.resource.cached_thumbnails.insert(id,p);if v.resource.ratios.insert(id,r)!=Some(r){v.resource.ratio_revision+=1;}}
-                v.refresh_thumbnails(cx);cx.notify();
-            });
-        }));
+        self.thumbnails.update(cx,|v,cx|v.request(storage,items,cx));
+    }
+
+    pub(super) fn apply_thumbnail_batch(&mut self,event:&thumbnail_model::ThumbnailBatch,cx:&mut Context<Self>){
+        if !self.thumbnails.read(cx).current(event.generation){return;}
+        for (id,path,ratio) in &event.found{
+            self.resource.cached_thumbnails.insert(*id,path.clone());
+            if self.resource.ratios.insert(*id,*ratio)!=Some(*ratio){self.resource.ratio_revision+=1;self.resource.masonry_signature=0;}
+        }
+        self.refresh_thumbnails(cx);
+        cx.notify();
     }
 
     pub(super) fn export_album(&mut self,cx:&mut Context<Self>){
@@ -200,10 +222,29 @@ impl UploadDesk {
 
     pub(super) fn find_similar(&mut self,asset:Asset,cx:&mut Context<Self>) {
         self.resource.similar_to=Some(asset);
-        self.resource.favorites_only=false;
-        self.resource.group_dates=false;
         self.inspector_open=false;
         self.reset_history(cx);
+    }
+
+    pub(super) fn exit_similar(&mut self,cx:&mut Context<Self>){
+        if self.resource.similar_to.take().is_some(){self.reset_history(cx);}
+    }
+
+    pub(super) fn clear_browse_filters(&mut self,w:&mut Window,cx:&mut Context<Self>){
+        self.resource.similar_to=None;
+        self.resource.category="";
+        self.resource.favorites_only=false;
+        self.resource.all_accounts=false;
+        self.resource.tag_filter=None;
+        self.resource.search.clear();
+        self.resource.search_input.update(cx,|input,cx|input.set_value("",w,cx));
+        self.persist_preferences(cx);
+        self.reset_history(cx);
+    }
+
+    pub(super) fn has_browse_filters(&self)->bool{
+        !self.resource.search.is_empty()||!self.resource.category.is_empty()||
+        self.resource.favorites_only||self.resource.all_accounts||self.resource.tag_filter.is_some()
     }
 
     pub(super) fn select_asset(&mut self, asset: Asset, window: &mut Window, cx: &mut Context<Self>) {
@@ -219,17 +260,20 @@ impl UploadDesk {
         self.resource.preview_loading=false;
         self.resource.preview_error=None;
         self.resource.selected_asset=Some(asset.clone());
-        if asset.category=="image"{self.load_preview(cx);}
+        if asset.category=="image"{
+            if let Some(path)=self.resource.cached_thumbnails.get(&asset.id){self.resource.thumbnail_path=Some(path.clone());}
+            else{self.load_preview(cx);}
+        }
         cx.notify();
     }
     pub(super) fn show_asset_details(&mut self,asset:Asset,window:&mut Window,cx:&mut Context<Self>){
-        if !self.resource.selected_ids.contains(&asset.id){self.resource.selected_ids.clear();self.resource.selected_ids.insert(asset.id);self.resource.selection_anchor=Some(asset.id);}self.select_asset(asset,window,cx);self.immersive=false;self.inspector_open=true;cx.notify();
+        if !self.resource.selected_ids.contains(&asset.id){self.resource.selected_ids.clear();self.resource.selected_ids.insert(asset.id);self.resource.selection_anchor=Some(asset.id);}self.select_asset(asset,window,cx);self.set_inspector(true,true,window,cx);
     }
     pub(super) fn click_tile(&mut self,asset:Asset,count:usize,modifiers:Modifiers,window:&mut Window,cx:&mut Context<Self>){
         let order=self.resource.assets.iter().map(|a|a.id).collect::<Vec<_>>();
         selection::click(&mut self.resource.selected_ids,&order,&mut self.resource.selection_anchor,asset.id,modifiers.shift,modifiers.platform||modifiers.control);
         if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
-        if self.resource.selected_ids.contains(&asset.id){self.select_asset(asset.clone(),window,cx);}else if let Some(a)=self.resource.assets.iter().find(|a|self.resource.selected_ids.contains(&a.id)).cloned(){self.select_asset(a,window,cx);}else{self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));}
+        if self.resource.selected_ids.contains(&asset.id){self.select_asset(asset.clone(),window,cx);}else if let Some(a)=self.resource.assets.iter().find(|a|self.resource.selected_ids.contains(&a.id)).cloned(){self.select_asset(a,window,cx);}else{self.clear_resource_selection(cx);}
         self.resource.gallery_focus.focus(window,cx);
         if count>=2&&!modifiers.shift&&!modifiers.platform&&!modifiers.control&&asset.category=="image"{self.open_large_preview(window,cx);}
         cx.notify();
@@ -286,17 +330,20 @@ impl UploadDesk {
         self.resource.preview_error = None;
         self.resource.preview_task = Some(cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move {
-                preview::restore_local(&storage,&asset).map_err(|e| e.to_string())
+                let path=preview::restore_local(&storage,&asset)?;
+                let (w,h)=image::image_dimensions(&path)?;
+                Ok::<_,anyhow::Error>((path,w as f32/h.max(1) as f32))
             }).await;
             _ = this.update(cx, |view, cx| {
                 if view.resource.selected_asset.as_ref().is_none_or(|a| a.id != id) { return; }
                 view.resource.preview_loading = false;
                 match result {
-                    Ok(path) => {
+                    Ok((path,ratio)) => {
                         view.resource.cached_thumbnails.insert(id, path.clone());
+                        if view.resource.ratios.insert(id,ratio)!=Some(ratio){view.resource.ratio_revision+=1;view.resource.masonry_signature=0;}
                         view.resource.thumbnail_path = Some(path);
                     },
-                    Err(error) => view.resource.preview_error = Some(error),
+                    Err(error) => view.resource.preview_error = Some(error.to_string()),
                 }
                 cx.notify();
             });
@@ -339,7 +386,7 @@ impl UploadDesk {
                     Ok((path,ratio))=>{
                         v.resource.thumbnail_path=Some(path.clone());
                         v.resource.cached_thumbnails.insert(id,path.clone());
-                        if v.resource.ratios.insert(id,ratio)!=Some(ratio){v.resource.ratio_revision+=1;}
+                        if v.resource.ratios.insert(id,ratio)!=Some(ratio){v.resource.ratio_revision+=1;v.resource.masonry_signature=0;}
                         v.resource.large_preview_path=Some(path);
                     }
                     Err(e)=>v.resource.preview_error=Some(e.to_string())
@@ -353,7 +400,8 @@ impl UploadDesk {
     pub(super) fn apply_batch_tags(&mut self, remove:bool,cx:&mut Context<Self>) {
         let ids=self.resource.assets.iter().filter(|a|self.resource.selected_ids.contains(&a.id)).map(|a|a.id).collect::<Vec<_>>();
         let text=self.resource.batch_tag_input.read(cx).value().to_string();
-        let scope=(!self.resource.all_accounts).then(||(self.config.provider().to_owned(),self.config.owner_id().to_owned()));
+        let scope=self.resource.similar_to.as_ref().map(|a|(a.provider.clone(),a.owner_id.clone()))
+            .or_else(||(!self.resource.all_accounts).then(||(self.config.provider().to_owned(),self.config.owner_id().to_owned())));
         if !ids.is_empty(){self.mutate_resource(mutations::Mutation::Batch(ids,scope,text,remove),cx);}
     }
 
@@ -416,7 +464,9 @@ impl UploadDesk {
         self.resource.pending_preview=None;
         self.resource.large_preview_open=false;
         self.resource.drag_at=None;
-        self.resource.gallery_focus.focus(window,cx);
+        if self.inspector_open&&!self.immersive&&window.viewport_size().width<px(1000.){
+            self.resource.inspector_focus.focus(window,cx);
+        }else{self.resource.gallery_focus.focus(window,cx);}
         if let Some((a,ids,anchor))=self.resource.viewer_return.take(){
             self.select_asset(a,window,cx);self.resource.selected_ids=ids;self.resource.selection_anchor=anchor;
         }else if let Some(a)=&self.resource.selected_asset{self.resource.selected_ids.clear();self.resource.selected_ids.insert(a.id);self.resource.selection_anchor=Some(a.id);}

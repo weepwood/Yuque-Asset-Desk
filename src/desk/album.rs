@@ -10,17 +10,37 @@ pub(super) enum AlbumRow {
 
 /// Stable order, no cropping; last justified row never grows beyond target height.
 pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool,spacing:Spacing)->Vec<AlbumRow>{
+    plan_rows_from(assets,ratios,width,target,grid,justified,dates,spacing,0,true)
+}
+
+/// Replan the final (possibly incomplete) row plus appended items. The date
+/// heading preceding that row stays in the retained prefix.
+pub(super) fn append_rows(rows:&[AlbumRow],assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool,spacing:Spacing)->Option<(usize,Vec<AlbumRow>)>{
+    let row=rows.last()?;
+    let cursor=match row{AlbumRow::Item(i)=>*i,AlbumRow::Tiles{items,..}=>items.first()?.0,AlbumRow::Day(_)=>return None};
+    let end=row_asset_count(rows);
+    if end>=assets.len(){return None;}
+    Some((rows.len()-1,plan_rows_from(assets,ratios,width,target,grid,justified,dates,spacing,cursor,false)))
+}
+pub(super) fn row_asset_count(rows:&[AlbumRow])->usize{
+    match rows.last(){
+        Some(AlbumRow::Item(i))=>i+1,
+        Some(AlbumRow::Tiles{items,..})=>items.last().map_or(0,|(i,_)|i+1),
+        _=>0,
+    }
+}
+fn plan_rows_from(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,grid:bool,justified:bool,dates:bool,spacing:Spacing,mut cursor:usize,mut emit_day:bool)->Vec<AlbumRow>{
     let gap=spacing.gap;
     let width=width.max(160.);
     let target=target.clamp(96.,240.);
     let cols=((width+gap)/(target+gap)).floor().max(1.) as usize;
     let equal=(width-gap*(cols-1) as f32)/cols as f32;
     let mut rows=Vec::new();
-    let mut cursor=0;
     while cursor<assets.len(){
         let day=assets[cursor].created_at.get(..10).unwrap_or("未知日期");
         let end=if dates {cursor+assets[cursor..].iter().take_while(|a|a.created_at.get(..10).unwrap_or("未知日期")==day).count()}else{assets.len()};
-        if dates{rows.push(AlbumRow::Day(day.to_owned()));}
+        if dates&&emit_day{rows.push(AlbumRow::Day(day.to_owned()));}
+        emit_day=true;
         while cursor<end{
             if !grid{rows.push(AlbumRow::Item(cursor));cursor+=1;continue;}
             if !justified{
@@ -31,7 +51,7 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
             // Reserve enough horizontal space for the selection, favorite and
             // copy controls, even on narrow portrait images.
             let min_width=96.;
-            let ratio=|i:usize|ratios.get(&assets[i].id).copied().unwrap_or(1.).clamp(0.4,3.);
+            let ratio=|i:usize|ratios.get(&assets[i].id).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.).clamp(0.4,3.);
             let mut sum=0.;
             let start=cursor;
             while cursor<end {
@@ -58,37 +78,49 @@ pub(super) fn plan_rows(assets:&[Asset],ratios:&std::collections::HashMap<i64,f3
     rows
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone,Debug,PartialEq)]
 pub(super) struct MasonryTile {pub index:usize,pub id:i64,pub x:f32,pub y:f32,pub width:f32,pub height:f32}
 #[derive(Clone,Debug,Default)]
-pub(super) struct MasonryPlan {pub tiles:Vec<MasonryTile>,pub days:Vec<(String,f32)>,pub height:f32,pub footer:f32}
+pub(super) struct MasonryPlan {pub tiles:Vec<MasonryTile>,pub days:Vec<(String,f32)>,pub height:f32,pub footer:f32,pub max_tile_height:f32,bottom:Vec<f32>}
 
 /// Shortest-column packing. Each date starts a new section, not a row.
 pub(super) fn masonry(assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,dates:bool,spacing:Spacing)->MasonryPlan {
-    let gap=spacing.gap;
-    let width=width.max(160.);
-    let cols=((width+gap)/(target.clamp(96.,240.)+gap)).floor().max(1.) as usize;
-    let w=(width-(cols-1) as f32*gap)/cols as f32;
-    let mut bottom=vec![0f32;cols];let mut result=MasonryPlan{footer:spacing.footer,..Default::default()};let mut last=None;
-    for (index,a) in assets.iter().enumerate(){
-        let day=a.created_at.get(..10).unwrap_or("未知日期");
-        if dates && last!=Some(day){
-            let y=bottom.iter().copied().fold(0.,f32::max);
-            result.days.push((day.to_owned(),y));bottom.fill(y+spacing.day);last=Some(day);
-        }
-        let col=(0..cols).min_by(|&a,&b|bottom[a].total_cmp(&bottom[b])).unwrap();
-        let ratio=ratios.get(&a.id).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.).clamp(0.3,4.);
-        let h=(w/ratio).clamp(60.,w*3.);
-        let y=bottom[col];
-        result.tiles.push(MasonryTile{index,id:a.id,x:col as f32*(w+gap),y,width:w,height:h});
-        bottom[col]=y+h+spacing.footer+gap;
-    }
-    result.height=bottom.into_iter().fold(0.,f32::max);
-    result
+    let mut plan=MasonryPlan::default();
+    plan.extend(assets,ratios,width,target,dates,spacing);
+    plan
 }
 impl MasonryPlan{
+    /// Extend only after the caller verifies identical geometry and unchanged prefix ratios.
+    pub fn extend(&mut self,assets:&[Asset],ratios:&std::collections::HashMap<i64,f32>,width:f32,target:f32,dates:bool,spacing:Spacing){
+        let gap=spacing.gap;
+        let width=width.max(160.);
+        let cols=((width+gap)/(target.clamp(96.,240.)+gap)).floor().max(1.) as usize;
+        let w=(width-(cols-1) as f32*gap)/cols as f32;
+        if self.bottom.is_empty(){self.bottom=vec![0.;cols];self.footer=spacing.footer;}
+        debug_assert_eq!(self.bottom.len(),cols);
+        let start=self.tiles.len();
+        for (index,a) in assets.iter().enumerate().skip(start){
+            let day=a.created_at.get(..10).unwrap_or("未知日期");
+            if dates && self.days.last().is_none_or(|(last,_)|last!=day){
+                let y=self.bottom.iter().copied().fold(0.,f32::max);
+                self.days.push((day.to_owned(),y));self.bottom.fill(y+spacing.day);
+            }
+            let col=(0..cols).min_by(|&a,&b|self.bottom[a].total_cmp(&self.bottom[b])).unwrap();
+            let ratio=ratios.get(&a.id).copied().filter(|r|r.is_finite()&&*r>0.).unwrap_or(1.).clamp(0.3,4.);
+            let h=(w/ratio).clamp(60.,w*3.);
+            let y=self.bottom[col];
+            self.tiles.push(MasonryTile{index,id:a.id,x:col as f32*(w+gap),y,width:w,height:h});
+            self.bottom[col]=y+h+spacing.footer+gap;
+            self.max_tile_height=self.max_tile_height.max(h);
+        }
+        self.height=self.bottom.iter().copied().fold(0.,f32::max);
+    }
+    pub fn visible_tiles(&self,lo:f32,hi:f32)->impl Iterator<Item=&MasonryTile>{
+        let from=self.tiles.partition_point(|t|t.y<lo-self.max_tile_height-self.footer);
+        self.tiles[from..].iter().take_while(move|t|t.y<=hi).filter(move|t|t.y+t.height+self.footer>=lo)
+    }
     pub fn anchor(&self,top:f32)->Option<(i64,f32)>{
-        self.tiles.iter().filter(|t|t.y+t.height+self.footer>top).min_by(|a,b|a.y.total_cmp(&b.y)).map(|t|(t.id,top-t.y))
+        self.visible_tiles(top,f32::INFINITY).find(|t|t.y+t.height+self.footer>top).map(|t|(t.id,top-t.y))
     }
     pub fn restore(&self,anchor:Option<(i64,f32)>)->Option<f32>{
         let (id,delta)=anchor?;
@@ -154,6 +186,56 @@ mod tests{
         }
     }
     #[::core::prelude::v1::test]
+    fn masonry_append_matches_full_layout_and_culls_tall_tiles(){
+        let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:format!("2026-11-{:02}",25-i/500)}).collect::<Vec<_>>();
+        let ratios=items.iter().map(|a|(a.id,0.3+(a.id%23) as f32*0.16)).collect();
+        for comfortable in [false,true]{
+            let spacing=Spacing::new(comfortable);
+            for dates in [false,true]{
+                let full=masonry(&items,&ratios,480.,240.,dates,spacing);
+                let mut incremental=MasonryPlan::default();
+                for end in (150..10000).step_by(150).chain(std::iter::once(10000)){
+                    let old=incremental.tiles.len();
+                    incremental.extend(&items[..end],&ratios,480.,240.,dates,spacing);
+                    assert_eq!(incremental.tiles[..old],full.tiles[..old]);
+                }
+                assert_eq!(incremental.tiles,full.tiles);
+                assert_eq!(incremental.days,full.days);
+                assert_eq!(incremental.height,full.height);
+                assert_eq!(incremental.max_tile_height,full.max_tile_height);
+                assert!(full.max_tile_height>1200.);
+                for lo in [0.,1250.,2000.,full.height/2.,full.height-500.]{
+                    let hi=lo+600.;
+                    let visible=full.visible_tiles(lo,hi).map(|t|t.id).collect::<Vec<_>>();
+                    let brute=full.tiles.iter().filter(|t|t.y<=hi&&t.y+t.height+full.footer>=lo).map(|t|t.id).collect::<Vec<_>>();
+                    assert_eq!(visible,brute);
+                }
+            }
+        }
+    }
+    #[::core::prelude::v1::test]
+    fn row_append_matches_full_plan_across_page_and_date_boundaries(){
+        let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:format!("2026-11-{:02}",25-i/497)}).collect::<Vec<_>>();
+        let ratios=items.iter().map(|a|(a.id,if a.id%37==0{f32::NAN}else{0.4+(a.id%20) as f32*0.13})).collect();
+        for comfortable in [false,true]{
+            let spacing=Spacing::new(comfortable);
+            for dates in [false,true]{
+                for (grid,justified) in [(false,false),(true,false),(true,true)]{
+                    let mut rows=plan_rows(&items[..150],&ratios,780.,148.,grid,justified,dates,spacing);
+                    for end in (300..10000).step_by(150).chain(std::iter::once(10000)){
+                        let (start,suffix)=append_rows(&rows,&items[..end],&ratios,780.,148.,grid,justified,dates,spacing).unwrap();
+                        assert_eq!(start,rows.len()-1);
+                        rows.truncate(start);rows.extend(suffix);
+                        if end==300||end==600||end==10000{
+                            assert_eq!(rows,plan_rows(&items[..end],&ratios,780.,148.,grid,justified,dates,spacing));
+                        }
+                        assert_eq!(row_asset_count(&rows),end);
+                    }
+                }
+            }
+        }
+    }
+    #[::core::prelude::v1::test]
     fn rows_preserve_order_and_width(){
         let items=(0..10000).map(|i|Asset{id:i,name:String::new(),bytes:0,category:"image".into(),provider:"demo".into(),url:String::new(),sha256:String::new(),owner_id:"local".into(),filekey:String::new(),created_at:if i<5000{"2026-11-24"}else{"2026-11-23"}.into()}).collect::<Vec<_>>();
         let ratios=items.iter().map(|a|(a.id,0.4+(a.id%20) as f32*0.13)).collect();
@@ -192,9 +274,11 @@ pub(super) fn row_neighbor(rows:&[AlbumRow],index:usize,key:&str,gap:f32)->Optio
             AlbumRow::Item(i)=>vec![(*i,0.)],AlbumRow::Day(_)=>vec![],
         }
     }
-    let (r,items)=rows.iter().enumerate().find_map(|(r,row)|{
-        let items=centers(row,gap);items.iter().any(|(i,_)|*i==index).then_some((r,items))
+    let r=rows.iter().position(|row|match row{
+        AlbumRow::Tiles{items,..}=>items.first().zip(items.last()).is_some_and(|(a,b)|a.0<=index&&index<=b.0),
+        AlbumRow::Item(i)=>*i==index,AlbumRow::Day(_)=>false,
     })?;
+    let items=centers(&rows[r],gap);
     let at=items.iter().position(|(i,_)|*i==index)?;
     match key{
         "left"=>at.checked_sub(1).map(|i|items[i].0),

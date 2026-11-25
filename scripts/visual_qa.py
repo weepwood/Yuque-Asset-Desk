@@ -98,6 +98,9 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("album-masonry-narrow.png",YUQUE_QA_PAGE="masonry",YUQUE_QA_NARROW="1")
     capture("album-justified.png",YUQUE_QA_PAGE="justified")
     capture("album-dense.png",YUQUE_QA_PAGE="dense",YUQUE_QA_NARROW="1")
+    capture("browse-context-dark.png",YUQUE_QA_PAGE="browse-context")
+    capture("browse-context-minimum.png",YUQUE_QA_PAGE="browse-context",YUQUE_QA_MINIMUM="1",YUQUE_QA_LIGHT="1")
+    capture("browse-empty-minimum.png",YUQUE_QA_PAGE="browse-empty",YUQUE_QA_MINIMUM="1")
     capture("album-favorites.png",YUQUE_QA_PAGE="favorites",YUQUE_QA_LIGHT="1")
     capture("album-hover.png",YUQUE_QA_PAGE="hover")
     capture("detail-dark.png",YUQUE_QA_PAGE="detail")
@@ -118,6 +121,9 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("settings-dark.png",YUQUE_QA_PAGE="settings")
     capture("settings-light.png",YUQUE_QA_PAGE="settings",YUQUE_QA_LIGHT="1")
     capture("tasks-dark.png",YUQUE_QA_PAGE="tasks")
+    capture("tasks-active-minimum.png",YUQUE_QA_PAGE="tasks-active",YUQUE_QA_MINIMUM="1")
+    capture("tasks-minimum.png",YUQUE_QA_PAGE="tasks",YUQUE_QA_MINIMUM="1",YUQUE_QA_LIGHT="1")
+    capture("detail-minimum.png",YUQUE_QA_PAGE="detail",YUQUE_QA_MINIMUM="1")
     capture("tags-light.png",YUQUE_QA_LIGHT="1",YUQUE_QA_PAGE="tags")
     assert (out/"empty-dark.png").read_bytes() != (out/"resources-dark.png").read_bytes(), "populated frame did not change"
     with sqlite3.connect(data/"assets.db") as conn:

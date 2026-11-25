@@ -1,6 +1,6 @@
 //! Navigation and shared commands. A single primary destination, independent panels.
 use super::*;
-gpui_kit::actions!(yuque_gallery,[GalleryPreview,GalleryClear,GallerySelectAll,GalleryInspector]);
+gpui_kit::actions!(yuque_gallery,[GalleryPreview,GalleryClear,GallerySelectAll,GalleryInspector,InspectorClose]);
 pub(super) fn bind_gallery(cx:&mut App){
     cx.bind_keys([
         KeyBinding::new("space",GalleryPreview,Some("YuqueGallery")),
@@ -9,6 +9,9 @@ pub(super) fn bind_gallery(cx:&mut App){
         KeyBinding::new("cmd-a",GallerySelectAll,Some("YuqueGallery")),
         KeyBinding::new("ctrl-i",GalleryInspector,Some("YuqueGallery")),
         KeyBinding::new("cmd-i",GalleryInspector,Some("YuqueGallery")),
+        KeyBinding::new("escape",InspectorClose,Some("YuqueInspector")),
+        KeyBinding::new("ctrl-i",InspectorClose,Some("YuqueInspector")),
+        KeyBinding::new("cmd-i",InspectorClose,Some("YuqueInspector")),
     ]);
 }
 
@@ -22,24 +25,52 @@ pub(super) enum Command { Navigate(Page), ToggleInspector, ToggleImmersive, Sele
 impl UploadDesk{
     pub(super) fn navigate_page(&mut self,page:Page,cx:&mut Context<Self>){
         self.page=page;
+        if page==Page::Gallery{self.refresh_thumbnails(cx);}
+        else{
+            self.thumbnails.update(cx,|v,_|v.stop(false));
+            self.resource.image_cache.update(cx,|cache,cx|cache.clear(cx));
+        }
         self.immersive=false;
         self.reset_armed=false;
         if page==Page::Jobs{self.refresh_jobs(cx);}
         if page==Page::Data{self.refresh_data(cx);}
         cx.notify();
     }
+    pub(super) fn set_inspector(&mut self,open:bool,focus_panel:bool,w:&mut Window,cx:&mut Context<Self>){
+        self.immersive=false;
+        self.inspector_open=open;
+        if open&&(focus_panel||w.viewport_size().width<px(1000.)){
+            self.resource.inspector_focus.focus(w,cx);
+        }else{
+            self.resource.gallery_focus.focus(w,cx);
+        }
+        cx.notify();
+    }
+    pub(super) fn focus_gallery_destination(&mut self,w:&mut Window,cx:&mut Context<Self>){
+        if w.viewport_size().width<px(1000.){self.inspector_open=false;}
+        self.resource.gallery_focus.focus(w,cx);
+        cx.notify();
+    }
     pub(super) fn command(&mut self,command:Command,window:&mut Window,cx:&mut Context<Self>){
         match command{
-            Command::Navigate(page)=>self.navigate_page(page,cx),
-            Command::ToggleInspector=>{self.immersive=false;self.inspector_open=!self.inspector_open;},
-            Command::ToggleImmersive=>{self.immersive=!self.immersive;if self.page==Page::Gallery{self.resource.gallery_focus.focus(window,cx);}},
+            Command::Navigate(page)=>{self.navigate_page(page,cx);if page==Page::Gallery{self.focus_gallery_destination(window,cx);}},
+            Command::ToggleInspector=>{self.set_inspector(!self.inspector_open||self.immersive,false,window,cx);},
+            Command::ToggleImmersive=>{
+                self.immersive=!self.immersive;
+                if self.page==Page::Gallery{
+                    if !self.immersive&&self.inspector_open&&window.viewport_size().width<px(1000.){self.resource.inspector_focus.focus(window,cx);}
+                    else{self.resource.gallery_focus.focus(window,cx);}
+                }
+            },
             Command::SelectAll=>{
                 self.resource.selected_ids=self.resource.assets.iter().take(selection::LIMIT).map(|a|a.id).collect();
                 if self.resource.selected_asset.as_ref().is_none_or(|a|!self.resource.selected_ids.contains(&a.id)){
                     if let Some(a)=self.resource.assets.first().cloned(){self.select_asset(a,window,cx);}
                 }
+                self.resource.selection_anchor=self.resource.selected_asset.as_ref().map(|a|a.id);
+                if self.resource.selected_ids.is_empty(){self.clear_resource_selection(cx);}
             },
-            Command::ClearSelection=>{self.resource.selected_ids.clear();self.resource.selection_anchor=None;self.resource.batch_tag_open=false;self.resource.selected_asset=None;self.inspector_model.update(cx,|m,cx|m.reset(cx));},
+            Command::ClearSelection=>self.clear_resource_selection(cx),
             Command::Preview=>self.open_large_preview(window,cx),
         }
         cx.notify();

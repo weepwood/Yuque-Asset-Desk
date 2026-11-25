@@ -52,7 +52,7 @@ fn main() -> Result<()> {
                 window.set_window_title("Yuque Asset Desk");
                 #[cfg(feature="qa")]
                 if config.mode == config::Mode::Demo && std::env::var_os("YUQUE_DATA_DIR").is_some() {
-                    if std::env::var_os("YUQUE_QA_PERF").is_some(){
+                    if std::env::var_os("YUQUE_QA_PERF").is_some()&&std::env::var("YUQUE_QA_PERF").as_deref()!=Ok("memory"){
                         window.spawn(cx,async move|cx|{
                             cx.background_executor().timer(std::time::Duration::from_millis(1800)).await;
                             let mut times=Vec::new();
@@ -145,6 +145,37 @@ fn main() -> Result<()> {
                             state==expected&&capture.is_ok()
                         }));
                         if !matches!(result,Ok(true)){eprintln!("PATH_CAPTURE FAILED");break;}
+                    }
+                    let _=cx.update(|cx|cx.quit());
+                }).detach();
+            }
+            #[cfg(feature="qa")]
+            if std::env::var("YUQUE_QA_PERF").as_deref()==Ok("memory")
+                &&std::env::var_os("YUQUE_DATA_DIR").is_some()&&std::env::var("YUQUE_MODE").as_deref()==Ok("demo"){
+                let view=desk.clone();
+                cx.spawn(async move|cx|{
+                    cx.background_executor().timer(std::time::Duration::from_millis(1200)).await;
+                    for cycle in 0..3{
+                        for step in 0..180{
+                            let result=cx.update(|cx|window_handle.update(cx,|_,w,cx|{
+                                w.dispatch_event(PlatformInput::Scroll(ScrollEvent{position:point(px(600.),px(420.)),delta:ScrollDelta::Pixels(point(px(0.),px(-600.))),..Default::default()}),cx);
+                                w.refresh();w.draw(cx).clear(cx);
+                            }));
+                            if !matches!(result,Ok(())){return;}
+                            if step%30==29{let _=cx.update(|cx|window_handle.update(cx,|_,_,cx|view.read(cx).qa_memory_checkpoint(&format!("scroll-{cycle}-{step}"),cx)));}
+                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                        }
+                        for phase in ["leave","return","reset"]{
+                            let _=cx.update(|cx|window_handle.update(cx,|_,w,cx|{
+                                view.update(cx,|v,cx|v.qa_memory_phase(phase,cx));
+                                w.refresh();w.draw(cx).clear(cx);
+                            }));
+                            cx.background_executor().timer(std::time::Duration::from_millis(850)).await;
+                            let _=cx.update(|cx|window_handle.update(cx,|_,w,cx|{
+                                w.refresh();w.draw(cx).clear(cx);
+                                view.read(cx).qa_memory_checkpoint(&format!("{phase}-{cycle}"),cx);
+                            }));
+                        }
                     }
                     let _=cx.update(|cx|cx.quit());
                 }).detach();

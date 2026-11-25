@@ -54,6 +54,27 @@ impl QueueRunner{
             });
         }));
     }
+    /// These are request states, not remote completion states.
+    pub fn activity_label(&self)->String{
+        if self.preparing{return "正在准备并保存任务…".into();}
+        if !self.busy{return "当前无运行任务".into();}
+        if self.active_job.is_some()&&self.transfer.cancel.load(Ordering::Relaxed){
+            return "已请求中止当前读取 · 等待结果".into();
+        }
+        match self.queue_control.load(Ordering::Relaxed){
+            2=>"已请求取消剩余任务 · 等待当前文件结束".into(),
+            1=>"已请求暂停 · 等待当前文件结束".into(),
+            _=>format!("批次处理中 · {}/{}",self.queue_total.saturating_sub(self.queue_count),self.queue_total),
+        }
+    }
+    pub fn transfer_label(&self)->String{
+        let size=self.transfer.total.load(Ordering::Relaxed);
+        let bytes=self.transfer.bytes.load(Ordering::Relaxed).min(size);
+        if self.transfer.cancel.load(Ordering::Relaxed){return "正在结束读取，远端结果可能待核实".into();}
+        if size==0{return "检查文件／去重中".into();}
+        if bytes==size{return "请求体读取完毕 · 等待结果".into();}
+        format!("已读取 {} / {} · 尚未确认上传结果",file_size(bytes as i64),file_size(size as i64))
+    }
     pub fn reset_summary(&mut self,cx:&mut Context<Self>){
         self.failed.clear();self.queue_total=0;self.queue_count=0;self.succeeded=0;self.duplicates=0;cx.notify();
     }
@@ -62,7 +83,7 @@ impl QueueRunner{
         match command{
             1=>{let _=self.queue_control.compare_exchange(0,1,Ordering::Relaxed,Ordering::Relaxed);}
             2=>self.queue_control.store(2,Ordering::Relaxed),
-            3 if self.active_job.is_some()=>{self.queue_control.store(1,Ordering::Relaxed);self.transfer.cancel.store(true,Ordering::Relaxed);cx.emit(QueueEvent::Message("已请求中止，远端结果可能未知".into()));}
+            3 if self.active_job.is_some()=>{self.queue_control.fetch_max(1,Ordering::Relaxed);self.transfer.cancel.store(true,Ordering::Relaxed);cx.emit(QueueEvent::Message("已请求中止，远端结果可能未知".into()));}
             _=>{}
         }
         cx.notify();
@@ -204,4 +225,27 @@ impl QueueRunner{
             }
         }));
     }
+}
+
+#[cfg(all(test,feature="qa"))]
+#[::core::prelude::v1::test]
+fn requested_cancel_is_not_downgraded_and_progress_is_not_success(){
+    use qa_gpui::TestAppContext;
+    let app=TestAppContext::single();
+    let runner=app.update(|cx|cx.new(|_|QueueRunner::default()));
+    app.update(|cx|runner.update(cx,|q,cx|{
+        q.busy=true;q.queue_total=3;q.queue_count=3;q.active_job=Some(1);
+        q.transfer.total.store(100,Ordering::Relaxed);
+        q.transfer.bytes.store(100,Ordering::Relaxed);
+        assert!(q.transfer_label().contains("等待结果"));
+        q.command(1,cx);assert_eq!(q.queue_control.load(Ordering::Relaxed),1);
+        assert!(q.activity_label().contains("已请求暂停"));
+        q.command(2,cx);assert_eq!(q.queue_control.load(Ordering::Relaxed),2);
+        q.command(3,cx);assert_eq!(q.queue_control.load(Ordering::Relaxed),2);
+        assert!(q.transfer.cancel.load(Ordering::Relaxed));
+        assert!(q.activity_label().contains("中止"));
+        assert!(q.transfer_label().contains("待核实"));
+        q.command(1,cx);assert_eq!(q.queue_control.load(Ordering::Relaxed),2);
+        q.busy=false;assert_eq!(q.activity_label(),"当前无运行任务");
+    }));
 }

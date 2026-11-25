@@ -2,14 +2,24 @@
 use gpui_kit::*;
 use std::collections::HashMap;
 pub(super) const MAX_IMAGES:usize=192;
+/// GPUI temporarily removes the current window from App.windows during window
+/// updates. Defer release until the outer update returns it to the window map.
+pub(super) fn release_images(images:Vec<std::sync::Arc<RenderImage>>,cx:&mut App){
+    if !images.is_empty(){cx.defer(move|cx|{for image in images{cx.drop_image(image,None);}});}
+}
 pub(super) struct AlbumImageCache{items:HashMap<Resource,(u64,ImageCacheItem)>,clock:u64}
 impl AlbumImageCache{
     #[cfg(feature="qa")]
     pub fn len(&self)->usize{self.items.len()}
+    pub fn clear(&mut self,cx:&mut App){
+        let images=self.items.drain().filter_map(|(_,(_,item))|item.get().and_then(Result::ok)).collect();
+        release_images(images,cx);
+        self.clock=0;
+    }
     pub fn new(cx:&mut App)->Entity<Self>{
         let e=cx.new(|_|Self{items:HashMap::new(),clock:0});
         cx.observe_release(&e,|cache,cx|{
-            for (_,(_,item)) in cache.items.drain(){if let Some(Ok(image))=item.get(){cx.drop_image(image,None);}}
+            cache.clear(cx);
         }).detach();e
     }
 }
