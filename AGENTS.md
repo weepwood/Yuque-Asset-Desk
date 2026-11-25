@@ -238,3 +238,9 @@
 - 固定详情头部并独立滚动正文；统一空/多选/单选返回。独立 inspector_focus 与 YuqueInspector 关闭动作，窄窗打开/查看器返回聚焦详情，Esc/Ctrl/Cmd+I 关闭还焦图库；显式分类/标签/相似/恢复入口返回窄窗图库；窗口缩窄修正焦点，退出过渡不注册焦点路径。宽窗普通切换维持图库焦点。
 - 780×640原生GPUI测试增加滚动头部固定、Esc、Ctrl+I、预览返回及分类恢复路径，完整QA 68通过/0失败/1忽略，all-targets、QA debug/release build、static/diff通过。8张实际截图在dist/design-research/focus-after/，审查深浅详情和720×600详情。
 - 同一10k合成JPEG Release QA脚本复测：第一轮与截图任务重叠，CPU p95 grid/masonry 4.829/4.295ms、峰值RSS147.86/148.25MiB；独立重跑为2.064/1.577ms、138.47/143.14MiB，旧基线2.260/1.775ms、133.55/133.39MiB。重跑首屏103/100ms（旧142/115），加载600/450项，解码均192/192，无超时。三份JSON保存在上述目录，详见development-status。单次短测非硬件FPS，不能证明长期内存稳定或排除环境噪声；RSS较旧基线仍高，下一轮优先长程滚动、账号切换缓存/内存与性能定位。Windows设备离线，未做真实语雀、物理设备交互；没有新增依赖/schema。
+
+## 后续设计：原生纹理回收与长程滚动诊断
+- PR #8 84bab5e 的 CI 45548753872 两平台通过。继续同一分支，不改main/冻结V0.7候选75c173b及正式v0.5.1。
+- 依据GPUI 0.3.11 App::update_window_erased/drop_image源码，批量清理与高清图替换/关闭使用App::defer，在窗口回到窗口映射后释放纹理。离开图库释放解码缓存，返回重新解码；保留资源/滚动位置及永久JPEG。重置释放旧容器分配，清理滚动回调；弱引用布局及身份校验拦截旧事件。仍使用192项LRU。
+- 隔离QA 68通过/0失败/1忽略，all-targets、Release QA build、static/diff、Python语法检查通过；初次QA编译的AnyView调用错误已改为显式Entity读写，最终通过。脚本YUQUE_PERF_MEMORY=1 python3 scripts/album_perf.py，10k合成JPEG、每种布局3轮180次原生滚动+离开/返回/演示账号重置，共1080次滚动和54个检查点，全部门禁通过。网格每轮1050项、峰值140.16MiB，瀑布流2250项、峰值155.42MiB；离开6次缓存均0，重置6次均150项。报告dist/design-research/memory-after/。
+- 两模式各约22秒，非数小时耐久测试；RSS最近采样值不等于GPU专用内存，未独占机器，无旧版本同长程基线；不能证明没有泄漏。真实账号切换、Windows真机仍未验证。后续优先精简布局全量重算与视觉收口，按风险分级；Desktop Commander提示本月使用量达到80%。

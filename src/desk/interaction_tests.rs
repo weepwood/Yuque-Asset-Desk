@@ -920,10 +920,25 @@ fn thumbnail_lane_survives_pagination_and_pauses_on_navigation(){
     app.run_until_parked();
     ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
     assert!(app.read(|cx|desk.read(cx).resource.image_cache.read(cx).len()>0));
-    app.update(|cx|desk.update(cx,|v,cx|{
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
+        v.navigate_page(Page::Settings,cx);
+        assert_eq!(v.resource.image_cache.read(cx).len(),0);
+        w.refresh();
+    }));
+    app.run_until_parked();
+    ui.update(|w,cx|desk.update(cx,|v,cx|{v.navigate_page(Page::Gallery,cx);w.refresh();}));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert!(app.read(|cx|desk.read(cx).resource.image_cache.read(cx).len()>0));
+    ui.update(|w,cx|desk.update(cx,|v,cx|{
         v.apply_account(None,cx);
         assert_eq!(v.resource.image_cache.read(cx).len(),0);
+        assert!(v.resource.assets.is_empty()&&v.resource.assets.capacity()==0);
+        assert!(v.resource.cached_thumbnails.is_empty()&&v.resource.cached_thumbnails.capacity()==0);
+        assert!(v.resource.row_plan.is_empty()&&v.resource.masonry_plan.tiles.is_empty());
         assert!(!v.thumbnails.read(cx).attempted(first));
+        w.refresh();
     }));
     app.run_until_parked();
     assert!(path.is_file());

@@ -229,6 +229,23 @@ impl UploadDesk {
     pub(crate) fn report_perf(&self,cx:&App){
         if std::env::var_os("YUQUE_QA_PERF").is_some(){eprintln!("PERF final loaded={} decoded_cache={} bound={}",self.resource.assets.len(),self.resource.image_cache.read(cx).len(),image_cache::MAX_IMAGES);}
     }
+    #[cfg(feature="qa")]
+    pub(crate) fn qa_memory_phase(&mut self,phase:&str,cx:&mut Context<Self>){
+        if !self.isolated_qa(){return;}
+        match phase{
+            "leave"=>self.navigate_page(Page::Settings,cx),
+            "return"=>self.navigate_page(Page::Gallery,cx),
+            "reset"=>self.apply_account(None,cx),
+            _=>{}
+        }
+    }
+    #[cfg(feature="qa")]
+    pub(crate) fn qa_memory_checkpoint(&self,phase:&str,cx:&App){
+        let r=&self.resource;
+        eprintln!("MEMORY phase={phase} loaded={} cache={} bound={} paths={} ratios={} rows={} tiles={} loading={}",
+            r.assets.len(),r.image_cache.read(cx).len(),image_cache::MAX_IMAGES,r.cached_thumbnails.len(),r.ratios.len(),
+            r.row_plan.len(),r.masonry_plan.tiles.len(),r.loading_history);
+    }
     pub(crate) fn shortcut(&self)->&str{&self.prefs.shortcut}
 
     #[cfg(feature="qa")]

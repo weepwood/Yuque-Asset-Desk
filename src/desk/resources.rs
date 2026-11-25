@@ -22,10 +22,11 @@ impl UploadDesk {
         self.clear_resource_selection(cx);
         self.resource.preview_reload_pending=false;
         self.resource.page_cursors = vec![None];
-        self.resource.cached_thumbnails.clear();
+        self.resource.cached_thumbnails=Default::default();
         self.resource.visible_range=(0,48);
-        self.resource.ratios.clear();
+        self.resource.ratios=Default::default();
         self.resource.hover_asset=None;
+        self.resource.album_list.set_scroll_handler(|_,_,_|{});
         self.resource.album_list.reset(0);
         self.resource.row_plan=Default::default();
         self.resource.layout_signature=0;
@@ -35,7 +36,7 @@ impl UploadDesk {
         self.resource.preview_task = None;
         self.resource.preview_loading = false;
         self.resource.preview_error = None;
-        self.resource.assets.clear();
+        self.resource.assets=Vec::new();
         self.resource.total_count=0;
         self.resource.has_more = false;
         self.reload(cx);
@@ -52,6 +53,7 @@ impl UploadDesk {
         self.resource.pending_preview=None;
         self.resource.page_cursors=vec![None];
         self.resource.visible_range=(0,48);
+        self.resource.album_list.set_scroll_handler(|_,_,_|{});
         self.resource.album_list.reset(0);
         self.resource.row_plan=Default::default();
         self.resource.layout_signature=0;
@@ -104,7 +106,7 @@ impl UploadDesk {
                                 if self.resource.selected_ids.is_empty(){self.resource.batch_tag_open=false;}
                             }
                             self.resource.assets=items;
-                            self.resource.cached_thumbnails.clear();self.resource.ratios.clear();
+                            self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
                         }
                         for (id,ratio,path) in ratios{
                             self.resource.ratios.insert(id,ratio);self.resource.cached_thumbnails.insert(id,path);
@@ -123,8 +125,8 @@ impl UploadDesk {
                     Err(error) => {
                         if event.append{self.resource.page_cursors.pop();}else{
                             self.clear_resource_selection(cx);
-                            self.resource.assets.clear();self.resource.total_count=0;self.resource.has_more=false;
-                            self.resource.cached_thumbnails.clear();self.resource.ratios.clear();
+                            self.resource.assets=Vec::new();self.resource.total_count=0;self.resource.has_more=false;
+                            self.resource.cached_thumbnails=Default::default();self.resource.ratios=Default::default();
                         }
                         self.resource.history_error = Some(error.to_string());
                         if event.append{self.refresh_thumbnails(cx);}

@@ -469,12 +469,14 @@ impl UploadDesk{
                 self.resource.row_plan=std::rc::Rc::new(planned);self.resource.layout_signature=signature;
             }
             let entity=cx.weak_entity();let planned=self.resource.row_plan.clone();
-            let event_plan=planned.clone();let event_entity=entity.clone();let generation=self.resource.history_generation;
+            let event_plan=std::rc::Rc::downgrade(&planned);let event_entity=entity.clone();let generation=self.resource.history_generation;
             self.resource.album_list.set_scroll_handler(move|event,window,app|{
                 let span=event.visible_range.len().max(4);
                 let weak=event_entity.clone();let plan=event_plan.clone();
                 window.defer(app,move|_,app|{let _=weak.update(app,|v,cx|{
                     if v.resource.history_generation!=generation{return;}
+                    let Some(plan)=plan.upgrade()else{return;};
+                    if !std::rc::Rc::ptr_eq(&plan,&v.resource.row_plan){return;}
                     let start=v.resource.album_list.logical_scroll_top().item_ix.min(plan.len());
                     let end=(start+span+2).min(plan.len());
                     let mut first=usize::MAX;let mut last=0;

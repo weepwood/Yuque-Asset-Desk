@@ -26,7 +26,10 @@ impl UploadDesk{
     pub(super) fn navigate_page(&mut self,page:Page,cx:&mut Context<Self>){
         self.page=page;
         if page==Page::Gallery{self.refresh_thumbnails(cx);}
-        else{self.thumbnails.update(cx,|v,_|v.stop(false));}
+        else{
+            self.thumbnails.update(cx,|v,_|v.stop(false));
+            self.resource.image_cache.update(cx,|cache,cx|cache.clear(cx));
+        }
         self.immersive=false;
         self.reset_armed=false;
         if page==Page::Jobs{self.refresh_jobs(cx);}
