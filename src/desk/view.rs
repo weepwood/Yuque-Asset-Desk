@@ -33,8 +33,9 @@ impl UploadDesk {
     }
 
     pub(super) fn task_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let history=self.job_history.read(cx);
         let mut list = div().id("jobs-list").flex_1().min_h(px(0.)).flex().flex_col();
-        for job in &self.queue.jobs {
+        for job in &history.jobs {
             let id = job.id;
             let active = self.queue.active_job == Some(id);
             let state = if active { "处理中" } else { match job.state.as_str() {
@@ -69,25 +70,26 @@ impl UploadDesk {
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().text_lg().font_semibold().child("上传任务"))
                 .child(Button::new("refresh-jobs").small().ghost().label("刷新").on_click(cx.listener(|v,_,_,cx| v.refresh_jobs(cx))))
-                .child(Button::new("resume-jobs").small().label("恢复任务").disabled(self.queue.busy || self.account.account_busy || self.queue.recovery_count == 0)
+                .child(Button::new("resume-jobs").small().label("恢复任务").disabled(self.queue.busy || self.account.account_busy || history.recovery_count == 0)
                     .on_click(cx.listener(|v,_,_,cx| v.resume_jobs(cx)))))
-            .child(div().text_sm().child(format!("当前账号：{} / {} · 未完成 {}",self.account.config.provider(),self.account.config.owner_id(),self.queue.recovery_count)))
-            .when(self.queue.busy, |d| d.child(div().flex().gap_2()
+            .child(div().text_sm().child(format!("当前账号：{} / {} · 可恢复 {}",self.account.config.provider(),self.account.config.owner_id(),history.recovery_count)))
+            .when(self.queue.preparing,|d|d.child(div().text_sm().text_color(self.palette().muted).child("正在准备任务…")))
+            .when(self.queue.busy&&!self.queue.preparing, |d| d.child(div().flex().gap_2()
                 .child(Button::new("jobs-pause").label("文件结束后暂停").on_click(cx.listener(|v,_,_,cx| { let _ = v.queue.queue_control.compare_exchange(0,1,Ordering::Relaxed,Ordering::Relaxed); cx.notify(); })))
                 .child(Button::new("jobs-cancel").label("取消剩余").on_click(cx.listener(|v,_,_,cx| { v.queue.queue_control.store(2,Ordering::Relaxed); cx.notify(); })))
                 .child(Button::new("cancel-active").label("中止当前读取")
                     .disabled(self.queue.active_job.is_none())
                     .on_click(cx.listener(|v,_,_,cx| {v.queue.queue_control.store(1,Ordering::Relaxed);v.queue.transfer.cancel.store(true,Ordering::Relaxed);v.status="已请求中止，远端结果可能未知".into();cx.notify();})))))
-            .when(self.queue.jobs_loading, |d| d.child("正在读取任务…"))
-            .when(self.queue.jobs.is_empty() && !self.queue.jobs_loading && self.queue.jobs_error.is_none(), |d| d.child("暂无任务记录"))
-            .when(self.queue.jobs_error.is_some(), |d| d.child(self.queue.jobs_error.clone().unwrap_or_default()))
+            .when(history.loading, |d| d.child("正在读取任务…"))
+            .when(history.jobs.is_empty() && !history.loading && history.error.is_none(), |d| d.child("暂无任务记录"))
+            .when(history.error.is_some(), |d| d.child(history.error.clone().unwrap_or_default()))
             .child(list.overflow_y_scrollbar())
             .child(div().flex().items_center().gap_2()
-                .child(Button::new("jobs-prev").label("上一页").disabled(self.queue.jobs_loading || self.queue.job_cursors.len() <= 1)
-                    .on_click(cx.listener(|v,_,_,cx| { if v.queue.job_cursors.len()>1 {v.queue.job_cursors.pop(); v.queue.jobs.clear(); v.queue.jobs_more=false; v.refresh_jobs(cx); cx.notify();} })))
-                .child(format!("第 {} 页", self.queue.job_cursors.len()))
-                .child(Button::new("jobs-next").label("下一页").disabled(self.queue.jobs_loading || !self.queue.jobs_more)
-                    .on_click(cx.listener(|v,_,_,cx| { if v.queue.jobs_more { if let Some(last)=v.queue.jobs.last() {v.queue.job_cursors.push(Some(last.id)); v.queue.jobs.clear(); v.queue.jobs_more=false; v.refresh_jobs(cx); cx.notify();} } }))))
+                .child(Button::new("jobs-prev").label("上一页").disabled(history.loading || history.cursors.len() <= 1)
+                    .on_click(cx.listener(|v,_,_,cx| { v.page_jobs(false,cx) })))
+                .child(format!("第 {} 页", history.cursors.len()))
+                .child(Button::new("jobs-next").label("下一页").disabled(history.loading || !history.more)
+                    .on_click(cx.listener(|v,_,_,cx| { v.page_jobs(true,cx) }))))
             .child(div().text_sm().child(self.status.clone()))
     }
 
@@ -571,7 +573,7 @@ impl Render for UploadDesk {
                       .child(
                         div().h(px(30.)).flex_shrink_0().border_t_1().border_color(self.palette().line).flex().items_center().justify_between().gap_2().text_xs().text_color(self.palette().muted)
                             .child(div().flex_1().min_w(px(0.)).truncate().opacity(feedback_opacity).child(self.status.clone()))
-                            .when(!self.queue.busy && self.queue.recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.queue.recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Jobs,cx);}))))
+                            .when(!self.queue.busy && self.job_history.read(cx).recovery_count>0,|d|d.child(Button::new("view-recovery-jobs").small().ghost().label(format!("待恢复 {}",self.job_history.read(cx).recovery_count)).on_click(cx.listener(|v,_,_,cx|{v.navigate_page(Page::Jobs,cx);}))))
                             .when(self.resource.grid_view,|d|d.child(self.density_control()))
                             .when(self.resource.history_error.is_some(),|d|d.child(Button::new("refresh-history").small().label("重试读取")
                                 .on_click(cx.listener(|v,_,_,cx|{v.resource.history_error=None;if v.resource.assets.is_empty(){v.reload(cx);}else{v.load_more(cx);}}))))

@@ -150,7 +150,7 @@ fn main() -> Result<()> {
             }
             let close_desk=desk.downgrade();
             let _=window_handle.update(cx,|_,w,cx|w.on_window_should_close(cx,move|_,cx|{
-                if let Some(desk)=close_desk.upgrade(){desk.read(cx).flush_preferences();desk.update(cx,|v,cx|v.desktop_can_quit(cx))}else{true}
+                if let Some(desk)=close_desk.upgrade(){let allowed=desk.update(cx,|v,cx|v.desktop_can_quit(cx));if allowed{desk.read(cx).flush_preferences();}allowed}else{true}
             }));
             let quit_desk=desk.downgrade();
             cx.on_app_quit(move|cx|{

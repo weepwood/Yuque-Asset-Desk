@@ -10,9 +10,9 @@ fn record_deleted(storage:&Storage,owner:&str,confirmed_absent:bool)->bool{
 }
 
 impl UploadDesk{
-    fn data_idle(&self)->bool{!self.resource_write_busy&&!self.picker_pending&&!self.backup_busy&&!self.queue.busy&&!self.account.account_busy&&!self.data_scan_busy&&!self.resetting}
+    fn data_idle(&self)->bool{!self.prefs_writing&&!self.resource_write_busy&&!self.picker_pending&&!self.backup_busy&&!self.queue.busy&&!self.account.account_busy&&!self.data_scan_busy&&!self.resetting}
     pub(super) fn refresh_data(&mut self,cx:&mut Context<Self>){
-        if !self.data_idle(){return;}
+        if self.resource_write_busy||self.picker_pending||self.backup_busy||self.queue.busy||self.account.account_busy||self.data_scan_busy||self.resetting{return;}
         self.data_scan_busy=true;self.data_feedback="正在统计本地文件…".into();cx.notify();
         let storage=self.storage.clone();
         self.data_task=Some(cx.spawn(async move|this,cx|{
@@ -65,7 +65,7 @@ impl UploadDesk{
         let active=self.account.config.creds.as_ref().map(|c|c.user_id.clone());
         let mut owners=if all{match self.storage.accounts(){Ok(ids)=>ids,Err(e)=>{self.data_feedback=format!("读取账号索引失败：{e}");cx.notify();return;}}}else{vec![]};
         if let Some(id)=&active{if !owners.contains(id){owners.push(id.clone());}}
-        self.account.account_busy=true;cx.notify();
+        self.account.account_busy=true;self.reset_pending=reset;cx.notify();
         let (title,detail,action)=if reset{
             ("完全重置并退出？","将清除本应用已索引的账号凭据、本地链接数据库、设置、永久微缩图及应用生成的剪贴板副本。外部原始文件、备份和语雀云端不删除。备份不含剪贴板原图，请先另存需要的副本。操作不可撤销。","确认重置并退出")
         }else if all{
@@ -74,9 +74,10 @@ impl UploadDesk{
             ("删除当前账号凭据？","保留资源历史和上传任务，不删除其他账号。","确认删除")
         };
         let answer=w.prompt(PromptLevel::Warning,title,Some(detail),&["取消",action],cx);
+        let storage=self.storage.clone();
         self.data_task=Some(cx.spawn(async move|this,cx|{
             if !matches!(answer.await,Ok(1)){
-                let _=this.update(cx,|v,cx|{v.account.account_busy=false;v.reset_armed=false;v.data_feedback="操作已取消".into();cx.notify();});return;
+                let _=this.update(cx,|v,cx|{v.account.account_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_feedback="操作已取消".into();cx.notify();});return;
             }
             let mut success=0;let mut failed=0;let mut active_removed=false;
             for owner in owners{
@@ -93,14 +94,16 @@ impl UploadDesk{
                     }
                     Err(_)=>false,
                 };
-                let recorded=this.update(cx,|v,_|record_deleted(&v.storage,&owner,absent)).unwrap_or(false);
+                let db=storage.clone();let id=owner.clone();
+                let recorded=cx.background_spawn(async move{record_deleted(&db,&id,absent)}).await;
                 if absent && active.as_ref()==Some(&owner){active_removed=true;}
                 if recorded{success+=1;}
                 else{failed+=1;}
             }
+            let accounts=cx.background_spawn(async move{storage.accounts()}).await;
             let _=this.update(cx,|v,cx|{
-                v.account.account_busy=false;v.reset_armed=false;v.data_usage=None;
-                v.account.saved_accounts=v.storage.accounts().unwrap_or_default();
+                v.account.account_busy=false;v.reset_pending=false;v.reset_armed=false;v.data_usage=None;
+                if let Ok(ids)=accounts{v.account.saved_accounts=ids;}else{failed+=1;}
                 if active_removed || (all&&active.is_none()){v.activate_account(None,cx);}
                 v.data_feedback=format!("凭据已清除或确认不存在 {success} 项；失败 {failed} 项（保留索引以便重试）");
                 v.status=v.data_feedback.clone();

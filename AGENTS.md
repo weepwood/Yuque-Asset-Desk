@@ -176,3 +176,12 @@
 - inspector-slot 保留退出空间，180ms keyed tween，关闭时禁用所有内部控件且拦截鼠标/键盘，结束释放布局；不逐帧重排图库。快速反向和 reduce_motion 用真实渲染测试验证；侧栏/沉浸完整退出未完成。
 - 55 passed/0 failed/1 ignored，all-targets check、QA/debug及release QA build、static/diff check；SQLite BEGIN IMMEDIATE 真实写锁测试 UI dispatch <1s 并验证门禁/最终持久化；多选预览恢复、几何和实际面板反向。15张真实截图（含720×600本地原图与源缺失回退、深浅/账号/设置/详情/任务）；8步原生注入截图与状态 trace，ignored dist/design-research/core-after/、path/operation-path.gif。Release 10000合成JPEG 各120 CPU draw 样本 grid p50 2.199 p95 5.590ms RSS148.12MiB，masonry 4.550/6.332ms RSS142.16MiB，300 loaded/cache192或191。非实际显示FPS；未与同版本相同工况作受控对照，不宣称性能提升。证据 docs/performance/v0.7-interaction-release.json 与 v0.7-interaction-path.log。
 - 后续：真正 Gallery/Queue/Account Entity、队列/账号/偏好异步写入与清理互锁、面板退出焦点与全菜单路径、侧栏/沉浸完整动画、真实设备及性能回归、正式发布。禁止把部分落实表述为全部完成。先验收本 PR，勿扩展新业务。
+
+## V0.7 I/O 生命周期第三批
+- PR #5 ee6863b 双平台 CI 45533782259 success，合并 main abc943e；main CI 45535347941 success。新分支 feat/v0.7-io-lifecycle。保持正式 v0.5.1 Tag，Cargo 0.6.0。
+- JobHistory 独立 Entity：账号 scope、代际、50 条分页、异步任务列表及 SQL COUNT 可恢复计数；切换账号清空旧页并拒绝旧结果。队列执行和账号全量 Entity 化仍待处理。
+- queue_prepare.rs 后台入队、重试、恢复、核实与剪贴板暂存；busy/preparing 持有 task，准备到执行间不得插入账号/资源写入/备份/清理/退出；准备状态不显示可暂停按钮。剪贴板 hash 匹配才复用，create_new 暂存并 hard_link 无覆盖发布，同目录文件系统需支持硬链接（不支持则安全报错，不改变原始文件）。任务完成计数走异步 history，不再同步拉取全部可恢复记录。
+- preference_writer.rs 按 revision 串行写快照，180ms debounce/coalesce，不取消已启动写入；旧快照不得覆盖已提交新快照。正常关闭先检查 busy，写入尚未结束时拒绝退出；最终 flush 同步兜底（系统强制退出仍有等待风险），不声称全生命周期零同步 I/O。重置 pending/armed 阻止启动偏好写入，清理/重置门禁等待 prefs_writing=false。
+- 账号验证后索引保存与列表读取后台执行，仍先索引后系统密钥库；凭据删除后索引删除与重读后台执行，保留失败索引。账号启动读取、重置预检查/调度及部分维护写入仍同步；未使用真实凭据。
+- 59 QA pass/0 fail/1 ignored、all-targets check、QA build、static/diff；实际 SQLite BEGIN IMMEDIATE 下入队与设置更新 UI dispatch <1s，重复入队拦截，仅一个 done，最新 tile204；独立 history scope 切换和51条分页、剪贴板校验及不覆盖。真实 macOS upload/backup NSOpenPanel 880×448，进程存活和窗口内回调，jobs=0（不是物理点选）；隔离 reset helper 验证错误 token/unknown任务/实例锁/受控删除及原文件备份保留。8 张不同界面截图 dist/design-research/io-after/（合成资料）；任务计数改为“可恢复”，避免与所有未完成混淆。证据 /tmp/yuque-v07-io-*.log。
+- 后续集中推进 Gallery/Queue runner/Account 真正 Entity 化、余下同步 I/O、侧栏与沉浸动效、同条件 Release 性能复测、真实 Windows/macOS 包验收。不重复无必要全量基准，不新增业务功能。

@@ -37,7 +37,7 @@ impl UploadDesk {
         let size=self.queue.transfer.total.load(Ordering::Relaxed);
         div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(p.surface)
             .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
-                .child(div().text_xs().text_color(p.text).child(if self.queue.busy{format!("正在处理 · {finished}/{total} 项")}else{format!("{} 项可恢复任务",self.queue.recovery_count)}))
+                .child(div().text_xs().text_color(p.text).child(if self.queue.preparing{"正在准备任务…".into()}else if self.queue.busy{format!("正在处理 · {finished}/{total} 项")}else{format!("{} 项可恢复任务",self.job_history.read(cx).recovery_count)}))
                 .when(size>0&&self.queue.active_job.is_some(),|d|d.child(div().text_xs().text_color(p.muted).child(format!("当前文件已读取 {} / {} · 等待服务端确认",file_size((bytes.min(size)) as i64),file_size(size as i64)))))
                 .when(self.queue.busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
             .child(Button::new("view-upload-jobs").small().ghost().label("查看任务").on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))

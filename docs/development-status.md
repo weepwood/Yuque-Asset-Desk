@@ -202,3 +202,10 @@
 - 55项完整 QA 通过（1公网默认忽略）；实际 SQLite 写锁及 UI dispatch <1s、互锁与持久化，面板实际宽度/反向/减少动态效果，选择与高清生命周期。cargo check --locked --all-targets、静态检查、QA debug/release build 通过。最终15张真实渲染截图，实际检查720×600图库/设置/高清成功及离线回退、浅色图库/账号和详情；8阶段注入鼠标/键盘 compositor 截图/状态均通过。不是物理录屏。证据 dist/design-research/core-after/、path/、docs/performance/v0.7-interaction-path.log。
 - Release QA 万级合成JPEG（本地、无网络）grid P50/P95 2.199/5.590ms、RSS148.12MiB、cache192；masonry 4.550/6.332ms、RSS142.16MiB、cache191；各120 CPU draw样本、300 loaded、未超时。非显示FPS；相比历史 V0.5.0 的 P95 更高，版本/系统负载不同，不能归因或宣称提升。记录 docs/performance/v0.7-interaction-release.json。
 - 剩余：Gallery、Queue、Account 完整独立 Entity 及统一全部 SQLite 写入（任务索引、凭据索引、偏好仍同步）；完整侧栏/沉浸空间过渡、全键盘与原生浮层路径、真实 Windows 真机/真实语雀、正式包与受控性能对照。仍开发候选（Cargo 0.6.0，V0.7 尚未发布），不声称七项全部完成。未改真实数据/凭据或已发布 Tag。
+
+## V0.7 第三批：队列与持久化生命周期
+- PR #5 固定 ee6863b，CI 45533782259 双平台成功，合并 abc943e；main CI 45535347941 成功。
+- JobHistory Entity 独立账号范围、代际、任务分页和异步 COUNT。queue_prepare 后台执行 enqueue/retry/resume/ack 与剪贴板落盘，准备至执行保持互锁；任务历史回调替代同步恢复计数。任务中心准确标注“可恢复”。剪贴板只复用 hash 校验通过的已存在文件，硬链接无覆盖发布，非支持文件系统安全报错。
+- 偏好快照后台合并保存及 revision 顺序门禁，正常关闭先核验 busy，最终同步 flush 兜底；重置准备禁止启动设置写入。账号索引保存、凭据删除后的索引删除/列表重读均后台执行，保持先索引后 vault、失败保留索引。不新增依赖/数据库迁移/业务功能。
+- 59项 QA 通过、1公网默认忽略；all-targets、QA build、static/diff；SQLite 真实写锁下重复入队拦截、最新偏好持久化、账号 scope/分页、剪贴板校验。原生上传和备份选择窗口存活及回调通过（未物理点选），隔离 reset helper 通过（无真实账号）。8张实际截图，任务页/最小窗口/存储已审查。未再次运行全量 Release 性能；沿用上轮基准，不宣称性能提升。
+- 剩余：Gallery/Queue runner/Account 完整独立 Entity、启动与重置预检查等同步 I/O、最终退出 flush、其他维护任务、完整侧栏/沉浸动画、Windows 真机与真实语雀、正式发布。保持 v0.5.1 Tag/Cargo 0.6.0。

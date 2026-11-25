@@ -3,7 +3,7 @@ use gpui_kit::component::Sizable;
 
 impl UploadDesk {
     pub(super) fn activate_account(&mut self, creds: Option<YuqueCredentials>, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.queue.busy || self.resetting { return; }
+        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy || self.resetting { return; }
         self.account.config.mode = if creds.is_some() { Mode::Yuque } else { Mode::Demo };
         self.account.config.creds = creds;
         self.account.identity=None; self.account.identity_status.clear();
@@ -20,12 +20,9 @@ impl UploadDesk {
         self.queue.queue_count = 0;
         self.queue.succeeded = 0;
         self.queue.duplicates = 0;
-        self.queue.recovery_count = self.storage.recoverable(self.account.config.provider(), self.account.config.owner_id()).map(|jobs| jobs.len()).unwrap_or(0);
         self.status = if self.account.config.mode == Mode::Demo { "已切换到本地演示".into() }
             else { "凭据已加载，实际登录状态尚未验证".into() };
-        self.queue.jobs.clear();
-        self.queue.job_cursors = vec![None];
-        self.refresh_jobs(cx);
+        self.first_jobs(cx);
         self.reset_history(cx);
     }
 
@@ -101,17 +98,20 @@ impl UploadDesk {
         self.account.account_busy=true;
         self.account.identity_status="正在核对个人账号与网页会话…".into();
         cx.notify();
+        let storage=self.storage.clone();
         self.account.account_task=Some(cx.spawn_in(window,async move|this,cx|{
-            let result=cx.background_spawn(async move{crate::config::resolve_account(&token,cookie,csrf)}).await;
-            let (creds,identity)=match result{
+            let result=cx.background_spawn(async move{
+                let (creds,identity)=crate::config::resolve_account(&token,cookie,csrf)?;
+                storage.save_account(&creds.user_id).map_err(|_|anyhow::anyhow!("账号索引保存失败，未写入系统凭据"))?;
+                let accounts=storage.accounts().map_err(|_|anyhow::anyhow!("账号索引读取失败，未写入系统凭据"))?;
+                Ok::<_,anyhow::Error>((creds,identity,accounts))
+            }).await;
+            let (creds,identity,accounts)=match result{
                 Ok(r)=>r,
                 Err(e)=>{let _=this.update_in(cx,|v,_,cx|{v.account.account_busy=false;v.account.identity_status=e.to_string();cx.notify();});return;}
             };
             let task=match this.update_in(cx,|v,_,cx|{
-                if v.storage.save_account(&creds.user_id).is_err(){
-                    v.account.account_busy=false;v.account.identity_status="账号索引保存失败，未写入系统凭据".into();cx.notify();return None;
-                }
-                v.account.saved_accounts=v.storage.accounts().unwrap_or_default();
+                v.account.saved_accounts=accounts;
                 Some(cx.write_credentials(&YuqueCredentials::vault_key(&creds.user_id),&creds.user_id,&creds.encode()))
             }){
                 Ok(Some(task))=>task,_=>return
@@ -124,7 +124,6 @@ impl UploadDesk {
                         v.account.account_token.update(cx,|input,cx|input.set_value("",w,cx));
                         v.account.account_csrf.update(cx,|input,cx|input.set_value("",w,cx));
                         v.account.account_cookie.update(cx,|input,cx|input.set_value("",w,cx));
-                        v.account.saved_accounts=v.storage.accounts().unwrap_or_default();
                         v.activate_account(Some(creds),cx);
                         v.account.identity=Some(identity);
                         v.account.identity_status="已保存并切换账号".into();
@@ -174,7 +173,7 @@ impl UploadDesk {
     }
 
     pub(super) fn load_credentials(&mut self, owner: String, cx: &mut Context<Self>) {
-        if self.resource_write_busy || self.picker_pending || self.queue.busy || self.account.account_busy { return; }
+        if self.resource_write_busy || self.picker_pending || self.backup_busy || self.queue.busy || self.account.account_busy || self.resetting { return; }
         let task = cx.read_credentials(&YuqueCredentials::vault_key(&owner));
         self.account.account_busy = true;
         self.account.account_task = Some(cx.spawn(async move |this, cx| {
