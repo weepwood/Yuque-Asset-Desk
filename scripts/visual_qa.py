@@ -73,9 +73,13 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
         for i,state in enumerate(["done","failed","pending","paused","unknown"]):
             conn.execute("INSERT INTO upload_jobs(provider,owner_id,path,state,error) VALUES(?,?,?,?,?)",
                 ("demo","local",str(data/f"fixture-task-{i}.png"),state,"演示错误：文件不可读取" if state=="failed" else "演示状态：需核实远端" if state=="unknown" else ""))
+        conn.execute("INSERT INTO upload_job_assets(job_id,asset_id) VALUES(1,1)")
+        conn.execute("INSERT INTO asset_preview_state(asset_id,state,error) VALUES(1,'ready','')")
     capture("resources-dark.png")
     previews=list((data/"album-previews").glob("*.jpg"))
     assert len(previews)==11, f"expected 11 offline previews, got {len(previews)}"
+    capture("upload-review-dark.png",YUQUE_QA_PAGE="upload-review")
+    capture("upload-review-minimum.png",YUQUE_QA_PAGE="upload-review",YUQUE_QA_MINIMUM="1",YUQUE_QA_LIGHT="1")
     capture("preview-quality-dark.png",YUQUE_QA_PAGE="quality")
     capture("preview-quality-light.png",YUQUE_QA_PAGE="quality",YUQUE_QA_LIGHT="1")
     capture("preview-quality-narrow.png",YUQUE_QA_PAGE="quality",YUQUE_QA_NARROW="1")

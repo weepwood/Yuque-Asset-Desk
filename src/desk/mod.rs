@@ -11,6 +11,7 @@ pub(crate) mod preferences;
 mod preference_writer;
 mod queue;
 mod queue_prepare;
+mod upload_review;
 mod queue_runner;
 mod job_history;
 mod resources;
@@ -150,10 +151,14 @@ pub(crate) struct UploadDesk {
     page: Page,
     _subscriptions: Vec<Subscription>,
     inspector_open: bool,
+    inspector_drag:Option<(f32,f32)>,
     immersive:bool,
     sidebar_collapsed:bool,
     surface_motion:design::SurfaceMotion,
     status: String,
+    upload_review: Option<upload_review::Review>,
+    review_task:Option<Task<()>>,
+    review_generation:u64,
     picker_pending: bool,
     picker_task: Option<Task<()>>,
     backup_busy: bool,
@@ -427,10 +432,11 @@ impl UploadDesk {
             page: Page::Gallery,
             storage,
             _subscriptions: vec![subscription,resize_subscription,density_subscription,inspector_subscription,viewer_subscription,job_history_subscription,queue_observer,queue_events,gallery_events,thumbnail_events,account_observer,account_events],
-            inspector_open: false,
+            inspector_open: false,inspector_drag:None,
             immersive:false,sidebar_collapsed:false,
             surface_motion:Default::default(),
             status,
+            upload_review:None,review_task:None,review_generation:0,
             picker_pending:false,picker_task:None,
             backup_busy:false,
             desktop_enabled:false,
@@ -459,6 +465,10 @@ impl UploadDesk {
                     Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}
+                    Ok("upload-review")=>{
+                        let files=std::fs::read_dir(view.storage.data_dir()).ok().into_iter().flatten().filter_map(|e|e.ok()).map(|e|e.path()).filter(|p|p.extension().is_some_and(|x|x=="png")).take(5).collect::<Vec<_>>();
+                        view.review_files(files,cx);
+                    }
                     Ok("tasks")=>{view.page=Page::Jobs;view.inspector_open=false;}
                     Ok("tasks-active")=>{
                         view.page=Page::Jobs;view.inspector_open=false;

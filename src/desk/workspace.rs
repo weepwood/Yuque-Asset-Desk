@@ -33,12 +33,13 @@ impl UploadDesk {
         let total=self.queue.read(cx).queue_total;
         let finished=total.saturating_sub(self.queue.read(cx).queue_count);
         let p=self.palette();
-        div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(p.surface)
+        div().flex().items_center().gap_3().px_3().py_2().rounded(px(design::CONTROL_RADIUS)).border_1().border_color(p.line).bg(p.surface)
+            .child(div().size(px(34.)).rounded(px(6.)).bg(p.accent_soft).text_color(p.accent).flex().items_center().justify_center().child(IconName::File))
             .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
-                .child(div().text_xs().text_color(p.text).child(self.queue.read(cx).activity_label()))
+                .child(div().text_xs().text_color(p.text).child(if self.upload_review.is_some(){"待确认上传 · 尚未发送".into()}else{self.queue.read(cx).activity_label()}))
                 .when(self.queue.read(cx).active_job.is_some(),|d|d.child(div().text_xs().text_color(p.muted).child(self.queue.read(cx).transfer_label())))
                 .when(self.queue.read(cx).busy&&total>0,|d|d.child(gpui_kit::component::progress::Progress::new("batch-progress").xsmall().value(finished as f32/total as f32*100.).accessibility_label("批次处理进度"))))
-            .child(Button::new("view-upload-jobs").small().ghost().label("查看任务").on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))
+            .child(Button::new("view-upload-jobs").small().ghost().label(if self.upload_review.is_some(){"继续确认"}else{"查看任务"}).on_click(cx.listener(|v,_,w,cx|{v.command(Command::Navigate(Page::Jobs),w,cx);})))
     }
     fn navigate(&mut self,category:&'static str,favorites:bool,w:&mut Window,cx:&mut Context<Self>){
         self.navigate_page(Page::Gallery,cx);
@@ -157,7 +158,7 @@ impl UploadDesk {
             .child(div().text_size(px(self.spacing().title)).font_semibold().truncate().child(title))
             .child(div().text_xs().text_color(p.muted).child(self.browse_count_label(total)));
         let base=div().id("drop-zone").flex().flex_col().gap_2().pb_3().border_b_1().border_color(p.line)
-            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)));
+            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.review_files(paths.paths().to_vec(),cx)));
         if narrow{
             base.child(div().flex().items_center().gap_2().child(heading).child(controls))
                 .child(div().debug_selector(||"gallery-search".into()).child(Input::new(&self.resource.search_input).disabled(similar)))

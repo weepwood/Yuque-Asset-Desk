@@ -9,7 +9,10 @@ const EDGE: u32 = 160;
 static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn cached_path(root: &Path, asset: &Asset) -> PathBuf {
-    let key = format!("v2:{}:{}:{}", asset.provider, asset.owner_id, asset.sha256);
+    cached_path_for(root,&asset.provider,&asset.owner_id,&asset.sha256)
+}
+pub(crate) fn cached_path_for(root:&Path,provider:&str,owner:&str,sha:&str)->PathBuf{
+    let key = format!("v2:{provider}:{owner}:{sha}");
     root.join("album-previews").join(format!("{}.jpg", hex::encode(Sha256::digest(key.as_bytes()))))
 }
 
@@ -52,7 +55,8 @@ pub(crate) fn raster_svg(bytes:&[u8],edge:u32)->Result<(image::DynamicImage,u32,
     let rgba=image::RgbaImage::from_raw(rw,rh,pixels.flat_map(|p|[p.red(),p.green(),p.blue(),p.alpha()]).collect()).context("SVG 像素格式无效")?;
     Ok((image::DynamicImage::ImageRgba8(rgba),w.ceil() as u32,h.ceil() as u32))
 }
-fn write_small(dest:&Path,bytes:Vec<u8>) -> Result<PathBuf> {
+fn decode_small(bytes:Vec<u8>) -> Result<image::DynamicImage> {
+    ensure!(!bytes.is_empty()&&bytes.len() as u64<=MAX_INPUT,"图片超过预览输入限制");
     let decoded=if is_svg(&bytes){raster_svg(&bytes,EDGE)?.0}else{
     let reader=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
     let format=reader.format().context("无法识别图片格式")?;
@@ -66,6 +70,15 @@ fn write_small(dest:&Path,bytes:Vec<u8>) -> Result<PathBuf> {
     reader.limits(limits);
     reader.decode().context("图片格式不支持、内容损坏或超出安全解码限制")?};
     let small=if decoded.width()>EDGE || decoded.height()>EDGE {decoded.thumbnail(EDGE,EDGE)}else{decoded};
+    Ok(small)
+}
+pub(crate) fn draft_image(bytes:Vec<u8>)->Result<std::sync::Arc<gpui_kit::RenderImage>>{
+    let mut rgba=decode_small(bytes)?.into_rgba8();
+    for p in rgba.pixels_mut(){p.0.swap(0,2);}
+    Ok(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(rgba)])))
+}
+fn write_small(dest:&Path,bytes:Vec<u8>) -> Result<PathBuf> {
+    let small=decode_small(bytes)?;
     // JPEG is intentionally lossy; composite transparency onto a neutral light background.
     let rgba=small.to_rgba8();
     let rgb=image::RgbImage::from_fn(rgba.width(),rgba.height(),|x,y|{

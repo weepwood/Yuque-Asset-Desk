@@ -199,6 +199,8 @@ fn isolated_clipboard_image_creates_offline_resource(){
     // TestAppContext uses a private clipboard, not the OS pasteboard.
     app.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png,png.into_inner())));
     app.update(|cx|desk.update(cx,|v,cx|v.desktop_quick_upload(cx)));
+    app.run_until_parked();assert!(db.jobs("demo","local",None).unwrap().is_empty());
+    app.update(|cx|desk.update(cx,|v,cx|v.confirm_upload_review(cx)));
     app.run_until_parked();
     let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
     assert_eq!(items.len(),1);assert!(preview::cached_path(&root,&items[0]).is_file());
@@ -266,6 +268,9 @@ fn gallery_external_file_drop_uses_existing_queue(){
     let pos=point(px(600.),px(420.));
     ui.update(|w,cx|{w.dispatch_event(FileDropEvent::Entered{position:pos,paths:ExternalPaths([source.clone()].into_iter().collect())}.to_platform_input(),cx);w.refresh();w.draw(cx).clear(cx);});
     ui.update(|w,cx|{w.dispatch_event(FileDropEvent::Submit{position:pos}.to_platform_input(),cx);});
+    app.run_until_parked();assert!(db.jobs("demo","local",None).unwrap().is_empty());
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let confirm=ui.debug_bounds("review-confirm").unwrap().center();ui.simulate_click(confirm,Modifiers::default());
     app.run_until_parked();
     let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
     assert_eq!(items.len(),1);
@@ -306,6 +311,9 @@ fn upload_picker_click_cancel_select_and_backup(){
     let bounds=ui.debug_bounds("choose-main").unwrap();
     ui.simulate_click(bounds.center(),Modifiers::default());app.run_until_parked();
     app.simulate_path_prompt_response(|_|Some(vec![source.clone()]));
+    app.run_until_parked();assert!(db.jobs("demo","local",None).unwrap().is_empty());
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let confirm=ui.debug_bounds("review-confirm").unwrap().center();ui.simulate_click(confirm,Modifiers::default());
     app.run_until_parked();
     let (items,_,_)=db.page_album(150,"","image",Some(("demo","local")),None,false,None,false).unwrap();
     assert_eq!(items.len(),1);assert!(preview::cached_path(&data,&items[0]).is_file());
@@ -980,4 +988,57 @@ fn thumbnail_lane_survives_pagination_and_pauses_on_navigation(){
     assert!(path.is_file());
     assert!(preview::cached_path(&root,&valid).is_file());
     drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+
+#[::core::prelude::v1::test]
+fn upload_review_requires_confirmation_and_preserves_sources(){
+    let root=std::env::temp_dir().join(format!("yuque-review-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let source=root.join("review.png");image::RgbImage::from_pixel(96,64,image::Rgb([40,90,130])).save(&source).unwrap();
+    let original=std::fs::read(&source).unwrap();
+    let read=db.clone();let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(720.),px(600.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    app.update(|cx|desk.update(cx,|v,cx|v.review_files(vec![source.clone(),root.join("missing.png")],cx)));
+    app.run_until_parked();assert!(read.jobs("demo","local",None).unwrap().is_empty());
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let button=ui.debug_bounds("review-confirm").unwrap();
+    assert!(button.origin.x>=px(0.)&&button.origin.x+button.size.width<=px(720.));
+    ui.simulate_click(button.center(),Modifiers::default());app.run_until_parked();
+    assert_eq!(read.jobs("demo","local",None).unwrap().len(),1);
+    let job=read.jobs("demo","local",None).unwrap().remove(0);
+    assert_eq!(job.state,"done");assert!(job.thumbnail.is_some());assert_eq!(std::fs::read(&source).unwrap(),original);
+    app.update(|cx|desk.update(cx,|v,cx|v.review_files(vec![source.clone()],cx)));app.run_until_parked();
+    app.update(|cx|desk.update(cx,|v,cx|v.apply_account(None,cx)));
+    app.run_until_parked();assert!(app.read(|cx|desk.read(cx).upload_review.is_none()));
+    assert_eq!(read.jobs("demo","local",None).unwrap().len(),1);
+    drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
+fn inspector_drag_resizes_and_persists_preference(){
+    let root=std::env::temp_dir().join(format!("yuque-inspector-width-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    let read=db.clone();let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1360.),px(800.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();
+    app.update(|cx|desk.update(cx,|v,cx|{v.inspector_open=true;cx.notify();}));
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let before=ui.debug_bounds("inspector-slot").unwrap().size.width;
+    let start=ui.debug_bounds("inspector-resize").unwrap().center();
+    ui.simulate_mouse_down(start,MouseButton::Left,Modifiers::default());
+    let end=point(start.x-px(60.),start.y);
+    ui.simulate_mouse_move(end,Some(MouseButton::Left),Modifiers::default());
+    ui.simulate_mouse_up(end,MouseButton::Left,Modifiers::default());
+    app.run_until_parked();
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert!(ui.debug_bounds("inspector-slot").unwrap().size.width>=before+px(50.));
+    app.update(|cx|desk.update(cx,|v,_|{assert!(v.inspector_drag.is_none());v.flush_preferences();}));
+    assert!(read.preferences().unwrap()["inspector_width"].as_f64().unwrap()>340.);
+    drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
 }

@@ -33,6 +33,9 @@ impl UploadDesk {
     }
 
     pub(super) fn task_center(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.upload_review.is_some(){
+            return div().flex_1().min_w(px(0.)).h_full().flex().flex_col().p(px(self.spacing().pad)).child(self.upload_review_panel(cx)).into_any_element();
+        }
         let history=self.job_history.read(cx);
         let queue=self.queue.read(cx);
         let command=queue.queue_control.load(Ordering::Relaxed);
@@ -50,7 +53,13 @@ impl UploadDesk {
             let mut row = div().flex().flex_col().gap_1().py_3().px_2()
                 .border_b_1().border_color(self.palette().line)
                 .child(div().flex().items_center().gap_2()
-                    .child(div().flex_1().min_w(px(0.)).font_medium().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+                    .child(div().size(px(42.)).flex_shrink_0().rounded(px(5.)).overflow_hidden().bg(self.palette().subtle).flex().items_center().justify_center()
+                        .child(if let Some(path)=&job.thumbnail{img(path.clone()).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element()}
+                            else{div().text_color(self.palette().muted).child(if uploader::asset_category(&job.path)=="image"{IconName::GalleryVerticalEnd}else{IconName::File}).into_any_element()}))
+                    .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1()
+                        .child(div().font_medium().truncate().child(job.path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+                        .child(div().text_xs().text_color(self.palette().muted).truncate().child(if job.state=="done"{"资源已记录"}else if active{"正在处理"}else{"本地任务"})))
+
                     .child(div().w(px(82.)).flex_shrink_0().text_xs().text_color(if job.state=="failed"||job.state=="unknown"{self.palette().error}else if job.state=="done"{self.palette().accent}else{self.palette().muted}).child(state))
                     .child(div().w(px(128.)).flex_shrink_0().flex().justify_end()
                     .when(retry, |d| d.child(Button::new(("retry-job",id as usize)).small().ghost()
@@ -66,15 +75,19 @@ impl UploadDesk {
                 }
             }
             if let Some((state,error))=&job.preview{
-                if state=="failed"{row=row.child(div().text_xs().text_color(self.palette().error).child(format!("已上传；预览失败：{error}")));}
+                if state=="failed"{row=row.child(div().text_xs().text_color(self.palette().error).child(format!("{}；预览失败：{error}",if self.config.mode==Mode::Demo{"已记录"}else{"已上传"})));}
                 else if state=="ready"||state=="remote_ready"{row=row.child(div().text_xs().text_color(self.palette().muted).child("本地缩略图已就绪"));}
             }
             if !job.error.is_empty() { row = row.child(div().text_sm().text_color(self.palette().error).child(job.error.clone())); }
             list = list.child(row);
         }
         div().flex_1().min_w(px(0.)).flex().flex_col().gap_3().p(px(self.spacing().pad))
+            .drag_over::<ExternalPaths>({let p=self.palette();move|style,_,_,_|style.bg(p.accent_soft)})
+            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.review_files(paths.paths().to_vec(),cx)))
             .child(div().flex().items_center().gap_2()
-                .child(div().flex_1().text_lg().font_semibold().child("上传任务"))
+                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1().child(div().text_lg().font_semibold().child("上传任务"))
+                    .child(div().text_xs().text_color(self.palette().muted).child("跟踪上传、预览与恢复状态")))
+                .child(Button::new("jobs-add").small().primary().icon(IconName::Plus).label("添加文件").disabled(self.queue.read(cx).busy||self.picker_pending||self.account_busy(cx)).on_click(cx.listener(|v,_,_,cx|v.select_files(cx))))
                 .child(Button::new("refresh-jobs").small().ghost().label("刷新").on_click(cx.listener(|v,_,_,cx| v.refresh_jobs(cx))))
                 .child(Button::new("resume-jobs").small().label("恢复任务").disabled(self.queue.read(cx).busy || self.account_busy(cx) || history.recovery_count == 0)
                     .on_click(cx.listener(|v,_,_,cx| v.resume_jobs(cx)))))
@@ -107,6 +120,7 @@ impl UploadDesk {
                 .child(Button::new("jobs-next").small().label("下一页").disabled(history.loading || !history.more)
                     .on_click(cx.listener(|v,_,_,cx| { v.page_jobs(true,cx) }))))
             .child(div().border_t_1().border_color(self.palette().line).pt_2().text_xs().text_color(self.palette().muted).child(self.status.clone()))
+            .into_any_element()
     }
 
     pub(super) fn inspector(&self, narrow: bool, active:bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -126,7 +140,10 @@ impl UploadDesk {
             let md_asset = asset.clone();
             let type_label=match asset.category.as_str(){"image"=>"图片","video"=>"视频",_=>"附件"};
             panel=panel.child(div().flex().flex_col().gap_1().child(div().font_semibold().child(asset.name.clone()))
-                .child(div().text_xs().text_color(self.palette().muted).child(format!("{type_label} · {}",file_size(asset.bytes)))));
+                .child(div().flex().items_center().gap_2().text_xs().text_color(self.palette().muted)
+                    .child(div().px_2().py_1().rounded(px(4.)).bg(self.palette().surface).child(type_label))
+                    .child(file_size(asset.bytes))
+                    .when(asset.category=="image",|d|d.child(div().text_color(if self.resource.thumbnail_path.is_some(){self.palette().accent}else{self.palette().muted}).child(if self.resource.thumbnail_path.is_some(){"预览就绪"}else if self.resource.preview_loading{"读取中"}else{"待恢复"})))));
             if asset.category=="image"{
                 panel=panel.child(div().h(px(if narrow{144.}else if self.prefs.comfortable{208.}else{184.})).w_full().rounded(px(design::CONTROL_RADIUS)).overflow_hidden().bg(self.palette().subtle).flex().items_center().justify_center()
                     .child(if let Some(path)=&self.resource.thumbnail_path{img(path.clone()).image_cache(&self.resource.image_cache).size_full().object_fit(ObjectFit::Contain).into_any_element()}else{div().text_xs().text_color(self.palette().muted).child(if self.resource.preview_loading{"读取本地预览…"}else{"无本地预览"}).into_any_element()}))
@@ -164,6 +181,8 @@ impl UploadDesk {
             panel=panel.child(div().h(px(1.)).bg(self.palette().line))
                 .child(div().text_xs().font_medium().text_color(self.palette().muted).child("文件属性"))
                 .child(div().flex().items_center().justify_between().gap_2().text_xs()
+                    .child(div().text_color(self.palette().muted).child("格式")).child(std::path::Path::new(&asset.name).extension().and_then(|s|s.to_str()).unwrap_or("未知").to_uppercase()))
+                .child(div().flex().items_center().justify_between().gap_2().text_xs()
                     .child(div().text_color(self.palette().muted).child("大小")).child(file_size(asset.bytes)))
                 .child(div().flex().items_center().justify_between().gap_2().text_xs()
                     .child(div().text_color(self.palette().muted).child("来源")).child(div().truncate().child(if asset.provider=="demo"{"本地演示".to_owned()}else{format!("语雀 / {}",asset.owner_id)})))
@@ -178,7 +197,7 @@ impl UploadDesk {
         div().id("inspector").when(active,|d|d.track_focus(&self.resource.inspector_focus).key_context("YuqueInspector"))
             .on_action(cx.listener(|v,_:&shell::InspectorClose,w,cx|{if v.inspector_open{v.set_inspector(false,false,w,cx);}}))
             .h_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().gap(px(self.spacing().section)).p(px(self.spacing().pad))
-            .when(!narrow, |d| d.w(px(self.spacing().inspector)).flex_shrink_0()).when(narrow, |d| d.w_full())
+            .w_full()
             .bg(self.palette().sidebar).border_l_1().border_color(self.palette().line)
             .child(header).child(panel.overflow_y_scrollbar())
     }
@@ -217,22 +236,24 @@ impl UploadDesk {
                             if old!=v.resource.hover_asset{cx.notify();}
                         }))
                         .child(div().id(("album-image",index)).relative().h(px(tile_image_height)).w_full().overflow_hidden()
-                            .rounded(px(design::CONTROL_RADIUS)).bg(if thumbnail.is_some(){palette.canvas}else{palette.subtle}).flex().items_center().justify_center()
+                            .rounded(px(design::CONTROL_RADIUS)).bg(if thumbnail.is_some(){palette.surface}else{palette.subtle}).flex().items_center().justify_center()
                             .child(match thumbnail {
                                 Some(path)=>{
                                     let image=img(path).image_cache(&self.resource.image_cache).object_fit(ObjectFit::Contain);
-                                    if let Some((w,h))=image_size{div().h_full().w_full().flex().justify_center().items_end().child(image.w(px(w)).h(px(h))).into_any_element()}
+                                    if let Some((w,h))=image_size{div().h_full().w_full().flex().justify_center().items_center().child(image.w(px(w)).h(px(h))).into_any_element()}
                                     else{image.size_full().into_any_element()}
                                 },
                                 None=>div().flex().flex_col().items_center().gap_1().text_color(palette.muted)
                                     .child(if asset.category=="video"{IconName::Play}else if asset.category=="image"{IconName::GalleryVerticalEnd}else{IconName::File})
-                                    .child(div().text_xs().child(if asset.category=="image" {"无本地预览"} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
+                                    .child(div().text_xs().child(if asset.category=="image" {if self.thumbnails.read(cx).attempted(asset.id){"预览不可用"}else{"等待预览"}} else if asset.category=="video" {"视频"} else {"附件"})).into_any_element()
                             })
                             .when(checked||selected,|d|d.child(div().absolute().inset_0().rounded(px(design::CONTROL_RADIUS)).border_2().border_color(palette.accent)))
                             .when(revealed,|d|d.child(div().absolute().top(px(5.)).left(px(5.)).opacity(0.72+0.28*hover_alpha)
                                 .child(Button::new(("grid-select",index)).xsmall().selected(checked).icon(if checked{IconName::Check}else{IconName::Square}).tooltip("多选")
                                     .on_click(cx.listener(move|v,_,w,cx|v.toggle_album_selection(asset_id,w,cx))))))
-                            .when(starred,|d|d.child(div().absolute().top(px(6.)).right(px(6.)).p_1().rounded_sm().bg(palette.surface).text_color(palette.accent).child(IconName::StarFill))))
+                            .when(starred,|d|d.child(div().absolute().top(px(6.)).right(px(6.)).p_1().rounded_sm().bg(palette.surface).text_color(palette.accent).child(IconName::StarFill)))
+                            .when(revealed,|d|d.child(div().absolute().bottom(px(6.)).right(px(6.)).rounded(px(5.)).bg(palette.surface).opacity(hover_alpha.max(0.7))
+                                .child(Button::new(("tile-copy",index)).xsmall().ghost().icon(IconName::Copy).tooltip("复制链接").on_click(cx.listener(move|v,_,w,cx|v.copy_asset(&url_asset,false,w,cx)))))))
                         .child(div().h(px(self.spacing().footer)).flex().flex_col().justify_center().items_center().gap_0p5()
                             .child(div().max_w_full().truncate().text_size(px(self.spacing().caption)).text_color(if selected||checked{palette.accent}else{palette.text}).child(asset.name.clone()))
                             .child(div().text_xs().text_color(palette.muted).child(file_size(asset.bytes))))
@@ -338,7 +359,7 @@ impl UploadDesk {
 
                     .child(Button::new("zoom-reset").ghost().small().label("适应窗口").on_click(cx.listener(|v,_,_,cx|{v.resource.zoom=1.;v.resource.pan=point(px(0.),px(0.));cx.notify();}))))
                 .child({
-                    let panel=div().id("preview-canvas").bg(self.palette().sidebar).rounded(px(design::CONTROL_RADIUS)).relative().flex_1().min_h(px(0.)).overflow_hidden().flex().items_center().justify_center()
+                    let panel=div().id("preview-canvas").bg(self.palette().stage).rounded(px(design::CONTROL_RADIUS)).relative().flex_1().min_h(px(0.)).overflow_hidden().flex().items_center().justify_center()
                         .debug_selector(||"preview-canvas".into())
                         .on_scroll(cx.listener(|v,e:&ScrollEvent,w,cx|{
                             let dy=f32::from(e.delta.pixel_delta(px(20.)).y);
@@ -385,7 +406,7 @@ impl UploadDesk {
             if (q.width,q.height)==(q.shown_width,q.shown_height){format!("{source} · {}×{}",q.width,q.height)}else{format!("{source} · {}×{} · 预览 {}×{}",q.width,q.height,q.shown_width,q.shown_height)}
         }else if self.resource.large_preview_path.is_some(){"离线微缩图".into()}else{"暂无图像".into()};
         let message=if self.resource.pending_preview.is_some(){"正在加载下一页…"}else{self.viewer_model.read(cx).status.as_str()};
-        let mut strip=div().h(px(48.)).flex().justify_center().items_center().gap_2().overflow_hidden();
+        let mut strip=div().h(px(48.)).flex().justify_center().items_center().gap_2().overflow_hidden().rounded(px(6.)).bg(p.surface);
         for a in self.preview_strip(){
             let selected=Some(a.id)==current;
             let asset=a.clone();let id=a.id;
@@ -556,18 +577,28 @@ impl Render for UploadDesk {
         let nav_visibility=design::tween("nav-visible",if self.immersive{0.}else{1.},design::SURFACE_MS,window,cx);
         let nav_reserve=!self.immersive||nav_visibility>0.001;
         let nav_width=if !nav_reserve{0.}else if self.sidebar_collapsed&&nav_progress<=0.001{56.}else{self.spacing().sidebar_width(narrow)};
-        let available = f32::from(window.viewport_size().width) - nav_width - if !narrow && reserve_inspector {self.spacing().inspector} else {0.} - 2.*self.spacing().pad;
+        let preferred=if self.prefs.inspector_width>0.{self.prefs.inspector_width}else{self.spacing().inspector};
+        let right_width=preferred.clamp(240.,420.).min((f32::from(window.viewport_size().width)-nav_width-460.).max(240.));
+        let available = f32::from(window.viewport_size().width) - nav_width - if !narrow && reserve_inspector {right_width} else {0.} - 2.*self.spacing().pad;
         let gallery=if self.page==Page::Gallery&&show_center{self.gallery_content(available,narrow,window,cx)}else{div().into_any_element()};
         // Never access SQLite from the hot render path.
         let total = self.resource.total_count;
         let is_demo = self.config.mode == Mode::Demo;
-        let detail_width=if narrow{(f32::from(window.viewport_size().width)-nav_width).max(0.)}else{self.spacing().inspector};
+        let detail_width=if narrow{(f32::from(window.viewport_size().width)-nav_width).max(0.)}else{right_width};
         div()
             .flex()
             .size_full()
             .text_size(px(self.spacing().body))
             .bg(self.palette().canvas)
             .text_color(self.palette().text)
+            .on_mouse_move(cx.listener(|v,e:&MouseMoveEvent,_,cx|{
+                if let Some((start,width))=v.inspector_drag{
+                    if e.dragging(){v.prefs.inspector_width=(width+start-f32::from(e.position.x)).clamp(240.,420.);cx.notify();}
+                    else{v.inspector_drag=None;v.persist_preferences(cx);}
+                }
+            }))
+            .on_mouse_up(MouseButton::Left,cx.listener(|v,_,_,cx|{if v.inspector_drag.take().is_some(){v.persist_preferences(cx);cx.notify();}}))
+            .on_mouse_up_out(MouseButton::Left,cx.listener(|v,_,_,cx|{if v.inspector_drag.take().is_some(){v.persist_preferences(cx);cx.notify();}}))
              .when(nav_reserve,|root|root.child(div().id("nav-slot").debug_selector(||"nav-slot".into()).relative().w(px(nav_width)).h_full().flex_shrink_0().overflow_hidden().bg(self.palette().sidebar)
                 .child(div().absolute().top_0().bottom_0().left(px(-22.*(1.-nav_visibility)-if self.sidebar_collapsed{0.}else{12.*(1.-nav_progress)})).w(px(if self.sidebar_collapsed{56.}else{nav_width})).opacity(nav_visibility*if self.sidebar_collapsed{1.}else{0.75+0.25*nav_progress})
                     .when(self.immersive,|d|d.occlude().capture_any_mouse_down(|_,_,cx|cx.stop_propagation()).capture_any_mouse_up(|_,_,cx|cx.stop_propagation()).capture_key_down(|_,_,cx|cx.stop_propagation()))
@@ -598,7 +629,7 @@ impl Render for UploadDesk {
                             .on_action(cx.listener(|v,_:&shell::GalleryInspector,w,cx|v.command(Command::ToggleInspector,w,cx)))
                             .on_key_down(cx.listener(|v,e:&KeyDownEvent,w,cx|v.gallery_key(e,w,cx)))
                             .drag_over::<ExternalPaths>({let p=self.palette();move|style,_,_,_|style.bg(p.accent_soft)})
-                            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.start_upload(paths.paths().to_vec(),cx)))
+                            .on_drop(cx.listener(|v,paths:&ExternalPaths,_,cx|v.review_files(paths.paths().to_vec(),cx)))
                             .flex_1()
                             .min_h(px(0.))
                             .flex()
@@ -633,13 +664,17 @@ impl Render for UploadDesk {
                             .when(self.resource.history_error.is_none()&&(self.resource.has_more || self.resource.loading_history),|d|d.child(div().debug_selector(||"next-page".into()).child(Button::new("next-page").ghost().small().label(if self.resource.loading_history{"加载中…"}else{"加载更多"})
                                 .disabled(self.resource.loading_history).on_click(cx.listener(|v,_,_,cx|v.load_more(cx))))))
                     )
-                    .when(self.queue.read(cx).busy,|d|d.child(self.upload_summary(cx)))
+                    .when(self.queue.read(cx).busy||self.upload_review.is_some(),|d|d.child(self.upload_summary(cx)))
 ),
             ))
             .when(reserve_inspector, |d| d.child(div().id("inspector-slot").debug_selector(||"inspector-slot".into()).relative().w(px(detail_width)).flex_shrink_0().h_full().overflow_hidden().bg(self.palette().canvas)
                 .child(div().absolute().top_0().bottom_0().w(px(detail_width)).left(px(22.*(1.-inspector_opacity))).opacity(inspector_opacity)
                     .when(!show_inspector,|d|d.occlude().capture_any_mouse_down(|_,_,cx|cx.stop_propagation()).capture_any_mouse_up(|_,_,cx|cx.stop_propagation()).capture_key_down(|_,_,cx|cx.stop_propagation()))
-                    .child(self.inspector(narrow,show_inspector,cx)))))
+                    .child(self.inspector(narrow,show_inspector,cx)))
+                .when(!narrow&&show_inspector,|d|d.child(div().id("inspector-resize").debug_selector(||"inspector-resize".into()).absolute().left_0().top_0().bottom_0().w(px(6.)).cursor(CursorStyle::ResizeLeftRight)
+                    .hover(|s|s.bg(self.palette().accent_soft))
+                    .on_mouse_down(MouseButton::Left,cx.listener(move|v,e:&MouseDownEvent,_,cx|{v.inspector_drag=Some((f32::from(e.position.x),right_width));cx.stop_propagation();}))))))
+
             .into_any_element()
     }
 }

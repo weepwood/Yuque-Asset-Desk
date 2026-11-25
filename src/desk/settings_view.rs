@@ -9,7 +9,8 @@ impl UploadDesk{
             .child(div().debug_selector(||"open-data-settings".into()).child(Button::new("settings-tab-data").small().ghost().selected(self.page==Page::Data).label("存储").on_click(cx.listener(|v,_,_,cx|v.navigate_page(Page::Data,cx)))));
         let title=match self.page{Page::Account=>"语雀账号",Page::Data=>"存储与数据",_=>"常规设置"};
         let mut content=div().flex().flex_col().gap(px(self.spacing().section)).min_w(px(0.))
-            .child(div().text_size(px(self.spacing().title)).font_semibold().child(title));
+            .child(div().flex().flex_col().gap_1().pb_2().child(div().text_lg().font_semibold().child(title))
+                .child(div().text_xs().text_color(self.palette().muted).child(match self.page{Page::Account=>"管理上传身份与会话验证",Page::Data=>"本地索引、离线预览与备份",_=>"个性化工作区、快捷操作与更新"})));
         match self.page{
             Page::Account=>content=content.child(self.account_form(cx)),
             Page::Data=>content=content.child(self.data_panel(cx)),
