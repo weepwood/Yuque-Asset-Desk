@@ -3,6 +3,7 @@
 基于 **Rust + GPUI Kit 0.9 + SQLite** 的轻量跨平台语雀图片与文件上传桌面客户端。
 
 > **当前正式版本：[v0.5.1](https://github.com/weepwood/Yuque-Asset-Desk/releases/tag/v0.5.1)。**
+> V0.8.0 为开发分支候选，尚未发布；V0.7.0 固定候选与其原始产物保持不变。
 
 ## 技术架构
 
@@ -67,7 +68,7 @@ Windows PowerShell 使用 `$env:KEY="value"` 设置环境变量。不要把个�
 
 ## CI
 
-GitHub Actions 仅覆盖 Windows x64、macOS Apple Silicon。V0.5.0 候选使用 Windows 便携 ZIP（未签名）与 macOS ARM64 DMG（应用 ad-hoc 签名、未经公证）；构建成功不等于完成终端设备验收。参见 [构建工作流](.github/workflows/build.yml)。
+GitHub Actions 仅覆盖 Windows x64、macOS Apple Silicon。当前构建工作流生成 Windows 便携 ZIP（未签名）与 macOS ARM64 DMG（应用 ad-hoc 签名、未经公证）；构建成功不等于完成终端设备验收。参见 [构建工作流](.github/workflows/build.yml)。
 
 更多文档：https://gpui-kit.com
 
@@ -139,6 +140,8 @@ Release QA 性能和桌面测试（macOS；Pillow）：
 ```bash
 cargo build --release --locked --features qa
 python3 scripts/album_perf.py
+# 可选：多轮滚动、页面切换和缓存回收诊断
+YUQUE_PERF_MEMORY=1 python3 scripts/album_perf.py
 python3 scripts/desktop_qa.py
 YUQUE_VISUAL_PROFILE=release python3 scripts/visual_qa.py
 ```

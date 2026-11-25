@@ -877,6 +877,42 @@ fn gallery_refresh_failure_clears_stale_actions_and_append_failure_keeps_selecti
 }
 
 #[::core::prelude::v1::test]
+fn pagination_feedback_keeps_narrow_gallery_geometry_and_retry_action(){
+    let root=std::env::temp_dir().join(format!("yuque-page-footer-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("assets.db")).unwrap();
+    db.insert_or_get(&crate::storage::NewAsset{name:"fixture.txt".into(),bytes:10,category:"attachment".into(),provider:"demo".into(),owner_id:"local".into(),url:"file:///fixture.txt".into(),sha256:"fixture".into(),filekey:String::new()}).unwrap();
+    let app=TestAppContext::single();app.update(gpui_kit::init);
+    let config=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{
+        window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(720.),px(600.))})),..Default::default()
+    },cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,config,db))).unwrap());
+    app.run_until_parked();let mut ui=VisualTestContext::from_window(window,&app);
+    app.update(|cx|desk.update(cx,|v,cx|{v.resource.has_more=true;cx.notify();}));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let bounds=ui.debug_bounds("asset-history").unwrap();
+    let status=ui.debug_bounds("gallery-status").unwrap();
+    assert!(ui.debug_bounds("next-page").is_some());
+    app.update(|cx|desk.update(cx,|v,cx|{v.resource.loading_history=true;cx.notify();}));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert_eq!(ui.debug_bounds("asset-history").unwrap(),bounds);
+    assert_eq!(ui.debug_bounds("gallery-status").unwrap(),status);
+    app.update(|cx|desk.update(cx,|v,cx|{
+        let generation=v.resource.history_generation;
+        v.resource.page_cursors.push(Some(v.resource.assets[0].id));
+        v.apply_gallery_result(&gallery_query::GalleryResult{generation,append:true,result:Err("fixture pagination error".into())},cx);
+    }));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    assert_eq!(ui.debug_bounds("asset-history").unwrap(),bounds);
+    assert_eq!(ui.debug_bounds("gallery-status").unwrap(),status);
+    assert!(ui.debug_bounds("next-page").is_none());
+    let retry=ui.debug_bounds("refresh-history").unwrap();
+    assert!(retry.origin.x>=status.origin.x&&retry.origin.x+retry.size.width<=status.origin.x+status.size.width);
+    ui.simulate_click(retry.center(),Modifiers::default());app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).resource.history_error.is_none()));
+    drop(ui);drop(desk);drop(app);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
 fn thumbnail_lane_survives_pagination_and_pauses_on_navigation(){
     let root=std::env::temp_dir().join(format!("yuque-thumb-lane-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     let db=Storage::new(root.join("assets.db")).unwrap();

@@ -1,5 +1,11 @@
 # Yuque Asset Desk — AI 开发协作说明
 
+## 当前交接入口（优先于后续历史记录）
+- 正式版本 v0.5.1；V0.7.0 固定候选 75c173bf0630d6eed2cdcb07d1a6fa3f6e4de996，冻结的 main 和原始产物不改。Windows 真机离线，门禁未完成。
+- PR #8 分支 feat/v0.8-browse-context 已完成九批后续架构、交互与性能工作，本轮收口版本元数据至 V0.8.0，未正式发布。当前验收清单 [docs/release/v0.8.0-acceptance.md](docs/release/v0.8.0-acceptance.md)；历史候选 [docs/release/v0.7.0-acceptance.md](docs/release/v0.7.0-acceptance.md)。
+- 仅处理真实发布阻塞或有证据的缺陷，不继续扩张功能或机械拆分；先确认最新 PR SHA 与 CI，再依据清单核实候选产物。遵守用户数据保护、中文提交、隔离 Demo 测试。
+- 下文历史记录中的版本、CI、平台策略以本节及对应版本验收清单为准；当前 CI 仅 Windows x64 与 macOS ARM64，不能把历史 x64 Mac 构建当成本轮门禁。
+
 ## 项目定位
 - Rust + GPUI Kit 0.9.0 + SQLite 原生桌面上传工具；不引入 Electron 或 WebView。
 - 保留现有数据库目录、assets 表及 provider + owner_id + sha256 去重约束。
@@ -254,3 +260,8 @@
 - 0dac367 的TLS推送阻塞已解除，远程PR #8 head核实一致；前一9594ac9 CI 45549944690双平台通过，0dac367 CI 45551785937查询时运行中。保持V0.7固定候选75c173b、正式v0.5.1与main不变。
 - 网格/等高拼图/列表分页只重排末行及后缀；保留首段日期标题、GPUI ListState splice只替换变化后缀。普通追加不增加既有比例revision，旧比例更新/几何变更/完整替换重算。渲染读取当前行计划，滚动回调弱引用身份校验；NaN等无效比例回退。固定底栏展示追加加载/错误，避免正文插入提示改变视口高度。
 - 新增10k、150项分页、三布局×双密度×日期开关等价测试，覆盖跨日期、跨页及异常比例；完整QA 70通过/0失败/1忽略，all-targets、QA Debug构建、static/diff通过。真实深色拼图和浅色网格截图审查，保存在dist/design-research/row-after/。未重复Release/RSS，不量化端到端收益；未单独测加载态像素位移、真实Windows/语雀。无依赖/schema/真实数据改动。下一轮优先集中收口、复查CI及剩余真实视觉问题，不扩张功能。
+
+## V0.8.0 候选集中收口
+- ef31fce CI 45552122688 success；窄窗分页状态栏优先错误与重试，新增真实GPUI几何不变及重试点击回归，完整QA 71通过/0失败/1忽略，全目标编译、Release QA、static/diff通过。Cargo.toml/Cargo.lock仅修改自身版本0.8.0，无依赖或schema变化。
+- 11张实际Release截图生成，人工审查最小窗口图库/任务/设置/详情4张。顺序执行10k合成JPEG性能基准，均未超时，192缓存上限；完整指标及剩余门禁见docs/release/v0.8.0-acceptance.md。报告与截图位于dist/design-research/v0.8-closeout/。不宣称真实用户上传、Windows真机、全量视觉审查或长期内存验收。
+- 当前阶段停止扩大开发范围，待本提交CI及最终候选原始产物核验；仍保持V0.7固定候选、main及正式v0.5.1不变。仅修复发布实际阻塞。
