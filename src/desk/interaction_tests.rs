@@ -1087,6 +1087,42 @@ fn upload_review_requires_confirmation_and_preserves_sources(){
 }
 
 #[::core::prelude::v1::test]
+fn audit_issue_actions_and_export_are_account_scoped(){
+    let root=std::env::temp_dir().join(format!("yuque-audit-ui-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let db=Storage::new(root.join("data/assets.db")).unwrap();
+    let source=root.join("fixture.png");image::RgbImage::new(64,32).save(&source).unwrap();
+    let cfg=Config{mode:Mode::Demo,creds:None,max_file_mb:1};
+    let item=crate::uploader::upload(&source,&cfg,&db).unwrap().item;
+    let id=item.id;assert_eq!(id,1);let thumbnail=preview::cached_path(db.data_dir(),&item);
+    let read=db.clone();let app=TestAppContext::single();app.update(gpui_kit::init);
+    let (window,desk)=app.update(|cx|gpui_kit::open_window(WindowOptions{window_bounds:Some(WindowBounds::Windowed(Bounds{origin:Point::default(),size:size(px(1160.),px(1000.))})),..Default::default()},cx,move|w,cx|cx.new(|cx|UploadDesk::new(w,cx,cfg,db))).unwrap());
+    app.run_until_parked();
+    app.update(|cx|desk.update(cx,|v,cx|v.navigate_page(Page::Data,cx)));app.run_until_parked();
+    std::fs::write(&thumbnail,b"bad").unwrap();
+    app.update(|cx|desk.update(cx,|v,cx|v.audit_previews(false,cx)));app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).preview_worker.read(cx).audit.as_ref().is_some_and(|(_,r)|r.issue_count==1&&r.issues[0].id==id)));
+    let mut ui=VisualTestContext::from_window(window,&app);
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let fix=ui.debug_bounds("audit-fix-1").unwrap();
+    if fix.center().y>=px(940.){ui.simulate_event(ScrollEvent{position:point(px(700.),px(750.)),delta:ScrollDelta::Pixels(point(px(0.),px(-360.))),..Default::default()});app.run_until_parked();ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});}
+    let fix=ui.debug_bounds("audit-fix-1").unwrap().center();ui.simulate_click(fix,Modifiers::default());app.run_until_parked();
+    assert!(preview::valid_cache(&thumbnail));assert_eq!(read.pending_previews().unwrap(),0);
+    assert!(read.jobs("demo","local",None).unwrap().is_empty());
+    app.update(|cx|desk.update(cx,|v,cx|v.export_preview_audit(cx)));app.run_until_parked();
+    assert!(app.did_prompt_for_paths());
+    app.simulate_path_prompt_response(|_|None);app.run_until_parked();
+    assert!(app.read(|cx|!desk.read(cx).picker_pending&&!desk.read(cx).backup_busy));
+    app.update(|cx|desk.update(cx,|v,cx|v.export_preview_audit(cx)));app.run_until_parked();
+    app.simulate_path_prompt_response(|_|Some(vec![root.clone()]));app.run_until_parked();
+    assert!(app.read(|cx|desk.read(cx).audit_export_feedback.contains("已导出 0 项")));
+    assert!(std::fs::read_dir(&root).unwrap().filter_map(|x|x.ok()).any(|x|x.path().join("preview-audit.jsonl").is_file()));
+    ui.update(|w,cx|{w.refresh();w.draw(cx).clear(cx);});
+    let locate=ui.debug_bounds("audit-locate-1").unwrap().center();ui.simulate_click(locate,Modifiers::default());app.run_until_parked();app.executor().advance_clock(std::time::Duration::from_millis(200));app.run_until_parked();
+    assert!(app.read(|cx|{let v=desk.read(cx);v.page==Page::Gallery&&v.resource.assets.len()==1&&v.resource.assets[0].id==id}));
+    drop(ui);drop(desk);drop(app);drop(read);let _=std::fs::remove_dir_all(root);
+}
+
+#[::core::prelude::v1::test]
 fn inspector_drag_resizes_and_persists_preference(){
     let root=std::env::temp_dir().join(format!("yuque-inspector-width-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     let db=Storage::new(root.join("assets.db")).unwrap();

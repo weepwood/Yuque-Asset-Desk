@@ -22,7 +22,9 @@ fn legacy_path(root:&Path, asset:&Asset) -> PathBuf {
 }
 
 fn read_bounded(path:&Path) -> Result<Vec<u8>> {
-    ensure!(std::fs::symlink_metadata(path)?.file_type().is_file(),"预览来源不是普通文件");
+    let meta=std::fs::symlink_metadata(path)?;
+    ensure!(meta.file_type().is_file(),"预览来源不是普通文件");
+    ensure!(meta.len()>0&&meta.len()<=MAX_INPUT,"图片超过本地预览输入限制或为空");
     let mut bytes=Vec::new();
     std::fs::File::open(path)?.take(MAX_INPUT+1).read_to_end(&mut bytes)?;
     ensure!(!bytes.is_empty() && bytes.len() as u64<=MAX_INPUT,"图片超过本地预览输入限制");
@@ -234,6 +236,8 @@ pub fn persist_upload(storage:&crate::storage::Storage,asset:&Asset,source:&Path
 pub fn recover_remote(storage:&crate::storage::Storage,asset:&Asset)->Result<PathBuf>{
     ensure!(asset.provider=="yuque"&&asset.category=="image","仅支持语雀图片");
     ensure!(!storage.preview_pending(asset.id)?,"缩略图正在后台生成，请稍后重试");
+    let dest=cached_path(storage.data_dir(),asset);
+    if valid_cache(&dest){return Ok(dest);}
     let bytes=crate::high_preview::download(asset)?;
     recover_remote_bytes(storage,asset,bytes)
 }
@@ -251,15 +255,49 @@ fn recover_remote_bytes(storage:&crate::storage::Storage,asset:&Asset,bytes:Vec<
     Ok(path)
 }
 
+const AUDIT_SAMPLE_LIMIT:usize=100;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(crate) enum AuditStatus{Ready,Missing,Corrupt,Pending}
+impl AuditStatus{
+    pub fn label(self)->&'static str{match self{Self::Ready=>"有效",Self::Missing=>"缺失",Self::Corrupt=>"损坏/不可读",Self::Pending=>"待处理"}}
+    fn code(self)->&'static str{match self{Self::Ready=>"ready",Self::Missing=>"missing",Self::Corrupt=>"corrupt",Self::Pending=>"pending"}}
+    pub fn repairable(self)->bool{matches!(self,Self::Missing|Self::Corrupt)}
+}
+#[derive(Clone,Debug)]
+pub(crate) struct AuditIssue{
+    pub id:i64,pub name:String,pub status:AuditStatus,pub unsupported_link:bool,
+}
 #[derive(Clone,Default,Debug)]
 pub(crate) struct AuditReport{
     pub total:usize,pub scanned:usize,pub ready:usize,pub missing:usize,pub corrupt:usize,
     pub pending:usize,pub unsupported_link:usize,pub scheduled:usize,pub cancelled:bool,pub interrupted:bool,
+    pub issue_count:usize,pub issues:Vec<AuditIssue>,
 }
 impl AuditReport{
     pub fn summary(&self)->String{
         format!("{} {}/{} · 有效 {} · 缺失 {} · 损坏/不可读 {} · 待处理 {} · 不支持在线恢复的链接 {} · 新增修复 {}",
             if self.interrupted{"扫描异常中断"}else if self.cancelled{"已停止"}else{"已检查"},self.scanned,self.total,self.ready,self.missing,self.corrupt,self.pending,self.unsupported_link,self.scheduled)
+    }
+    fn inspect(&mut self,root:&Path,asset:&Asset,pending:bool)->Option<AuditIssue>{
+        self.scanned+=1;
+        let unsupported_link=asset.provider=="yuque"&&crate::high_preview::remote_url(&asset.url).is_err();
+        if unsupported_link{self.unsupported_link+=1;}
+        let status=if pending{self.pending+=1;AuditStatus::Pending}else{
+            let path=cached_path(root,asset);
+            if valid_cache(&path){self.ready+=1;AuditStatus::Ready}else{
+                match std::fs::symlink_metadata(&path){
+                    Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{self.missing+=1;AuditStatus::Missing},
+                    _=>{self.corrupt+=1;AuditStatus::Corrupt},
+                }
+            }
+        };
+        if status==AuditStatus::Ready&&!unsupported_link{return None;}
+        self.issue_count+=1;
+        // Filenames are sufficient for locating an asset. Do not include URL,
+        // credentials, source path or arbitrary database error text in reports.
+        let issue=AuditIssue{id:asset.id,name:asset.name.chars().take(255).collect(),status,unsupported_link};
+        if self.issues.len()<AUDIT_SAMPLE_LIMIT{self.issues.push(issue.clone());}
+        Some(issue)
     }
 }
 /// Inspect only local cache bytes. Link checks are syntactic/policy checks, not
@@ -271,21 +309,47 @@ pub(crate) fn audit_page(storage:&crate::storage::Storage,provider:&str,owner:&s
     let done=rows.len()<64;
     for (asset,pending) in rows{
         if cancel.load(Ordering::Relaxed){report.cancelled=true;break;}
-        cursor=asset.id;report.scanned+=1;
-        if asset.provider=="yuque"&&crate::high_preview::remote_url(&asset.url).is_err(){report.unsupported_link+=1;}
-        if pending{report.pending+=1;continue;}
-        let path=cached_path(storage.data_dir(),&asset);
-        if valid_cache(&path){report.ready+=1;continue;}
-        match std::fs::symlink_metadata(&path){
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>report.missing+=1,
-            _=>report.corrupt+=1,
-        }
-        ids.push(asset.id);
+        cursor=asset.id;
+        if report.inspect(storage.data_dir(),&asset,pending).is_some_and(|i|i.status.repairable()){ids.push(asset.id);}
     }
     if cancel.load(Ordering::Relaxed){report.cancelled=true;}
     if repair&&!report.cancelled{report.scheduled+=storage.schedule_previews(provider,owner,&ids)?;}
     let finished=done||cursor>=upper||report.cancelled;
     Ok((cursor,report,finished))
+}
+/// Explicit export is a fresh read-only scan, not a replay of a stale sample.
+pub(crate) fn export_audit(storage:&crate::storage::Storage,provider:&str,owner:&str,parent:&Path)->Result<(PathBuf,usize)>{
+    use std::io::{BufWriter,Write};
+    let parent=parent.canonicalize()?;
+    ensure!(!parent.starts_with(storage.data_dir().canonicalize()?),"请选择应用数据目录之外的位置");
+    let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let dir=parent.join(format!("YuquePreviewAudit-{stamp}"));
+    std::fs::create_dir(&dir)?;
+    let path=dir.join("preview-audit.jsonl");
+    let result=(||->Result<usize>{
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut writer=BufWriter::new(options.open(&path)?);
+        let (upper,total)=storage.preview_audit_bounds(provider,owner)?;
+        let mut report=AuditReport{total,..Default::default()};
+        let mut cursor=0;
+        writeln!(writer,"{}",serde_json::json!({"type":"header","schema":1,"provider":provider,"total":total,"scope":"selected_account","link_check":"policy_only"}))?;
+        loop{
+            let rows=storage.preview_audit_page(provider,owner,cursor,upper)?;
+            let done=rows.len()<64;
+            for (asset,pending) in rows{
+                cursor=asset.id;
+                if let Some(issue)=report.inspect(storage.data_dir(),&asset,pending){
+                    writeln!(writer,"{}",serde_json::json!({"type":"issue","asset":{"id":issue.id,"name":issue.name,"status":issue.status.code(),"unsupported_link":issue.unsupported_link}}))?;
+                }
+            }
+            if done||cursor>=upper{break;}
+        }
+        writeln!(writer,"{}",serde_json::json!({"type":"summary","scanned":report.scanned,"total":report.total,"ready":report.ready,"missing":report.missing,"corrupt":report.corrupt,"pending":report.pending,"unsupported_link":report.unsupported_link,"issues":report.issue_count}))?;
+        writer.flush()?;writer.get_ref().sync_all()?;
+        Ok(report.issue_count)
+    })();
+    match result{Ok(n)=>Ok((path,n)),Err(e)=>{let _=std::fs::remove_file(&path);let _=std::fs::remove_dir(&dir);Err(e)}}
 }
 
 /// One durable task at a time. No network, credentials or upload retries.
@@ -400,6 +464,21 @@ mod tests {
         loop{let (next,r,done)=audit_page(&db,"yuque","123",cursor,upper,report,&cancel,false).unwrap();cursor=next;report=r;if done{break;}}
         assert_eq!((report.scanned,report.ready,report.corrupt,report.missing,report.unsupported_link,report.scheduled),(130,1,1,128,1,0));
         assert_eq!(db.pending_previews().unwrap(),0);assert_eq!(std::fs::read(cached_path(&root,&assets[1])).unwrap(),b"bad");
+        assert_eq!(report.issue_count,129);assert_eq!(report.issues.len(),100);
+        assert_eq!(report.issues[0].id,assets[1].id);assert_eq!(report.issues[0].status,AuditStatus::Corrupt);assert!(report.issues[0].unsupported_link);
+        let export_root=root.with_extension("exports");std::fs::create_dir(&export_root).unwrap();
+        assert!(export_audit(&db,"yuque","123",&root).is_err());
+        let (path,n)=export_audit(&db,"yuque","123",&export_root).unwrap();assert_eq!(n,130);
+        let text=std::fs::read_to_string(&path).unwrap();
+        let lines=text.lines().map(|l|serde_json::from_str::<serde_json::Value>(l).unwrap()).collect::<Vec<_>>();
+        assert_eq!(lines.len(),132);assert_eq!(lines[0]["type"],"header");assert_eq!(lines.last().unwrap()["issues"],130);
+        assert!(lines.iter().any(|v|v["asset"]["id"]==late.id));
+        assert!(!lines.iter().any(|v|v["asset"]["id"]==other.id));
+        assert!(!text.contains("cdn.nlark.com")&&!text.contains("example.invalid")&&!text.contains("owner_id")&&!text.contains("sha256"));
+        assert_eq!(db.pending_previews().unwrap(),0);
+        let (second,_)=export_audit(&db,"yuque","123",&export_root).unwrap();assert_ne!(path,second);assert_eq!(std::fs::read_to_string(&path).unwrap(),text);
+        std::fs::remove_dir_all(export_root).unwrap();
+
         let (cursor,report,done)=audit_page(&db,"yuque","123",0,upper,AuditReport{total,..Default::default()},&cancel,true).unwrap();
         assert!(!done);assert_eq!(report.scheduled,63);assert_eq!(db.pending_previews().unwrap(),63);
         cancel.store(true,Ordering::Relaxed);

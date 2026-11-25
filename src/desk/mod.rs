@@ -181,6 +181,7 @@ pub(crate) struct UploadDesk {
     data_scan_busy:bool,
     data_task:Option<Task<()>>,
     data_feedback:String,
+    audit_export_feedback:String,
     reset_armed:bool,
     reset_pending:bool,
     resetting:bool,
@@ -461,7 +462,7 @@ impl UploadDesk {
             backup_task:None,
             update_state:Default::default(),
             update_task:None,
-            data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),
+            data_usage:None,data_scan_busy:false,data_task:None,data_feedback:String::new(),audit_export_feedback:String::new(),
             reset_armed:false,reset_pending:false,resetting:false,
 
         };
@@ -478,6 +479,7 @@ impl UploadDesk {
                         view.update_state=crate::update::State::Newer(crate::update::Available{version:"0.6.0".into(),page:crate::update::RELEASES.into(),package:Some((crate::update::RELEASES.into(),crate::update::RELEASES.into()))});
                     }
                     Ok("data")=>{view.page=Page::Data;view.inspector_open=false;view.refresh_data(cx);}
+                    Ok("data-audit")=>{view.page=Page::Data;view.inspector_open=false;view.refresh_data(cx);view.audit_previews(false,cx);}
                     Ok("account")=>{view.page=Page::Account;view.inspector_open=false;}
                     Ok("account-identified")=>{view.page=Page::Account;view.inspector_open=false;view.account.update(cx,|a,cx|{a.identity=Some(crate::config::AccountIdentity{id:"123456".into(),name:"演示账号".into(),login:"fixture-user".into()});a.identity_status="已识别个人账号；保存时仍需核对网页会话".into();cx.notify();});}
                     Ok("settings")=>{view.page=Page::Settings;view.inspector_open=false;}

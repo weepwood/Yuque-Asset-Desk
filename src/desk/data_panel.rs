@@ -145,6 +145,32 @@ impl UploadDesk{
             });
         }));
     }
+    pub(super) fn export_preview_audit(&mut self,cx:&mut Context<Self>){
+        if !self.data_idle(cx){return;}
+        self.picker_pending=true;self.audit_export_feedback="选择诊断报告保存目录（包含资源名称和 ID，不含链接及凭据）…".into();cx.notify();
+        let selection=cx.prompt_for_paths(PathPromptOptions{files:false,directories:true,multiple:false,prompt:Some("选择诊断报告位置".into())});
+        let scope=(self.config.provider().to_owned(),self.config.owner_id().to_owned());
+        self.picker_task=Some(cx.spawn(async move|this,cx|{
+            let result=selection.await;
+            let _=this.update(cx,|v,cx|{
+                v.picker_pending=false;
+                match result{
+                    Ok(Ok(Some(mut paths))) if paths.len()==1&&scope.0==v.config.provider()&&scope.1==v.config.owner_id()=>{
+                        if !v.data_idle(cx){v.audit_export_feedback="当前有其他任务，请稍后导出".into();cx.notify();return;}
+                        v.backup_busy=true;v.audit_export_feedback="正在重新扫描并导出完整诊断报告…".into();
+                        let parent=paths.remove(0);let storage=v.storage.clone();
+                        v.backup_task=Some(cx.spawn(async move|this,cx|{
+                            let result=cx.background_spawn(async move{preview::export_audit(&storage,&scope.0,&scope.1,&parent)}).await;
+                            let _=this.update(cx,|v,cx|{v.backup_busy=false;v.audit_export_feedback=match result{Ok((path,n))=>format!("已导出 {n} 项异常或待处理记录：{}",path.display()),Err(e)=>format!("报告导出失败：{e}")};cx.notify();});
+                        }));
+                    }
+                    Ok(Ok(_))=>v.audit_export_feedback="已取消导出或账号已切换".into(),
+                    _=>v.audit_export_feedback="无法选择报告目录".into(),
+                }
+                cx.notify();
+            });
+        }));
+    }
     pub(super) fn data_panel(&self,cx:&mut Context<Self>)->impl IntoElement{
         let p=self.palette();let idle=self.data_idle(cx);
         let mut panel=div().flex().flex_col().gap(px(self.spacing().section))
@@ -157,27 +183,55 @@ impl UploadDesk{
             .child(div().flex().items_center().justify_between()
                 .child(div().text_xs().text_color(p.muted).child("空间统计 · 不含外部备份"))
                 .child(Button::new("scan-data").small().label(if self.data_scan_busy{"统计中…"}else{"统计空间"}).disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.refresh_data(cx)))));
+        let mut stats_panel=None;
         if let Some(u)=&self.data_usage{
             let mut stats=div().rounded_md().bg(p.surface).p_3().flex().flex_col().gap_2();
             for (label,n) in [("数据库与日志",u.database),("永久离线微缩图",u.previews),("旧版预览",u.legacy),("剪贴板暂存",u.clipboard),("上传暂存",u.staging)]{
                 stats=stats.child(div().flex().justify_between().items_center().child(div().text_xs().text_color(p.muted).child(label)).child(div().text_sm().child(bytes(n))));
             }
-            panel=panel.child(stats.child(div().h(px(1.)).bg(p.line))
+            stats_panel=Some(stats.child(div().h(px(1.)).bg(p.line))
                 .child(div().flex().justify_between().child("已识别文件合计").child(bytes(u.database.saturating_add(u.previews).saturating_add(u.legacy).saturating_add(u.clipboard).saturating_add(u.staging))))
                 .child(div().flex().justify_between().child("可安全清理").child(format!("{} · {} 项",bytes(u.reclaimable),u.candidates)))
                 .child(div().text_xs().text_color(p.muted).child(format!("未完成任务 {} · 已保存账号 {}",u.unfinished,u.accounts))));
         }
         let worker=self.preview_worker.read(cx);
-        let report=worker.audit.as_ref().filter(|((provider,owner),_)|provider==self.config.provider()&&owner==self.config.owner_id()).map(|(_,r)|r.summary());
-        panel=panel.child(div().rounded_md().bg(p.surface).p_3().flex().flex_col().gap_2()
+        let report=worker.audit.as_ref().filter(|((provider,owner),_)|provider==self.config.provider()&&owner==self.config.owner_id()).map(|(_,r)|r);
+        let mut audit=div().rounded_md().bg(p.surface).p_3().flex().flex_col().gap_2()
             .child(div().font_semibold().child("当前账号 · 全库图片诊断"))
             .child(div().text_xs().text_color(p.muted).child("仅诊断检查本地缩略图和链接策略，不读取原图；修复尝试本地来源。均不联网、不重新上传。"))
             .child(div().flex().flex_wrap().gap_2()
                 .child(div().debug_selector(||"audit-previews".into()).child(Button::new("audit-previews").small().label("仅诊断").disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.audit_previews(false,cx)))))
                 .child(div().debug_selector(||"audit-repair".into()).child(Button::new("audit-repair").small().label("诊断并修复").disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.audit_previews(true,cx)))))
+                .child(Button::new("audit-export").small().ghost().label("导出完整报告").disabled(!idle).on_click(cx.listener(|v,_,_,cx|v.export_preview_audit(cx))))
                 .when(worker.audit_running,|d|d.child(Button::new("audit-stop").small().ghost().label("停止扫描").on_click(cx.listener(|v,_,_,cx|v.preview_worker.update(cx,|m,cx|m.stop_scan(cx)))))))
-            .when(worker.audit_running,|d|d.child(div().text_xs().text_color(p.muted).child("扫描中 · 已入队修复仍会完成")))
-            .when_some(report,|d,text|d.child(div().text_xs().child(text)).child(div().text_xs().text_color(p.muted).child("统计为扫描时状态；修复后可再次诊断。链接检查不代表远端可访问。"))));
+            .when(worker.audit_running,|d|d.child(div().text_xs().text_color(p.muted).child("扫描中 · 已入队修复仍会完成")));
+        if let Some(report)=report{
+            audit=audit.child(div().text_xs().child(report.summary())).child(div().text_xs().text_color(p.muted).child("统计为扫描时状态；修复后可再次诊断。链接检查不代表远端可访问。"));
+            if !report.issues.is_empty(){
+                let page=worker.audit_page.min((report.issues.len()-1)/8);
+                let start=page*8;let end=(start+8).min(report.issues.len());
+                audit=audit.child(div().h(px(1.)).bg(p.line)).child(div().text_xs().font_medium().child(format!("异常与待处理 {} 项 · 显示 {}–{} / {}（最多100项）",report.issue_count,start+1,end,report.issues.len())));
+                for issue in &report.issues[start..end]{
+                    let id=issue.id;let scope=(self.config.provider().to_owned(),self.config.owner_id().to_owned());let repair_scope=scope.clone();
+                    audit=audit.child(div().flex().flex_wrap().items_center().gap_2().py_1()
+                        .child(div().flex_1().min_w(px(120.)).flex().flex_col().gap_1()
+                            .child(div().text_sm().truncate().child(issue.name.clone()))
+                            .child(div().text_xs().text_color(p.muted).child(format!("#{} · {}{}",id,issue.status.label(),if issue.unsupported_link{" · 不支持在线恢复"}else{""}))))
+                        .child(div().debug_selector(move||format!("audit-locate-{id}").into()).child(Button::new(SharedString::from(format!("audit-locate-{id}"))).small().ghost().label("定位").disabled(!idle).on_click(cx.listener(move|v,_,w,cx|{
+                            if v.config.provider()==scope.0&&v.config.owner_id()==scope.1{v.locate_job_asset(id,w,cx);v.status="已定位诊断资源；清空搜索返回全部资源".into();cx.notify();}
+                        }))))
+                        .when(issue.status.repairable(),|d|d.child(div().debug_selector(move||format!("audit-fix-{id}").into()).child(Button::new(SharedString::from(format!("audit-fix-{id}"))).small().label("修复").disabled(!idle).on_click(cx.listener(move|v,_,_,cx|{
+                            if v.config.provider()==repair_scope.0&&v.config.owner_id()==repair_scope.1{v.repair_local_previews(vec![id],cx);}
+                        }))))));
+                }
+                audit=audit.child(div().flex().items_center().gap_2()
+                    .child(Button::new("audit-prev").small().ghost().label("上一页").disabled(page==0).on_click(cx.listener(move|v,_,_,cx|v.preview_worker.update(cx,|m,cx|{m.audit_page=page.saturating_sub(1);cx.notify();}))))
+                    .child(Button::new("audit-next").small().ghost().label("下一页").disabled(end>=report.issues.len()).on_click(cx.listener(move|v,_,_,cx|v.preview_worker.update(cx,|m,cx|{m.audit_page=page+1;cx.notify();}))))
+                    .child(div().text_xs().text_color(p.muted).child("完整报告会重新扫描，不含链接、路径或凭据")));
+            }
+        }
+        panel=panel.child(audit.when(!self.audit_export_feedback.is_empty(),|d|d.child(div().text_xs().text_color(p.muted).child(self.audit_export_feedback.clone()))));
+        if let Some(stats)=stats_panel{panel=panel.child(stats);}
         panel.child(div().flex().items_center().justify_between().gap_2()
                 .child(div().flex_1().child("清理无引用暂存").child(div().text_xs().text_color(p.muted).child("不删除永久离线微缩图或任何已引用文件")))
                 .child(Button::new("clean-data").small().label("清理").disabled(!idle).on_click(cx.listener(|v,_,w,cx|v.confirm_cleanup(w,cx)))))

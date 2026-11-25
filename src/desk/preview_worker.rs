@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 pub(super) struct PreviewWorker{
     pub busy:bool,wake:bool,task:Option<Task<()>>,
     pub audit:Option<((String,String),preview::AuditReport)>,
-    pub audit_running:bool,cancel:Option<Arc<AtomicBool>>,
+    pub audit_page:usize,pub audit_running:bool,cancel:Option<Arc<AtomicBool>>,
 }
 pub(super) enum PreviewEvent{
     Completed(preview::PreviewCompletion),Error(String),Scheduled(usize),
@@ -25,7 +25,7 @@ impl PreviewWorker{
         if self.busy{return;}
         let cancel=Arc::new(AtomicBool::new(false));
         self.audit=Some(((provider.clone(),owner.clone()),preview::AuditReport::default()));
-        self.audit_running=true;self.cancel=Some(cancel.clone());
+        self.audit_page=0;self.audit_running=true;self.cancel=Some(cancel.clone());
         self.start(storage,None,Some((provider,owner,repair,cancel)),cx);
     }
     pub fn stop_scan(&mut self,cx:&mut Context<Self>){

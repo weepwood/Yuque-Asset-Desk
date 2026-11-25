@@ -424,6 +424,27 @@ mod tests {
         drop(db);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn oversized_image_upload_finishes_without_retaining_preview_snapshot(){
+        let root=std::env::temp_dir().join(format!("yuque-large-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let db=Storage::new(root.join("assets.db")).unwrap();
+        let path=root.join("large.png");
+        image::RgbImage::new(32,32).save(&path).unwrap();
+        // A real PNG prefix plus trailing bytes exercises the input limit
+        // without allocating a giant fixture in the test process.
+        let bytes=33*1024*1024;
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(bytes).unwrap();
+        let cfg=Config{mode:Mode::Demo,creds:None,max_file_mb:40};
+        let job=db.enqueue("demo","local",&[path.clone()]).unwrap()[0].0;db.job_state(job,"running","").unwrap();
+        let result=upload_with_progress(&path,&cfg,&db,Arc::new(TransferProgress::default()),Some(job)).unwrap();
+        assert_eq!(result.item.bytes,bytes as i64);assert_eq!(db.pending_previews().unwrap(),1);assert_eq!(db.retained_preview_bytes().unwrap(),0);
+        assert_eq!(std::fs::read_dir(root.join("upload-staging")).unwrap().count(),0);
+        let completion=crate::preview::process_next(&db).unwrap().unwrap();assert!(completion.settled&&completion.found.is_none());
+        let jobs=db.jobs("demo","local",None).unwrap();assert_eq!(jobs[0].state,"done");assert_eq!(jobs[0].preview.as_ref().unwrap().0,"failed");
+        assert_eq!(db.pending_previews().unwrap(),0);assert_eq!(std::fs::metadata(&path).unwrap().len(),bytes);
+        assert!(!crate::preview::cached_path(&root,&result.item).exists());
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn concurrent_upload_preview_pipeline_drains_without_orphans(){
         use std::sync::atomic::{AtomicBool,Ordering};
         let root=std::env::temp_dir().join(format!("yuque-concurrent-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

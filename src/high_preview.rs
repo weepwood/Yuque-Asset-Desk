@@ -65,6 +65,7 @@ pub fn load(storage:&Storage,asset:&Asset,remote:bool)->Result<QualityImage>{
         ensure!(asset.provider=="yuque","本地资源不能在线加载");
         return decode(download(asset)?,asset,true);
     }
+    ensure!(asset.bytes<=INPUT as i64,"本地原图超过 32 MiB 预览限制，请在系统应用中打开");
     let mut paths=Vec::new();
     if asset.provider=="demo"{
         if let Ok(u)=url::Url::parse(&asset.url){if let Ok(p)=u.to_file_path(){paths.push(p);}}

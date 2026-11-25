@@ -120,6 +120,18 @@ with tempfile.TemporaryDirectory(prefix="yuque-visual-") as folder:
     capture("data-dark.png",YUQUE_QA_PAGE="data")
     capture("data-light.png",YUQUE_QA_PAGE="data",YUQUE_QA_LIGHT="1")
     capture("data-narrow.png",YUQUE_QA_PAGE="data",YUQUE_QA_NARROW="1")
+    # Corrupt only isolated synthetic cache files, restore after capturing.
+    if not selected or selected.intersection({"data-audit-dark.png","data-audit-light.png"}):
+        damaged=sorted((data/"album-previews").glob("*.jpg"))[:2]
+        saved=[(p,p.read_bytes()) for p in damaged]
+        try:
+            damaged[0].write_bytes(b"fixture-corrupt")
+            damaged[1].unlink()
+            capture("data-audit-dark.png",YUQUE_QA_PAGE="data-audit")
+            capture("data-audit-light.png",YUQUE_QA_PAGE="data-audit",YUQUE_QA_LIGHT="1")
+        finally:
+            for p,content in saved:p.write_bytes(content)
+
     capture("account-dark.png",YUQUE_QA_PAGE="account")
     capture("account-light.png",YUQUE_QA_PAGE="account-identified",YUQUE_QA_LIGHT="1")
     capture("account-narrow.png",YUQUE_QA_PAGE="account",YUQUE_QA_NARROW="1")
